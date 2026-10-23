@@ -1,0 +1,20 @@
+[Unit]
+Description=Vozduhan.AI Telegram bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=davilkus
+WorkingDirectory=/opt/vozduhan-ai
+EnvironmentFile=/etc/vozduhan-ai.env
+ExecStart=/usr/bin/dotnet /opt/vozduhan-ai/Vozduhan.AI.dll
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
