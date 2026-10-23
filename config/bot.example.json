@@ -1,0 +1,61 @@
+{
+  "ownerId": 0,
+  "groupId": 0,
+  "chatTopicId": 0,
+  "deadlinesTopicId": 0,
+  "otherAiTopicIds": [],
+  "dataPath": "data/vozduhan.db",
+  "timeZone": "Europe/Moscow",
+  "morningTime": "08:00",
+  "pinDays": 3,
+  "maxPins": 3,
+  "contextMessages": 30,
+  "historyDays": 30,
+  "weekOneMonday": "2026-09-07",
+  "model": "z-ai/glm-5.3-flash",
+  "aiTimeoutSeconds": 90,
+  "maxOutputTokens": 4096,
+  "maxDailyChatRequestsPerUser": 40,
+  "members": [
+    {
+      "userId": 1001,
+      "fullName": "Тестовый Разработчик",
+      "shortName": "Михаил",
+      "username": "michaelmaksimov",
+      "listNumber": 1,
+      "role": "member",
+      "active": true
+    },
+    {
+      "userId": 1002,
+      "fullName": "Тестовый Староста",
+      "shortName": "Староста",
+      "username": "",
+      "listNumber": 2,
+      "role": "head",
+      "active": true
+    },
+    {
+      "userId": 1003,
+      "fullName": "Тестовый Участник",
+      "shortName": "Участник",
+      "username": "",
+      "listNumber": 3,
+      "role": "member",
+      "active": true
+    }
+  ],
+  "subjects": [
+    { "id": "siaod", "name": "СиАОД", "room": "А412", "aliases": ["сиад", "сиаод", "СиАОД"] },
+    { "id": "java", "name": "Java", "room": "REPLACE_ROOM", "aliases": ["джава", "ява"] }
+  ],
+  "periods": [
+    { "number": 2, "start": "10:40", "end": "12:10" },
+    { "number": 6, "start": "18:00", "end": "19:30" }
+  ],
+  "lessons": [
+    { "subjectId": "siaod", "dayOfWeek": 1, "period": 6, "weeks": "all", "from": "2026-09-01", "until": "2026-12-31" },
+    { "subjectId": "java", "dayOfWeek": 1, "period": 2, "weeks": "all", "from": "2026-09-01", "until": "2026-12-31" }
+  ],
+  "scheduleOverrides": []
+}

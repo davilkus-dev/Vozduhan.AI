@@ -6,6 +6,9 @@ if [[ ! -f /etc/vozduhan-ai.env ]]; then
   sudo install -m 600 config/vozduhan-ai.env.example /etc/vozduhan-ai.env
   echo 'Edit /etc/vozduhan-ai.env and paste your NEW Telegram token and OpenRouter key.'
 fi
+if [[ ! -f /etc/vozduhan-ai.json ]]; then
+  sudo install -o davilkus -g davilkus -m 600 config/bot.example.json /etc/vozduhan-ai.json
+fi
 sudo systemctl daemon-reload
 sudo systemctl enable vozduhan-ai.service
-echo 'Setup complete. Configure secrets, then deploy from Windows.'
+echo 'Setup complete. Configure /etc/vozduhan-ai.env and /etc/vozduhan-ai.json with TEST group IDs, then deploy from Windows.'

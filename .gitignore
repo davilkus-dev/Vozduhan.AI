@@ -40,6 +40,9 @@ appsettings.Local.json
 *.key
 
 # Local data
+config/bot.json
+config/bot.local.json
+data/
 *.db
 *.db-shm
 *.db-wal

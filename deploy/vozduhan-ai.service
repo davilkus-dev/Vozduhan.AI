@@ -8,6 +8,11 @@ Type=simple
 User=davilkus
 WorkingDirectory=/opt/vozduhan-ai
 EnvironmentFile=/etc/vozduhan-ai.env
+Environment=BOT_CONFIG_PATH=/etc/vozduhan-ai.json
+Environment=BOT_DATA_PATH=/var/lib/vozduhan-ai/vozduhan.db
+StateDirectory=vozduhan-ai
+StateDirectoryMode=0700
+UMask=0077
 ExecStart=/usr/bin/dotnet /opt/vozduhan-ai/Vozduhan.AI.dll
 Restart=always
 RestartSec=5
