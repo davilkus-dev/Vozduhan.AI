@@ -10,6 +10,6 @@ if (Test-Path $archive) { Remove-Item $archive }
 if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed' }
 scp $archive 'dolbilkus:/tmp/vozduhan-ai-deploy.tar.gz'
 if ($LASTEXITCODE -ne 0) { throw 'Upload failed' }
-ssh -t dolbilkus 'set -e; mkdir -p /opt/vozduhan-ai; tar -xzf /tmp/vozduhan-ai-deploy.tar.gz -C /opt/vozduhan-ai; rm /tmp/vozduhan-ai-deploy.tar.gz; sudo systemctl restart vozduhan-ai.service; systemctl is-active vozduhan-ai.service'
+ssh dolbilkus 'set -e; mkdir -p /opt/vozduhan-ai; tar -xzf /tmp/vozduhan-ai-deploy.tar.gz -C /opt/vozduhan-ai; rm /tmp/vozduhan-ai-deploy.tar.gz; sudo systemctl restart vozduhan-ai.service; systemctl is-active vozduhan-ai.service'
 if ($LASTEXITCODE -ne 0) { throw 'Deployment failed' }
 Write-Host 'Deployment complete.'
