@@ -1,6 +1,61 @@
-*.i
-*.ii
-*.gpu
-*.ptx
-*.cubin
-*.fatbin
+
+# .NET build output
+bin/
+obj/
+publish/
+artifacts/
+TestResults/
+
+# IDEs
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Secrets
+.env
+.env.*
+!.env.example
+secrets.json
+appsettings.Development.json
+appsettings.Local.json
+**/appsettings.*.local.json
+*.pfx
+*.p12
+*.pem
+*.key
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Deployment
+deploy-output/
+*.pubxml.user
+
+# NuGet
+*.nupkg
+packages/
+
+# Keep source and configuration templates
+!appsettings.json
+!*.csproj
+!*.sln
+!*.slnx
