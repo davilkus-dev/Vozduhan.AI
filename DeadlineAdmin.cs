@@ -68,6 +68,7 @@ public sealed partial class BotWorker
             } : null;
             await Respond(m, responseKey, preview, ct, keyboard);
         }
+        catch (TelegramError) { throw; }
         catch (InvalidOperationException e) { await Respond(m, responseKey, e.Message, ct); }
         catch (Exception) when (!ct.IsCancellationRequested)
         {

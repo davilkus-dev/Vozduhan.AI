@@ -39,6 +39,7 @@ public sealed class BotStore : IDisposable
             PRAGMA user_version=1;
             """);
         Exec("UPDATE inbox SET state=0 WHERE state=1");
+        Exec("UPDATE inbox SET priority=2 WHERE state=0 AND json_valid(payload) AND json_type(payload,'$.callback_query')='object'");
         var binding = $"{config.GroupId}:{config.ChatTopicId}:{config.DeadlinesTopicId}";
         var oldBinding = Get("binding");
         if (oldBinding is not null && oldBinding != binding)
@@ -103,10 +104,16 @@ public sealed class BotStore : IDisposable
         }
     }
     public void Finish(long id) { lock (gate) Exec("UPDATE inbox SET state=2,payload='{}' WHERE id=$id", ("id", id)); }
-    public void Retry(Inbox item)
+    public void Retry(Inbox item, Exception? error = null)
     {
+        var transient = error is HttpRequestException or OperationCanceledException ||
+            error is TelegramError t && (t.Code >= 500 || t.Code is 408 or 409 or 429);
+        var permanent = error is TelegramError p && p.Code is >= 400 and < 500 && p.Code is not (408 or 409 or 429);
+        var delay = Math.Max(error is TelegramError telegram ? telegram.RetryAfter : 0,
+            Math.Min(120, 5 * Math.Pow(2, Math.Min(6, item.Attempts))));
         lock (gate) Exec("UPDATE inbox SET state=$s,attempts=attempts+1,next_at=$n WHERE id=$id",
-            ("s", item.Attempts >= 4 ? 3 : 0), ("n", DateTimeOffset.UtcNow.AddSeconds(Math.Min(120, 5 * Math.Pow(2, item.Attempts))).ToUnixTimeSeconds()), ("id", item.Id));
+            ("s", permanent || !transient && item.Attempts >= 4 ? 3 : 0),
+            ("n", DateTimeOffset.UtcNow.AddSeconds(delay).ToUnixTimeSeconds()), ("id", item.Id));
     }
     public void Remember(long chat, int topic, int id, long sent, string payload)
     {

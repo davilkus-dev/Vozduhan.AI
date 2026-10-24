@@ -26,12 +26,38 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
-                log.LogWarning("Telegram startup failed ({Type}); retrying", e.GetType().Name);
+                log.LogWarning("Telegram startup failed ({Type}); retrying", Failure(e));
                 await Task.Delay(TimeSpan.FromSeconds(10), ct);
             }
         }
-        await Task.WhenAll(Poll(ct), ProcessLoop(0, ct), ProcessLoop(0, ct), ProcessLoop(0, ct), ProcessLoop(1, ct), PublishLoop(ct));
+        await Task.WhenAll(Supervise("poll", () => Poll(ct), ct),
+            Supervise("worker-1", () => ProcessLoop(0, ct), ct),
+            Supervise("worker-2", () => ProcessLoop(0, ct), ct),
+            Supervise("worker-3", () => ProcessLoop(0, ct), ct),
+            Supervise("moderation", () => ProcessLoop(1, ct), ct),
+            Supervise("callbacks", () => ProcessLoop(2, ct), ct),
+            Supervise("publisher", () => PublishLoop(ct), ct));
     }
+
+    private async Task Supervise(string name, Func<Task> run, CancellationToken ct)
+    {
+        try
+        {
+            await run();
+            if (ct.IsCancellationRequested) return;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception e) { log.LogCritical("Loop {Loop} stopped: {Error}", name, Failure(e)); }
+        // A dead worker must not leave a healthy-looking process and claimed jobs behind.
+        Environment.FailFast($"Critical bot loop stopped: {name}");
+    }
+
+    private static string Failure(Exception e) => e is TelegramError t
+        ? $"Telegram {t.Method}: {t.Code}; {System.Text.RegularExpressions.Regex.Replace(t.Description, @"\d{5,}:[A-Za-z0-9_-]+", "[redacted]")}; retry_after={t.RetryAfter}"
+        : e is HttpRequestException h ? $"HTTP/network error; status={h.StatusCode}"
+        : e is OperationCanceledException ? "Request timeout/cancellation"
+        : e is Microsoft.Data.Sqlite.SqliteException sql ? $"SQLite {sql.SqliteErrorCode}/{sql.SqliteExtendedErrorCode}"
+        : e.GetType().Name;
 
     private async Task Poll(CancellationToken ct)
     {
@@ -51,7 +77,10 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
                     var priority = 0;
                     var allowed = false;
                     if (cb.ValueKind == JsonValueKind.Object)
+                    {
                         allowed = config.CanEdit(actor) && cb.Field("message").Field("chat").Number("id") == actor;
+                        priority = 2;
+                    }
                     else
                     {
                         var chat = m.Field("chat"); var topic = m.TopicId();
@@ -75,7 +104,7 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
-                log.LogWarning("Telegram polling failed ({Type})", e.GetType().Name);
+                log.LogWarning("Telegram polling failed ({Type})", Failure(e));
                 await Task.Delay(TimeSpan.FromSeconds(e is TelegramError t ? Math.Max(5, t.RetryAfter) : 5), ct);
             }
         }
@@ -97,8 +126,10 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
-                log.LogWarning("Update {Id} failed ({Type}), attempt {Attempt}", item.Id, e.GetType().Name, item.Attempts + 1);
-                store.Retry(item);
+                log.LogWarning("Update {Id} failed ({Type}), attempt {Attempt}", item.Id, Failure(e), item.Attempts + 1);
+                store.Retry(item, e);
+                if (e is TelegramError { Code: 401 or 409 })
+                    await NotifyOwner("Telegram отклонил запрос: проверь токен и отсутствие второго polling-процесса. Подробности в journalctl.", ct);
                 if (priority == 1) await NotifyOwner("Не могу удалить сообщение в AI-теме. Проверь права бота и доступность Telegram.", ct);
             }
         }
@@ -129,6 +160,7 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
         var responseKey = $"reply:{chat}:{id}";
         if (store.Post(responseKey) is not null)
         {
+            store.ForgetPost("answer:" + responseKey);
             var orphan = store.Post("loading:" + responseKey);
             if (orphan is not null)
             {
@@ -156,7 +188,7 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
         }
         if (isPrivate && command == "/subjects")
         {
-            await Respond(m, responseKey, Conversation.Limit(string.Join("\n", config.Subjects.Select(s => $"{s.Id} — {s.Name}, кабинет {s.Room}")), 3900), ct); return;
+            await Respond(m, responseKey, config.Subjects.Length == 0 ? "Реестр предметов пуст. Добавь subjects в BOT_CONFIG_PATH и перезапусти сервис." : Conversation.Limit(string.Join("\n", config.Subjects.Select(s => $"{s.Id} — {s.Name}, кабинет {s.Room}")), 3900), ct); return;
         }
         if (isPrivate && config.CanEdit(actor)) { await ManageDeadline(m, responseKey, ct); return; }
         if (!isPrivate && !Conversation.CallsBot(m, botId, username)) return;
@@ -164,8 +196,8 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
         {
             await Respond(m, responseKey, "Дедлайны меняют только разработчик и староста. Я могу показать их через /deadlines.", ct); return;
         }
-        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - m.Number("date") > 600) return;
-        if (!store.ChatBudget(actor, DateTimeOffset.UtcNow))
+        if (store.Post("answer:" + responseKey) is null && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - m.Number("date") > 600) return;
+        if (store.Post("answer:" + responseKey) is null && !store.ChatBudget(actor, DateTimeOffset.UtcNow))
         {
             await Respond(m, responseKey, "На сегодня лимит болтовни со мной закончился. Дедлайны продолжают работать.", ct); return;
         }
@@ -187,18 +219,47 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
         {
             try { await telegram.React(chat, id, "👍", ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
         }
-        var loading = await telegram.Send(chat, topic, "⏳ Сейчас посмотрю…", ct, reply: id);
-        store.SavePost(loadingKey, (int)loading.Number("message_id"), "");
-        string answer;
-        try { answer = await ai.Chat(conversation.Context(m, isPrivate), ct); }
-        catch (Exception) when (!ct.IsCancellationRequested) { answer = "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны от этого не пропали."; }
-        await Respond(m, key, Conversation.Limit(answer, 3900), ct);
-        try { await telegram.Delete(chat, (int)loading.Number("message_id"), ct); store.ForgetPost(loadingKey); }
-        catch (Exception) when (!ct.IsCancellationRequested)
+        int? loadingId = null;
+        try
         {
-            try { await telegram.Edit(chat, (int)loading.Number("message_id"), "✅ Ответ ниже.", ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
+            var loading = await telegram.Send(chat, topic, "⏳ Сейчас посмотрю…", ct, reply: id);
+            loadingId = (int)loading.Number("message_id");
+            store.SavePost(loadingKey, loadingId.Value, "");
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        { log.LogWarning("Loading indicator failed: {Error}", Failure(e)); }
+        var answerKey = "answer:" + key;
+        var answer = store.Post(answerKey)?.Text;
+        try
+        {
+            if (answer is null)
+            {
+                try { answer = await ai.Chat(conversation.Context(m, isPrivate), ct); }
+                catch (Exception e) when (!ct.IsCancellationRequested)
+                {
+                    log.LogWarning("AI chat failed: {Error}", Failure(e));
+                    answer = "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны от этого не пропали.";
+                }
+                answer = Conversation.Limit(answer, 3900);
+                store.SavePost(answerKey, 0, answer);
+            }
+            await Respond(m, key, answer, ct);
+            store.ForgetPost(answerKey);
+        }
+        finally
+        {
+            if (loadingId.HasValue && !ct.IsCancellationRequested)
+            {
+                try { await telegram.Delete(chat, loadingId.Value, ct); store.ForgetPost(loadingKey); }
+                catch (Exception) when (!ct.IsCancellationRequested)
+                {
+                    try { await telegram.Edit(chat, loadingId.Value, "Запрос обработан. Если ответа ещё нет, доставка будет повторена.", ct); }
+                    catch (Exception) when (!ct.IsCancellationRequested) { }
+                }
+            }
         }
     }
+
     private async Task Respond(JsonElement to, string key, string text, CancellationToken ct, object? keyboard = null)
     {
         var sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), text, ct,

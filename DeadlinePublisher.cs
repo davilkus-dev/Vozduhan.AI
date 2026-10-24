@@ -17,7 +17,7 @@ public sealed partial class BotWorker
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
-                log.LogWarning("Deadline publication failed ({Type})", e.GetType().Name);
+                log.LogWarning("Deadline publication failed ({Type})", Failure(e));
                 await NotifyOwner("Не получается обновить публикации дедлайнов. Проверь права бота в тестовой группе. Записи сохранены, отправка повторится.", ct);
                 await Task.Delay(TimeSpan.FromSeconds(e is TelegramError t ? Math.Max(10, t.RetryAfter) : 10), ct);
             }
@@ -30,7 +30,14 @@ public sealed partial class BotWorker
         var all = store.AllDeadlines();
         foreach (var d in all.Where(d => (d.Status == "active" && Deadlines.Ends(config, d) >= now) ||
                      (store.Post("deadline:" + d.Id) is { } p && p.Text != Deadlines.Card(config, d))))
-            await UpsertPost("deadline:" + d.Id, config.DeadlinesTopicId, Deadlines.Card(config, d), ct);
+        {
+            try { await UpsertPost("deadline:" + d.Id, config.DeadlinesTopicId, Deadlines.Card(config, d), ct); }
+            catch (Exception e) when (!ct.IsCancellationRequested)
+            {
+                log.LogWarning("Deadline {Id} failed: {Error}", d.Id, Failure(e));
+                await NotifyOwner("Не получается опубликовать карточку дедлайна. Запись сохранена; проверь журнал и права бота.", ct);
+            }
+        }
         var urgent = all.Where(d => d.Status == "active" && Deadlines.Ends(config, d) >= now &&
                 DateOnly.Parse(d.Date) <= DateOnly.FromDateTime(config.LocalNow(now)).AddDays(config.PinDays))
             .OrderBy(d => d.Date).ThenBy(d => d.Start).ThenBy(d => d.Id).Take(config.MaxPins).Select(d => "deadline:" + d.Id).ToHashSet();
@@ -41,6 +48,11 @@ public sealed partial class BotWorker
             try { await telegram.Pin(config.GroupId, p.MessageId, want, ct); store.Pinned(p.Key, want); }
             catch (TelegramError e) when (e.Code == 400 && !want && e.Description.Contains("not found", StringComparison.OrdinalIgnoreCase))
             { store.Pinned(p.Key, false); }
+            catch (Exception e) when (!ct.IsCancellationRequested)
+            {
+                log.LogWarning("Pin {Key} failed: {Error}", p.Key, Failure(e));
+                await NotifyOwner("Не получается изменить закрепление. Проверь право закрепления сообщений; публикации продолжаются.", ct);
+            }
         }
         foreach (var d in store.Due(now))
         {
@@ -62,7 +74,7 @@ public sealed partial class BotWorker
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
                 store.DeliveryFailed(d, e is TelegramError t ? t.RetryAfter : 0);
-                log.LogWarning("Scheduled deadline post failed ({Type})", e.GetType().Name);
+                log.LogWarning("Scheduled deadline post failed ({Type})", Failure(e));
             }
         }
     }

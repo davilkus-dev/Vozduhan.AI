@@ -2,6 +2,7 @@
 Description=Vozduhan.AI Telegram bot
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -16,6 +17,8 @@ UMask=0077
 ExecStart=/usr/bin/dotnet /opt/vozduhan-ai/Vozduhan.AI.dll
 Restart=always
 RestartSec=5
+TimeoutStopSec=30
+LimitCORE=0
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

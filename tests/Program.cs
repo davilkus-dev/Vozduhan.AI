@@ -222,6 +222,66 @@ try
         await new TelegramClient(routingHttp, "123456789:dummy_token").Call("getUpdates", new { timeout = 0 }, CancellationToken.None);
         count++; Console.WriteLine("PASS realistic token containing colon stays in HTTPS request path");
     }
+    Check("temporary Telegram outages survive five retries; permanent failures release the actor", () =>
+    {
+        var c = Config("retry.db");
+        using var s = new BotStore(c);
+        s.Ingest(1, 3, "{}", 0); s.Ingest(2, 3, "{}", 0);
+        s.Retry(s.Claim()! with { Attempts = 9 }, new TelegramError("sendMessage", 503, "unavailable"));
+        Assert(s.Claim() is null, "Transient outage abandoned the first update");
+        s.Retry(new Inbox(1, "{}", 10, 3), new TelegramError("sendMessage", 403, "blocked"));
+        Assert(s.Claim()!.Id == 2, "Permanent failure blocks following messages");
+    });
+    var rateCalls = 0;
+    using (var rateHttp = new HttpClient(new FakeHandler(_ =>
+    {
+        rateCalls++;
+        return Task.FromResult<object>(new { ok = false, error_code = 429, description = "Too Many Requests", parameters = new { retry_after = 60 } });
+    })) { BaseAddress = new Uri("https://telegram.test/") })
+    {
+        var tg = new TelegramClient(rateHttp, "test");
+        foreach (var method in new[] { "sendMessage", "getUpdates" })
+        {
+            try { await tg.Call(method, new { }, CancellationToken.None); throw new Exception("429 accepted"); }
+            catch (TelegramError e) { Assert(e.Code == 429 && e.RetryAfter > 0 && e.Method == method, "Retry diagnostics lost"); }
+        }
+        Assert(rateCalls == 1, "Cooldown did not protect other Telegram methods");
+        count++; Console.WriteLine("PASS Telegram 429 shares cooldown without blocking a worker");
+    }
+    using (var store = new BotStore(Config("loading-failure.db")))
+    {
+        var aiCalls = 0;
+        var answerAttempts = 0;
+        using var tgHttp = new HttpClient(new FakeHandler(async request =>
+        {
+            using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var body = payload.RootElement;
+            if (request.RequestUri!.Segments[^1] == "sendMessage")
+            {
+                if (body.Text("text")!.StartsWith("⏳"))
+                    return new { ok = false, error_code = 400, description = "indicator rejected" };
+                answerAttempts++;
+                if (answerAttempts == 1) return new { ok = false, error_code = 503, description = "temporary outage" };
+                return new { ok = true, result = Message(3, 0, 800, 99, body.Text("text")!) };
+            }
+            return new { ok = true, result = true };
+        })) { BaseAddress = new Uri("https://telegram.test/") };
+        using var aiHttp = new HttpClient(new FakeHandler(_ =>
+        {
+            aiCalls++;
+            return Task.FromResult<object>(new { choices = new[] { new { message = new { content = "Готовый ответ" } } } });
+        })) { BaseAddress = new Uri("https://openrouter.test/") };
+        var worker = new BotWorker(store.Config, store, new TelegramClient(tgHttp, "test"),
+            new OpenRouterClient(aiHttp, store.Config, "test"), NullLogger<BotWorker>.Instance);
+        var update = Element(new { message = Message(3, 0, 7, 3, "привет") });
+        var process = typeof(BotWorker).GetMethod("Process", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        try { await (Task)process.Invoke(worker, [update, CancellationToken.None])!; throw new Exception("Expected send failure"); }
+        catch (TelegramError e) when (e.Code == 503) { }
+        Assert(store.Post("answer:reply:3:7")?.Text == "Готовый ответ", "Generated answer not durable");
+        await (Task)process.Invoke(worker, [update, CancellationToken.None])!;
+        Assert(aiCalls == 1 && answerAttempts == 2 && store.Post("reply:3:7") is not null, "Retry regenerated or lost the answer");
+        count++; Console.WriteLine("PASS failed loading is optional; failed answer delivery reuses durable AI output");
+    }
     var sent = new List<(string Method, JsonElement Payload)>();
     var handler = new FakeHandler(async request =>
     {
@@ -311,6 +371,7 @@ try
     using (var store = new BotStore(Config("publisher.db")))
     {
         store.Config.MorningTime = "00:00";
+        store.Config.Periods = [new(2, "00:00", "23:59"), new(6, "00:00", "23:59")];
         var realNow = DateTimeOffset.UtcNow;
         var today = DateOnly.FromDateTime(store.Config.LocalNow(realNow)).ToString("yyyy-MM-dd");
         var draft = Deadlines.Resolve(store.Config, new("create", SubjectId: "siaod", Work: "Практика №1", Date: today, Period: 6),

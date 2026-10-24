@@ -25,6 +25,7 @@ public static class Fields
 public sealed class TelegramError(string method, int code, string description, int retryAfter = 0)
     : Exception($"Telegram {method}: {code} {description}")
 {
+    public string Method { get; } = method;
     public int Code { get; } = code;
     public string Description { get; } = description;
     public int RetryAfter { get; } = retryAfter;
@@ -34,14 +35,43 @@ public sealed class TelegramError(string method, int code, string description, i
 
 public sealed class TelegramClient(HttpClient http, string token)
 {
+    private long blockedUntil;
+
     public async Task<JsonElement> Call(string method, object data, CancellationToken ct)
     {
-        using var response = await http.PostAsJsonAsync($"./bot{token}/{method}", data, Json.Options, ct);
-        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-        var root = document.RootElement;
-        if (!root.Flag("ok")) throw new TelegramError(method, (int)root.Number("error_code"), root.Text("description") ?? "Unknown API error",
-            (int)root.Field("parameters").Number("retry_after"));
-        return root.Field("result").Clone();
+        var remaining = Interlocked.Read(ref blockedUntil) - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (remaining > 0) throw new TelegramError(method, 429, "Local Telegram rate-limit cooldown", (int)Math.Ceiling(remaining / 1000d));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(method == "getUpdates" ? 65 : 25));
+        using var response = await http.PostAsJsonAsync($"./bot{token}/{method}", data, Json.Options, timeout.Token);
+        JsonDocument document;
+        try { document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(timeout.Token), cancellationToken: timeout.Token); }
+        catch (JsonException)
+        {
+            if (!response.IsSuccessStatusCode)
+                throw new TelegramError(method, (int)response.StatusCode, "Non-JSON HTTP error", 5);
+            throw new HttpRequestException("Telegram returned invalid JSON");
+        }
+        using (document)
+        {
+            var root = document.RootElement;
+            if (!root.Flag("ok"))
+            {
+                var code = (int)root.Number("error_code");
+                if (code == 0) code = response.IsSuccessStatusCode ? 502 : (int)response.StatusCode;
+                var retry = (int)root.Field("parameters").Number("retry_after");
+                if (code == 429)
+                {
+                    retry = Math.Max(1, retry);
+                    var until = DateTimeOffset.UtcNow.AddSeconds(retry).ToUnixTimeMilliseconds();
+                    long old;
+                    do { old = Interlocked.Read(ref blockedUntil); if (old >= until) break; }
+                    while (Interlocked.CompareExchange(ref blockedUntil, until, old) != old);
+                }
+                throw new TelegramError(method, code, root.Text("description") ?? "Unknown API error", retry);
+            }
+            return root.Field("result").Clone();
+        }
     }
     public Task<JsonElement> Send(long chat, int topic, string text, CancellationToken ct, object? keyboard = null, int? reply = null) =>
         Call("sendMessage", new

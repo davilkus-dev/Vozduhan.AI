@@ -12,11 +12,11 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     public async Task<string> Complete(string system, string user, bool json, CancellationToken ct)
     {
         if (!Available) throw new InvalidOperationException("OpenRouter key is missing");
-        await slots.WaitAsync(ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(config.AiTimeoutSeconds));
+        await slots.WaitAsync(timeout.Token);
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(config.AiTimeoutSeconds));
             using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/chat/completions");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
             request.Headers.Add("X-OpenRouter-Title", "Vozduhan.AI");
@@ -30,7 +30,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
                 response_format = json ? new { type = "json_object" } : null
             }, options: Json.Options);
             using var response = await http.SendAsync(request, timeout.Token);
-            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"OpenRouter returned HTTP {(int)response.StatusCode}");
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"OpenRouter returned HTTP {(int)response.StatusCode}", null, response.StatusCode);
             using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(timeout.Token), cancellationToken: timeout.Token);
             var choices = doc.RootElement.Field("choices");
             if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0) throw new InvalidDataException("OpenRouter returned no choices");
