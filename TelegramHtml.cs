@@ -26,6 +26,29 @@ public static partial class TelegramHtml
     [GeneratedRegex(@"^(r|w?[dD]?[tT]?)$")]
     private static partial Regex TimeFormat();
 
+    /// <summary>
+    /// Models slip into Markdown despite instructions. Converts the common forms to Telegram HTML before sanitising:
+    /// ```block```, `code`, **bold**, __underline__, ~~strike~~, ||spoiler||, *italic* / _italic_, [text](https://url).
+    /// </summary>
+    public static string FromMarkdown(string text)
+    {
+        var kept = new List<string>();
+        string Keep(string html) { kept.Add(html); return $"\u0001{kept.Count - 1}\u0001"; }
+        static string E(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+        // Code first: its content must not be touched by the other rules.
+        text = Regex.Replace(text, @"```(?:[a-zA-Z0-9_+#-]{1,20}\n)?([\s\S]*?)```", m => Keep("<pre>" + E(m.Groups[1].Value.Trim('\n')) + "</pre>"));
+        text = Regex.Replace(text, @"(?<!`)`([^`\n]+)`(?!`)", m => Keep("<code>" + E(m.Groups[1].Value) + "</code>"));
+        text = Regex.Replace(text, @"\[([^\]\n]{1,200})\]\((https?://[^\s)]+)\)", m => $"<a href=\"{m.Groups[2].Value}\">{m.Groups[1].Value}</a>");
+        text = Regex.Replace(text, @"\*\*(?=\S)(.+?)(?<=\S)\*\*", "<b>$1</b>");
+        text = Regex.Replace(text, @"(?<![\w_])__(?=\S)(.+?)(?<=\S)__(?![\w_])", "<u>$1</u>");
+        text = Regex.Replace(text, @"~~(?=\S)(.+?)(?<=\S)~~", "<s>$1</s>");
+        text = Regex.Replace(text, @"(?<!\|)\|\|(?=\S)([^|\n]+?)(?<=\S)\|\|(?!\|)", "<tg-spoiler>$1</tg-spoiler>");
+        text = Regex.Replace(text, @"(?<![\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])", "<i>$1</i>");
+        text = Regex.Replace(text, @"(?<![\w_])_(?=[^\s_])([^_\n]+?)(?<=[^\s_])_(?![\w_])", "<i>$1</i>");
+        text = Regex.Replace(text, @"^#{1,6}\s+(.+)$", "<b>$1</b>", RegexOptions.Multiline);
+        return Regex.Replace(text, "\u0001(\\d+)\u0001", m => kept[int.Parse(m.Groups[1].Value)]);
+    }
+
     public static string Sanitize(string input)
     {
         var sb = new StringBuilder();

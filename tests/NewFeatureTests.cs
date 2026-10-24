@@ -184,6 +184,16 @@ static class NewFeatureTests
             Assert(TelegramHtml.Sanitize("<b><i>x</b></i>") == "<b><i>x</i></b>", "Misnesting not repaired: " + TelegramHtml.Sanitize("<b><i>x</b></i>"));
         });
 
+        Check("Markdown slips from the model become Telegram HTML", () =>
+        {
+            string F(string x) => TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(x));
+            Assert(F("лекции в **А-13**") == "лекции в <b>А-13</b>", F("лекции в **А-13**"));
+            Assert(F("*курсив* и _тоже_, ~~нет~~, ||спойлер||") == "<i>курсив</i> и <i>тоже</i>, <s>нет</s>, <tg-spoiler>спойлер</tg-spoiler>", F("*курсив* и _тоже_, ~~нет~~, ||спойлер||"));
+            Assert(F("`a**b**<c>`") == "<code>a**b**&lt;c&gt;</code>", F("`a**b**<c>`"));
+            Assert(F("[сайт](https://mirea.ru)") == "<a href=\"https://mirea.ru\">сайт</a>", F("[сайт](https://mirea.ru)"));
+            Assert(F("snake_case_name и 2*3*4 и <b>уже html</b>") == "snake_case_name и 2*3*4 и <b>уже html</b>", F("snake_case_name и 2*3*4 и <b>уже html</b>"));
+        });
+
         Check("owner-only magic: head cannot touch slang/comments/notes/knowledge; notes go only to the group chat prompt", () =>
         {
             var c = make("secrets.db");

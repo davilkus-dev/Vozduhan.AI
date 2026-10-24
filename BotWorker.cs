@@ -394,7 +394,7 @@ public sealed partial class BotWorker : BackgroundService
             var thought = i == 0 ? (DateTimeOffset.UtcNow - started).TotalMilliseconds : 0;
             await HumanPause(chat, topic, parts[i], thought, ct);
             JsonElement sent;
-            var html = TelegramHtml.Sanitize(parts[i]);
+            var html = TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(parts[i]));
             try { sent = await telegram.Send(chat, topic, html, ct, reply: i == 0 ? id : null, html: true); }
             catch (TelegramError e) when (e.Code == 400 && e.Description.Contains("parse", StringComparison.OrdinalIgnoreCase))
             {
