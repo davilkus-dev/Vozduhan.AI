@@ -75,6 +75,9 @@ public sealed partial class BotStore : IDisposable
             Set("registry", Json.Write(config));
         }
         LoadRegistry(tool);
+        // Initiative settings edited in the web admin override the config file until reset.
+        Config.FileAmbient ??= Config.Ambient;
+        if (Get("ambient_settings") is { } saved) Config.Ambient = Json.Read<AmbientSettings>(saved);
     }
 
     private SqliteCommand Command(string sql, params (string Key, object? Value)[] args)
@@ -103,6 +106,7 @@ public sealed partial class BotStore : IDisposable
         return result;
     }
     public string? Get(string key) { lock (gate) return Scalar("SELECT value FROM kv WHERE key=$k", ("k", key)) as string; }
+    public void Delete(string key) { lock (gate) Exec("DELETE FROM kv WHERE key=$k", ("k", key)); }
     public void Set(string key, string value)
     {
         lock (gate) Exec("INSERT INTO kv VALUES($k,$v) ON CONFLICT(key) DO UPDATE SET value=$v", ("k", key), ("v", value));

@@ -30,11 +30,11 @@ public sealed partial class BotWorker
         var local = config.LocalNow(utc);
         var today = DateOnly.FromDateTime(local);
         var date = today.ToString("yyyy-MM-dd");
-        if (config.SummaryTopicId > 0) await Job($"ambient:summary:{date}", today, a.SummaryTime, local, () => MorningSummary(today, ct));
-        if (a.MorningTime.Length > 0) await Job($"ambient:morning:{date}", today, a.MorningTime, local, () => PostAmbient("morning", null, ct, topic: config.ChatTopicId));
+        if (config.SummaryTopicId > 0) await Job($"ambient:summary:{date}", today, a.SummaryTime, local, k => MorningSummary(today, ct, TakePrep(k)));
+        if (a.MorningTime.Length > 0) await Job($"ambient:morning:{date}", today, a.MorningTime, local, k => PostAmbient("morning", null, ct, TakePrep(k), config.ChatTopicId));
         foreach (var (i, time) in SpontaneousPlan(today).Select((t, i) => (i, t)))
-            await Job($"ambient:spont:{date}:{i}", today, time, local, () => PostAmbient("spontaneous", null, ct, topic: config.ChatTopicId));
-        if (a.EveReminders) await Job($"ambient:eve:{date}", today, a.EveReminderTime, local, () => EveReminder(today.AddDays(1), ct));
+            await Job($"ambient:spont:{date}:{i}", today, time, local, k => PostAmbient("spontaneous", null, ct, TakePrep(k), config.ChatTopicId));
+        if (a.EveReminders) await Job($"ambient:eve:{date}", today, a.EveReminderTime, local, k => EveReminder(today.AddDays(1), ct, TakePrep(k)));
         await PlanMissingWakeups(utc, ct);
         foreach (var w in store.DueWakeups(utc.ToUnixTimeSeconds()))
         {
@@ -44,14 +44,15 @@ public sealed partial class BotWorker
         }
     }
 
-    private async Task Job(string key, DateOnly day, string time, DateTime local, Func<Task> run)
+    private async Task Job(string key, DateOnly day, string time, DateTime local, Func<string, Task> run)
     {
         if (store.Get(key) is not null) return;
         var due = day.ToDateTime(TimeOnly.Parse(time));
         if (local < due) return;
         var late = local - due > Late;
         store.Set(key, late ? "skipped" : "done");
-        if (!late) await run();
+        if (!late) await run(key);
+        else store.Delete("prep:" + key);
     }
 
     /// <summary>Random drop times for a day, chosen once and stored so restarts do not reshuffle them.</summary>
@@ -80,6 +81,7 @@ public sealed partial class BotWorker
         {
             var target = topic ?? ReminderTopic;
             var chatty = target == config.ChatTopicId;
+            if (ready == OpenRouterClient.Skip) return null; // a prepared "stay silent"
             var text = ready ?? await GenerateAmbient(kind, extra, ct, chatty);
             if (text is null) return null;
             var parts = chatty && config.SplitReplies ? OpenRouterClient.Parts(text) : [OpenRouterClient.Join(text)];
@@ -124,27 +126,41 @@ public sealed partial class BotWorker
     }
 
     /// <summary>Evening reminder in the deadlines topic: creative lead from the model, exact facts from the program.</summary>
-    private async Task EveReminder(DateOnly tomorrow, CancellationToken ct)
-    {
-        var due = store.AllDeadlines().Where(d => d.Status == "active" && d.Date == tomorrow.ToString("yyyy-MM-dd")).OrderBy(d => d.Start).ToList();
-        if (due.Count == 0) return;
-        var lead = await GenerateAmbient("eve", null, ct) ?? "⏰ Завтра сдаём:";
-        lead = TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(lead.Replace(OpenRouterClient.Split, " ")));
-        var facts = string.Join("\n\n", due.Select(d => System.Net.WebUtility.HtmlEncode(Deadlines.Facts(config, d))));
-        await telegram.Send(config.GroupId, EveTopic, Conversation.Limit(lead, 600) + "\n\n" + facts, ct, html: true);
-    }
     private int ReminderTopic => config.SummaryTopicId > 0 ? config.SummaryTopicId : config.ChatTopicId;
     private int EveTopic => config.SummaryTopicId > 0 ? config.SummaryTopicId : config.DeadlinesTopicId;
+    private List<Deadline> DueOn(DateOnly day) =>
+        store.AllDeadlines().Where(d => d.Status == "active" && d.Date == day.ToString("yyyy-MM-dd")).OrderBy(d => d.Start).ToList();
 
-    /// <summary>Morning summary in «Сводка»: a creative lead, the day's schedule and the submissions of the next days (exact facts).</summary>
-    internal async Task MorningSummary(DateOnly today, CancellationToken ct)
+    /// <summary>Evening reminder: creative lead from the model (or a prepared one), exact facts from the program.</summary>
+    private async Task EveReminder(DateOnly tomorrow, CancellationToken ct, string? lead = null)
     {
-        var lead = await GenerateAmbient("summary", null, ct);
+        if (DueOn(tomorrow).Count == 0) return;
+        lead ??= await GenerateAmbient("eve", new { for_date = tomorrow.AddDays(-1).ToString("yyyy-MM-dd") }, ct);
+        await telegram.Send(config.GroupId, EveTopic, ComposeEve(tomorrow, lead)!, ct, html: true);
+    }
+    internal string? ComposeEve(DateOnly tomorrow, string? lead)
+    {
+        var due = DueOn(tomorrow);
+        if (due.Count == 0) return null;
+        var head = TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(OpenRouterClient.Join(lead ?? "⏰ Завтра сдаём:")));
+        return Conversation.Limit(head, 600) + "\n\n" + string.Join("\n\n", due.Select(d => System.Net.WebUtility.HtmlEncode(Deadlines.Facts(config, d))));
+    }
+
+    /// <summary>Morning post in «Сводка»: lively lead, the day's schedule and the submissions of the next days (exact facts).</summary>
+    internal async Task MorningSummary(DateOnly today, CancellationToken ct, string? lead = null)
+    {
+        lead ??= await GenerateAmbient("summary", new { for_date = today.ToString("yyyy-MM-dd") }, ct);
+        var sent = await telegram.Send(config.GroupId, config.SummaryTopicId, ComposeSummary(today, lead), ct, html: true);
+        store.Remember(config.GroupId, config.SummaryTopicId, (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
+        if (lead is not null) conversation.AddRecentPost(lead);
+    }
+    internal string ComposeSummary(DateOnly today, string? lead)
+    {
         var sb = new System.Text.StringBuilder();
         if (lead is not null) sb.Append(TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(Conversation.Limit(OpenRouterClient.Join(lead), 700)))).Append("\n\n");
-        sb.Append(ScheduleHtml.Day(config.R, today, "Сегодня"));
+        sb.Append(ScheduleHtml.Day(config.R, today, DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow)) == today ? "Сегодня" : null));
         var soon = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) > DateTimeOffset.UtcNow &&
-            DateOnly.Parse(d.Date) <= today.AddDays(3)).OrderBy(d => d.Date).ThenBy(d => d.Start).ToList();
+            DateOnly.Parse(d.Date) >= today && DateOnly.Parse(d.Date) <= today.AddDays(3)).OrderBy(d => d.Date).ThenBy(d => d.Start).ToList();
         if (soon.Count > 0)
         {
             sb.Append("\n\n⏰ <b>Сдачи</b>");
@@ -155,18 +171,85 @@ public sealed partial class BotWorker
                 sb.Append($"\n• {when}, {d.Period} пара ({d.Start}) — <b>{System.Net.WebUtility.HtmlEncode(config.R.SubjectName(d.SubjectId))}</b>: {System.Net.WebUtility.HtmlEncode(d.Work)} · <code>{System.Net.WebUtility.HtmlEncode(d.Room)}</code>");
             }
         }
-        var sent = await telegram.Send(config.GroupId, config.SummaryTopicId, Conversation.Limit(sb.ToString(), 4000), ct, html: true);
-        store.Remember(config.GroupId, config.SummaryTopicId, (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
+        return Conversation.Limit(sb.ToString(), 4000);
     }
 
     private async Task FireWakeup(Wakeup w, DateTimeOffset utc, CancellationToken ct)
     {
-        if (w.Deadline == 0) { await PostAmbient("manual", new { idea = w.Reason }, ct); return; } // a scheduled post
+        var ready = TakePrep("wake:" + w.Id);
+        if (w.Deadline == 0) { await PostAmbient("manual", new { idea = w.Reason }, ct, ready); return; } // a scheduled post
         var d = store.AllDeadlines().FirstOrDefault(x => x.Id == w.Deadline);
         if (d is null || d.Status != "active" || Deadlines.Ends(config, d) < utc) return;
-        var left = config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start))) - utc;
+        await PostAmbient("wakeup", WakeupExtra(w, d, utc), ct, ready);
+    }
+    private object WakeupExtra(Wakeup w, Deadline d, DateTimeOffset at)
+    {
+        var left = config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start))) - at;
         var timeLeft = left.TotalHours < 1 ? $"{Math.Max(0, (int)left.TotalMinutes)} мин" : left.TotalHours < 48 ? $"{(int)left.TotalHours} ч" : $"{(int)left.TotalDays} дн";
-        await PostAmbient("wakeup", new { wakeup = new { deadline = conversation.DeadlineView(d), reason = w.Reason, time_left = timeLeft } }, ct);
+        return new { for_time = config.LocalNow(at).ToString("yyyy-MM-dd HH:mm"), wakeup = new { deadline = conversation.DeadlineView(d), reason = w.Reason, time_left = timeLeft } };
+    }
+
+    // ---------- Warm-up: prepare a planned post in advance, review and edit it ----------
+
+    public sealed record Prep(string Text, long At, string Source);
+    public Prep? Prepared(string key) => store.Get("prep:" + key) is { Length: > 2 } s ? Json.Read<Prep>(s) : null;
+    private string? TakePrep(string key)
+    {
+        var p = Prepared(key);
+        if (p is not null) store.Delete("prep:" + key);
+        return p?.Text;
+    }
+    public void SavePrep(string key, string text, string source) =>
+        store.Set("prep:" + key, Json.Write(new Prep(text, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), source)));
+    public void ClearPrep(string key) => store.Delete("prep:" + key);
+
+    /// <summary>Generates the text a planned job would post, without posting. Keys: ambient:{summary|morning|eve}:{date}, ambient:spont:{date}:{i}, wake:{id}.</summary>
+    internal async Task<Prep?> Warm(string key, CancellationToken ct)
+    {
+        var parts = key.Split(':');
+        string? text;
+        if (parts[0] == "wake" && long.TryParse(parts[1], out var id))
+        {
+            var w = store.Wakeups().FirstOrDefault(x => x.Id == id && x.Status == "pending") ?? throw new InvalidOperationException("Будильник уже сработал или удалён.");
+            var at = DateTimeOffset.FromUnixTimeSeconds(w.Due);
+            if (w.Deadline == 0) text = await GenerateAmbient("manual", new { idea = w.Reason, for_time = config.LocalNow(at).ToString("yyyy-MM-dd HH:mm") }, ct);
+            else
+            {
+                var d = store.AllDeadlines().FirstOrDefault(x => x.Id == w.Deadline && x.Status == "active") ?? throw new InvalidOperationException("Дедлайн уже не активен.");
+                text = await GenerateAmbient("wakeup", WakeupExtra(w, d, at), ct);
+            }
+        }
+        else if (parts.Length >= 3 && parts[0] == "ambient" && DateOnly.TryParseExact(parts[2], "yyyy-MM-dd", out var day))
+        {
+            if (store.Get(key) is not null) throw new InvalidOperationException("Это событие уже прошло.");
+            var forDate = new { for_date = parts[2] };
+            text = parts[1] switch
+            {
+                "summary" => await GenerateAmbient("summary", forDate, ct),
+                "morning" => await GenerateAmbient("morning", forDate, ct, split: true),
+                "eve" => DueOn(day.AddDays(1)).Count == 0 ? throw new InvalidOperationException("На следующий день сдач нет — напоминания не будет.")
+                    : await GenerateAmbient("eve", forDate, ct),
+                "spont" => await GenerateAmbient("spontaneous", null, ct, split: true) ?? OpenRouterClient.Skip,
+                _ => throw new InvalidOperationException("Неизвестное событие.")
+            };
+        }
+        else throw new InvalidOperationException("Неизвестное событие.");
+        if (text is null) throw new InvalidOperationException("Нейронка не ответила — попробуй ещё раз.");
+        SavePrep(key, text, "ai");
+        return Prepared(key);
+    }
+    /// <summary>What exactly will be posted, as Telegram HTML, for the admin preview.</summary>
+    public string? Preview(string key, string text)
+    {
+        if (text == OpenRouterClient.Skip) return "<i>Бот решил промолчать: повода нет.</i>";
+        var parts = key.Split(':');
+        if (parts[0] == "ambient" && DateOnly.TryParseExact(parts[2], "yyyy-MM-dd", out var day))
+        {
+            if (parts[1] == "summary") return ComposeSummary(day, text);
+            if (parts[1] == "eve") return ComposeEve(day.AddDays(1), text);
+            if (parts[1] is "morning" or "spont") return string.Join("\n<hr>\n", OpenRouterClient.Parts(text).Select(p => TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(p))));
+        }
+        return TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(OpenRouterClient.Join(text)));
     }
 
     /// <summary>Every active future deadline gets an AI wake-up plan once per version; edits and moves re-plan it.</summary>

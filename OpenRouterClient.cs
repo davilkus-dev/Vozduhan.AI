@@ -16,49 +16,80 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     public Action<AiTrace>? Trace { get; set; }
     public const string Split = "||";
 
+    /// <summary>
+    /// One model call with adaptive effort: reasoning depth depends on the task kind (config.reasoningEffort), and an answer cut
+    /// by the output limit (finish_reason=length, empty content or broken JSON) is regenerated with a doubled budget up to the ceiling.
+    /// </summary>
     public async Task<string> Complete(string system, string user, bool json, CancellationToken ct, string kind = "other", string tag = "")
     {
         if (!Available) throw new InvalidOperationException("OpenRouter key is missing");
         var clock = Stopwatch.StartNew();
         string? result = null;
         Exception? failure = null;
+        var effort = config.Effort(kind);
+        var budget = config.MaxOutputTokens;
+        var attempts = 0;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(config.AiTimeoutSeconds));
-            await slots.WaitAsync(timeout.Token);
-            try
+            timeout.CancelAfter(TimeSpan.FromSeconds(config.AiTimeoutSeconds * 2));
+            while (true)
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/chat/completions");
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-                request.Headers.Add("X-OpenRouter-Title", "Vozduhan.AI");
-                request.Content = JsonContent.Create(new
+                attempts++;
+                var (content, finish) = await Attempt(system, user, json, effort, budget, timeout.Token);
+                var cut = finish is "length" or "max_tokens" || string.IsNullOrEmpty(content) || (json && !ValidJson(content));
+                if (!cut) { result = content!; break; }
+                if (budget >= config.MaxOutputTokensCeiling || attempts >= 3)
                 {
-                    model = config.Model,
-                    messages = new[] { new { role = "system", content = system }, new { role = "user", content = user } },
-                    reasoning = new { effort = "low", exclude = true },
-                    temperature = json ? 0.3 : 1.0, top_p = 0.95, max_tokens = config.MaxOutputTokens,
-                    provider = new { allow_fallbacks = true, require_parameters = true, data_collection = "deny" },
-                    response_format = json ? new { type = "json_object" } : null
-                }, options: Json.Options);
-                using var response = await http.SendAsync(request, timeout.Token);
-                if (!response.IsSuccessStatusCode) throw new HttpRequestException($"OpenRouter returned HTTP {(int)response.StatusCode}", null, response.StatusCode);
-                using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(timeout.Token), cancellationToken: timeout.Token);
-                var choices = doc.RootElement.Field("choices");
-                if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0) throw new InvalidDataException("OpenRouter returned no choices");
-                result = choices[0].Field("message").Text("content")?.Trim();
-                if (string.IsNullOrEmpty(result)) throw new InvalidDataException("OpenRouter returned no visible content");
-                if (result.Contains("<think>", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Unexpected reasoning in visible content");
-                return result;
+                    // Out of budget: a cut chat text is still better than nothing; broken JSON or nothing is an error.
+                    if (!json && !string.IsNullOrEmpty(content)) { result = content; break; }
+                    throw new InvalidDataException(string.IsNullOrEmpty(content) ? "OpenRouter returned no visible content" : "OpenRouter output was cut off");
+                }
+                budget = Math.Min(config.MaxOutputTokensCeiling, budget * 2);
             }
-            finally { slots.Release(); }
+            if (result.Contains("<think>", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Unexpected reasoning in visible content");
+            return result;
         }
         catch (Exception e) { failure = e; throw; }
         finally
         {
-            try { Trace?.Invoke(new(kind, tag, config.Model, system, user, result ?? "", clock.ElapsedMilliseconds, failure is null ? null : failure.GetType().Name + ": " + failure.Message)); }
+            try
+            {
+                Trace?.Invoke(new(kind, tag, $"{config.Model} · effort {effort} · max_tokens {budget}" + (attempts > 1 ? $" · попыток {attempts}" : ""),
+                    system, user, result ?? "", clock.ElapsedMilliseconds, failure is null ? null : failure.GetType().Name + ": " + failure.Message));
+            }
             catch { /* logging must never break a reply */ }
         }
+    }
+    private static bool ValidJson(string text)
+    {
+        try { using var _ = JsonDocument.Parse(text); return true; } catch (JsonException) { return false; }
+    }
+    private async Task<(string? Content, string? Finish)> Attempt(string system, string user, bool json, string effort, int budget, CancellationToken ct)
+    {
+        await slots.WaitAsync(ct);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/chat/completions");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            request.Headers.Add("X-OpenRouter-Title", "Vozduhan.AI");
+            request.Content = JsonContent.Create(new
+            {
+                model = config.Model,
+                messages = new[] { new { role = "system", content = system }, new { role = "user", content = user } },
+                reasoning = new { effort, exclude = true },
+                temperature = json ? 0.3 : 1.0, top_p = 0.95, max_tokens = budget,
+                provider = new { allow_fallbacks = true, require_parameters = true, data_collection = "deny" },
+                response_format = json ? new { type = "json_object" } : null
+            }, options: Json.Options);
+            using var response = await http.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"OpenRouter returned HTTP {(int)response.StatusCode}", null, response.StatusCode);
+            using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+            var choices = doc.RootElement.Field("choices");
+            if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0) throw new InvalidDataException("OpenRouter returned no choices");
+            return (choices[0].Field("message").Text("content")?.Trim(), choices[0].Text("finish_reason"));
+        }
+        finally { slots.Release(); }
     }
 
     public static string ChatRules(BotConfig c, bool split) => $"""
@@ -273,6 +304,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         };
         const string tags = """
 
+            Если в extra есть for_date или for_time — пиши так, как будто сейчас этот момент (его день есть в schedule.days), а не текущее время.
             Если обращаешься к конкретному человеку или хочешь его дёрнуть — обязательно тегни: пиши его telegram_username (например @R3searchh),
             а если юзернейма нет — вставь его mention_html. Просто имя без тега человек не увидит.
             """;

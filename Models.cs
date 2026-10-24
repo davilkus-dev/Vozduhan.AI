@@ -281,10 +281,21 @@ public sealed class BotConfig
     public int AiTimeoutSeconds { get; set; } = 90;
     public int MaxOutputTokens { get; set; } = 4096;
     public int MaxDailyChatRequestsPerUser { get; set; } = 40;
+    /// <summary>Upper limit for regenerating an answer that was cut by maxOutputTokens.</summary>
+    public int MaxOutputTokensCeiling { get; set; } = 16384;
+    /// <summary>Reasoning depth per task: chat answers stay fast, posts and planning think more.</summary>
+    public Dictionary<string, string> ReasoningEffort { get; set; } = new()
+    {
+        ["chat"] = "low", ["deadline"] = "low", ["intro"] = "low", ["plan"] = "medium", ["wakeplan"] = "medium", ["ambient"] = "medium"
+    };
+    public string Effort(string kind) =>
+        ReasoningEffort.TryGetValue(kind, out var e) || ReasoningEffort.TryGetValue(kind.Split('-')[0], out e) ? e : "low";
     public string GroupName { get; set; } = "ИКБО-66-25";
     public string University { get; set; } = "РТУ МИРЭА";
     public WebSettings Web { get; set; } = new();
     public AmbientSettings Ambient { get; set; } = new();
+    /// <summary>The ambient block as written in the config file (for "reset to config" in the admin).</summary>
+    [JsonIgnore] public AmbientSettings? FileAmbient { get; set; }
     /// <summary>Chance of an instant 👀/👍/👌 reaction before a chat answer.</summary>
     public double ReactionChance { get; set; } = 0.7;
     public string[] Reactions { get; set; } = ["👀", "👍", "👌"];
@@ -360,7 +371,8 @@ public sealed class BotConfig
         if (!TimeOnly.TryParseExact(MorningTime, "HH:mm", out _) || PinDays is < 0 or > 30 ||
             MaxPins is < 0 or > 10 || ContextMessages is < 1 or > 50 || HistoryDays is < 1 or > 365 ||
             LogDays is < 1 or > 3650 || AiLogDays is < 1 or > 365 ||
-            AiTimeoutSeconds is < 10 or > 180 || MaxOutputTokens is < 1024 or > 16384 || MaxDailyChatRequestsPerUser is < 1 or > 1000)
+            AiTimeoutSeconds is < 10 or > 180 || MaxOutputTokens is < 1024 or > 16384 || MaxOutputTokensCeiling < MaxOutputTokens || MaxOutputTokensCeiling > 65536 ||
+            ReasoningEffort.Values.Any(v => v is not ("minimal" or "low" or "medium" or "high")) || MaxDailyChatRequestsPerUser is < 1 or > 1000)
             throw new InvalidDataException("Invalid time or limits in bot config");
         if (Web.Enabled && (!Web.Listen.StartsWith("http://") || !Web.Listen.EndsWith('/') || Web.SessionDays is < 1 or > 90 ||
             Web.AllowedNetworks.Length == 0 || Web.AllowedNetworks.Any(n => !Cidr.TryParse(n, out _))))

@@ -222,6 +222,23 @@ static class NewFeatureTests
             Assert(ScheduleHtml.Day(r, new DateOnly(2026, 11, 30), "Сегодня").Contains("<b>СиАОД</b>"), "Day HTML lacks bold subject");
         });
 
+        Check("adaptive effort and regeneration of answers cut by the output limit", () =>
+        {
+            var bodies = new List<string>();
+            var n = 0;
+            using var http = new HttpClient(new Fake(async request =>
+            {
+                bodies.Add(await request.Content!.ReadAsStringAsync());
+                return ++n == 1 ? new { choices = new[] { new { message = new { content = "{\"a\":" }, finish_reason = "length" } } }
+                    : new { choices = new[] { new { message = new { content = "{\"a\":1}" }, finish_reason = "stop" } } };
+            })) { BaseAddress = new Uri("https://openrouter.test/") };
+            var c = make("effort.db");
+            var result = new OpenRouterClient(http, c, "k").Complete("s", "u", true, CancellationToken.None, "ambient-summary").GetAwaiter().GetResult();
+            Assert(result == "{\"a\":1}" && bodies.Count == 2, "Cut answer not regenerated");
+            Assert(bodies[0].Contains("\"max_tokens\":4096") && bodies[1].Contains("\"max_tokens\":8192"), "Budget not raised");
+            Assert(bodies[0].Contains("\"effort\":\"medium\"") && c.Effort("chat") == "low", "Effort per kind wrong");
+        });
+
         Check("chat answers split on separator lines and never produce empty parts", () =>
         {
             Assert(OpenRouterClient.Parts("Бро, сегодня философия\n||\nИ дедлайн…\n||\nСоболезную").SequenceEqual(["Бро, сегодня философия", "И дедлайн…", "Соболезную"]), "Split failed");
@@ -441,7 +458,24 @@ static class NewFeatureTests
                 sent.Clear();
                 await Upd(El(new { message = Msg(2, 0, 902, 2, "/post спам") }));
                 Assert(!sent.Single(x => x.Method == "sendMessage").Payload.Text("text")!.Contains("Черновик"), "Head could trigger posts");
-                count++; Console.WriteLine("PASS ambient: summary+morning once, late skip, AI wake-ups validated/fired/re-planned/cancelled, SKIP, manual /post");
+                // Warm-up: the summary is prepared in advance, edited, and exactly that text is posted later without a new AI call.
+                var warm = typeof(BotWorker).GetMethod("Warm", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var prep = await (Task<BotWorker.Prep?>)warm.Invoke(w, ["ambient:summary:2026-12-03", CancellationToken.None])!;
+                Assert(prep!.Text.Contains("Понедельник, держитесь") && prep.Source == "ai", "Warm-up did not prepare the summary");
+                w.SavePrep("ambient:summary:2026-12-03", "Среда сегодня, отдыхайте", "manual");
+                Assert(w.Preview("ambient:summary:2026-12-03", "Среда сегодня, отдыхайте")!.Contains("Среда сегодня, отдыхайте") &&
+                    w.Preview("ambient:summary:2026-12-03", "x")!.Contains("📅"), "Preview must show the full composed post");
+                st.Set("ambient:morning:2026-12-03", "done");
+                var callsBefore = aiRequests.Count;
+                sent.Clear(); await Tick("2026-12-03T05:00:30Z");
+                var summaryPost = sent.Single(x => x.Method == "sendMessage" && x.Payload.Number("message_thread_id") == 30).Payload.Text("text")!;
+                Assert(summaryPost.StartsWith("Среда сегодня, отдыхайте") && summaryPost.Contains("📅"), "Prepared summary not used: " + summaryPost);
+                Assert(aiRequests.Count == callsBefore && w.Prepared("ambient:summary:2026-12-03") is null, "Prepared post regenerated or not consumed");
+                // A cancelled morning post is never sent.
+                st.Set("ambient:summary:2026-12-05", "cancelled"); st.Set("ambient:morning:2026-12-05", "cancelled");
+                sent.Clear(); await Tick("2026-12-05T05:01:00Z");
+                Assert(!sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("message_thread_id") == 30), "Cancelled summary was sent");
+                count++; Console.WriteLine("PASS ambient: summary+morning once, late skip, AI wake-ups validated/fired/re-planned/cancelled, SKIP, manual /post, warm-up, cancel");
             }
 
             // ---- Web admin over a real local HttpListener ----

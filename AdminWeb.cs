@@ -206,7 +206,10 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 var a = config.Ambient;
                 var today = DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow));
                 var deadlines = store.AllDeadlines();
-                string Status(string key) => store.Get(key) switch { "done" => "done", "skipped" => "skipped", _ => "planned" };
+                string Status(string key) => store.Get(key) switch { "done" => "done", "skipped" => "skipped", "cancelled" => "cancelled", _ => "planned" };
+                // Prepared ("warmed") texts are owner-only: they may contain roasts from people notes.
+                object? P(string key) => !owner || worker.Prepared(key) is not { } p ? null
+                    : new { p.Text, p.Source, p.At, preview = worker.Preview(key, p.Text) };
                 await Send(response, 200, new
                 {
                     ok = true, ambient = a,
@@ -219,22 +222,84 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                         return new
                         {
                             date = ds, weekday = Schedule.DayNames[Schedule.Dow(d)],
-                            summary = config.SummaryTopicId > 0 ? new { time = a.SummaryTime, status = Status($"ambient:summary:{ds}") } : null,
-                            morning = a.MorningTime.Length == 0 ? null : new { time = a.MorningTime, status = Status($"ambient:morning:{ds}") },
-                            spontaneous = spont?.Select((t, n) => new { time = t, status = Status($"ambient:spont:{ds}:{n}") }),
-                            eve = tomorrow.Count == 0 || !a.EveReminders ? null : new { time = a.EveReminderTime, status = Status($"ambient:eve:{ds}"),
-                                about = tomorrow.Select(x => config.R.SubjectName(x.SubjectId) + " — " + x.Work) }
+                            summary = config.SummaryTopicId > 0 ? new { key = $"ambient:summary:{ds}", time = a.SummaryTime, status = Status($"ambient:summary:{ds}"), prep = P($"ambient:summary:{ds}") } : null,
+                            morning = a.MorningTime.Length == 0 ? null : new { key = $"ambient:morning:{ds}", time = a.MorningTime, status = Status($"ambient:morning:{ds}"), prep = P($"ambient:morning:{ds}") },
+                            spontaneous = spont?.Select((t, n) => new { key = $"ambient:spont:{ds}:{n}", time = t, status = Status($"ambient:spont:{ds}:{n}"), prep = P($"ambient:spont:{ds}:{n}") }),
+                            eve = tomorrow.Count == 0 || !a.EveReminders ? null : new { key = $"ambient:eve:{ds}", time = a.EveReminderTime, status = Status($"ambient:eve:{ds}"),
+                                about = tomorrow.Select(x => config.R.SubjectName(x.SubjectId) + " — " + x.Work), prep = P($"ambient:eve:{ds}") }
                         };
                     }),
                     wakeups = store.Wakeups().Where(w => owner || w.Deadline != 0).Where(w => w.Status == "pending" || w.Due > DateTimeOffset.UtcNow.AddDays(-14).ToUnixTimeSeconds()).Select(w =>
                     {
                         var d = deadlines.FirstOrDefault(x => x.Id == w.Deadline);
-                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status,
+                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status, key = "wake:" + w.Id, prep = P("wake:" + w.Id),
                             deadlineTitle = d is null ? null : $"#{d.Id} {config.R.SubjectName(d.SubjectId)} — {d.Work} ({d.Date}, {d.Period} пара)" };
                     }),
                     deliveries = store.PendingDeliveries().Select(x => new { x.Key, x.Due, x.Text,
                         topic = x.TopicId == config.DeadlinesTopicId ? "Дедлайны" : x.TopicId == config.SummaryTopicId ? "Сводка" : x.TopicId == config.ChatTopicId ? "Воздуханство" : "тема " + x.TopicId })
                 });
+                return;
+            }
+            case "/api/prep" when post && owner:
+            {
+                var key = body.Text("key") ?? "";
+                if (!System.Text.RegularExpressions.Regex.IsMatch(key, @"^(ambient:(summary|morning|eve):\d{4}-\d{2}-\d{2}|ambient:spont:\d{4}-\d{2}-\d{2}:\d+|wake:\d+)$"))
+                { await Send(response, 400, new { ok = false, error = "Неизвестное событие" }); return; }
+                switch (body.Text("action"))
+                {
+                    case "warm":
+                        try
+                        {
+                            var p = await worker.Warm(key, ct);
+                            await Send(response, 200, new { ok = true, text = p!.Text, preview = worker.Preview(key, p.Text) });
+                        }
+                        catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); }
+                        return;
+                    case "save":
+                        var text = body.Text("text")?.Trim();
+                        if (string.IsNullOrEmpty(text)) { await Send(response, 400, new { ok = false, error = "Пустой текст. Чтобы бот промолчал, напиши SKIP." }); return; }
+                        worker.SavePrep(key, Conversation.Limit(text, 3900), "manual");
+                        await Send(response, 200, new { ok = true, preview = worker.Preview(key, text) });
+                        return;
+                    case "cancel" when key.StartsWith("ambient:"):
+                        if (store.Get(key) is { } state && state != "cancelled") { await Send(response, 400, new { ok = false, error = "Уже отправлено или пропущено." }); return; }
+                        store.Set(key, "cancelled"); // the scheduler sees the key and never runs the job
+                        worker.ClearPrep(key);
+                        await Send(response, 200, new { ok = true });
+                        return;
+                    case "restore" when key.StartsWith("ambient:"):
+                        if (store.Get(key) == "cancelled") store.Delete(key);
+                        await Send(response, 200, new { ok = true });
+                        return;
+                    default:
+                        worker.ClearPrep(key);
+                        await Send(response, 200, new { ok = true });
+                        return;
+                }
+            }
+            case "/api/ambient" when post && owner:
+            {
+                if (body.Field("reset").ValueKind == JsonValueKind.True)
+                {
+                    store.Delete("ambient_settings");
+                    config.Ambient = config.FileAmbient ?? new AmbientSettings();
+                }
+                else
+                {
+                    var next = Json.Read<AmbientSettings>(body.Field("settings").GetRawText());
+                    var probe = Json.Read<BotConfig>(Json.Write(config)); probe.Ambient = next; probe.Use(config.R);
+                    try { probe.Validate(); }
+                    catch (InvalidDataException e) { await Send(response, 400, new { ok = false, error = "Неверные настройки: " + e.Message }); return; }
+                    var old = config.Ambient;
+                    config.Ambient = next;
+                    store.Set("ambient_settings", Json.Write(next));
+                    // A new window or count re-rolls today's remaining drops (only if none happened yet).
+                    var today = DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow)).ToString("yyyy-MM-dd");
+                    if ((old.SpontaneousPerDay, old.SpontaneousChance, old.ActiveFrom, old.ActiveTo) != (next.SpontaneousPerDay, next.SpontaneousChance, next.ActiveFrom, next.ActiveTo) &&
+                        store.Get($"ambient:spont:{today}:0") is null)
+                        store.Delete($"ambient:plan:{today}");
+                }
+                await Send(response, 200, new { ok = true, ambient = config.Ambient });
                 return;
             }
             case "/api/wakeup" when post:

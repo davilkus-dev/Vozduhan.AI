@@ -18,6 +18,15 @@
   "aiTimeoutSeconds": 90,
   "maxOutputTokens": 4096,
   "maxDailyChatRequestsPerUser": 40,
+  "maxOutputTokensCeiling": 16384,
+  "reasoningEffort": {
+    "chat": "low",
+    "deadline": "low",
+    "intro": "low",
+    "plan": "medium",
+    "wakeplan": "medium",
+    "ambient": "medium"
+  },
   "groupName": "ИКБО-66-25",
   "university": "РТУ МИРЭА",
   "reactionChance": 0.7,
