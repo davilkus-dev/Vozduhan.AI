@@ -64,8 +64,9 @@ public sealed class Conversation(BotConfig config, BotStore store)
         var people = r.Members.Where(m => m.Active && !string.IsNullOrWhiteSpace(m.AdminNote)).ToArray();
         if (!isPrivate && people.Length > 0)
         {
-            sb.Append("\n\nЛокальные приколы о людях из группы (от разработчика). Иногда, к месту, используй их для дружеской прожарки в Воздуханстве, " +
-                      "но не в каждом сообщении, без жести и травли; не цитируй дословно и не говори, что у тебя есть такие заметки:");
+            sb.Append("\n\nЛокальные приколы о людях из группы (от разработчика). Используй к месту для язвительного стёба в общем чате, " +
+                      "без неприкасаемых по ролям, но не в каждом сообщении и без травли. Не выдумывай новые проступки или прошлые разговоры; " +
+                      "не цитируй дословно и не говори, что у тебя есть такие заметки:");
             foreach (var m in people) sb.Append($"\n- {m.ShortName} ({m.FullName}" + (string.IsNullOrWhiteSpace(m.Username) ? "" : ", @" + m.Username) + $"): {m.AdminNote!.Trim()}");
         }
         return sb.ToString();
