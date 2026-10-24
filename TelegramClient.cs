@@ -36,6 +36,8 @@ public sealed class TelegramError(string method, int code, string description, i
 public sealed class TelegramClient(HttpClient http, string token)
 {
     private long blockedUntil;
+    /// <summary>Sees every successful call (method, request object, result) for the message log. Must not throw.</summary>
+    public Action<string, object, JsonElement>? Observer { get; set; }
 
     public async Task<JsonElement> Call(string method, object data, CancellationToken ct)
     {
@@ -70,13 +72,15 @@ public sealed class TelegramClient(HttpClient http, string token)
                 }
                 throw new TelegramError(method, code, root.Text("description") ?? "Unknown API error", retry);
             }
-            return root.Field("result").Clone();
+            var result = root.Field("result").Clone();
+            try { Observer?.Invoke(method, data, result); } catch { /* logging must never break delivery */ }
+            return result;
         }
     }
-    public Task<JsonElement> Send(long chat, int topic, string text, CancellationToken ct, object? keyboard = null, int? reply = null) =>
+    public Task<JsonElement> Send(long chat, int topic, string text, CancellationToken ct, object? keyboard = null, int? reply = null, bool html = false) =>
         Call("sendMessage", new
         {
-            chat_id = chat, message_thread_id = topic > 1 ? (int?)topic : null, text,
+            chat_id = chat, message_thread_id = topic > 1 ? (int?)topic : null, text, parse_mode = html ? "HTML" : null,
             reply_markup = keyboard,
             reply_parameters = reply.HasValue ? new { message_id = reply.Value, allow_sending_without_reply = true } : null,
             link_preview_options = new { is_disabled = true }
@@ -91,6 +95,8 @@ public sealed class TelegramClient(HttpClient http, string token)
     public Task<JsonElement> Callback(string id, string text, CancellationToken ct) => Call("answerCallbackQuery", new { callback_query_id = id, text, show_alert = false }, ct);
     public Task<JsonElement> Pin(long chat, int id, bool pin, CancellationToken ct) => Call(pin ? "pinChatMessage" : "unpinChatMessage",
         new { chat_id = chat, message_id = id, disable_notification = true }, ct);
+    public Task<JsonElement> Typing(long chat, int topic, CancellationToken ct) =>
+        Call("sendChatAction", new { chat_id = chat, message_thread_id = topic > 1 ? (int?)topic : null, action = "typing" }, ct);
     public Task<JsonElement> React(long chat, int id, string emoji, CancellationToken ct) => Call("setMessageReaction",
         new { chat_id = chat, message_id = id, reaction = new[] { new { type = "emoji", emoji } } }, ct);
 }

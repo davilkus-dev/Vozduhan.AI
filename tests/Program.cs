@@ -13,12 +13,13 @@ var now = DateTimeOffset.Parse("2026-10-24T12:00:00Z");
 BotConfig Config(string file = "state.db") => new()
 {
     OwnerId = 1, GroupId = -100123, ChatTopicId = 10, DeadlinesTopicId = 20,
-    DataPath = Path.Combine(temp, file),
+    DataPath = Path.Combine(temp, file), WeekOneMonday = "2026-09-07", ReplyDelayScale = 0, ReactionChance = 1,
+    Web = new() { Enabled = false },
     Members = [new(1, "Разработчик Тестовый", "Михаил", "developer", 1), new(2, "Староста Тестовый", "Никита", "head", 2, "head"),
         new(3, "Студент Тестовый", "Студент", "member", 3)],
-    Subjects = [new("siaod", "СиАОД", "А412", ["сиад", "сиаод"]), new("java", "Java", "Б201", ["джава"])],
+    Subjects = [new("siaod", "СиАОД", ["сиад", "сиаод"]), new("java", "Java", ["джава"])],
     Periods = [new(2, "10:40", "12:10"), new(6, "18:00", "19:30")],
-    Lessons = [new("siaod", 1, 6), new("siaod", 3, 2), new("java", 1, 2)]
+    Lessons = [new("siaod", 1, 6) { Room = "А412" }, new("siaod", 3, 2) { Room = "А412" }, new("java", 1, 2) { Room = "Б201" }]
 };
 void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
 void Check(string name, Action test) { test(); count++; Console.WriteLine("PASS " + name); }
@@ -77,12 +78,14 @@ try
     });
     Check("ambiguous lessons require an explicit period; parity and overrides work", () =>
     {
-        var c = Config(); c.Lessons = [new("siaod", 1, 6), new("siaod", 1, 2)];
+        var c = Config(); c.Lessons = [new("siaod", 1, 6) { Room = "А412" }, new("siaod", 1, 2) { Room = "А412" }];
         Assert(Deadlines.Resolve(c, new(SubjectId: "siaod", Work: "№11", Date: "2026-11-30"), null, [], 1, "", now).Missing.Length > 0, "Ambiguous lesson chosen");
-        c.Lessons = [new("siaod", 1, 6, "odd"), new("siaod", 1, 2, "even")];
+        c.Lessons = [new("siaod", 1, 6, "odd") { Id = "L1", Room = "А412" }, new("siaod", 1, 2, "even") { Id = "L2", Room = "А412" }];
+        c.Use(c.Seed());
         Assert(Deadlines.Resolve(c, new(SubjectId: "siaod", Work: "№11", Date: "2026-11-30"), null, [], 1, "", now).Period == 6, "Wrong academic parity");
-        c.ScheduleOverrides = [new("siaod", "2026-11-30", 2)];
-        Assert(Deadlines.Resolve(c, new(SubjectId: "siaod", Work: "№11", Date: "2026-11-30"), null, [], 1, "", now).Period == 2, "Override ignored");
+        c.R.Changes = [new ScheduleChange("2026-11-30", "modify") { Id = "C1", LessonId = "L1", Period = 2, Room = "Б777" }];
+        var moved = Deadlines.Resolve(c, new(SubjectId: "siaod", Work: "№11", Date: "2026-11-30"), null, [], 1, "", now);
+        Assert(moved.Period == 2 && moved.Room == "Б777", "One-off change ignored");
     });
     Check("durable inbox deduplication, actor order and independent moderation", () =>
     {
@@ -320,8 +323,9 @@ try
         sent.Clear();
         var mention = Message(-100123, 10, 5, 3, "@vozduhanAIbot привет", entities: [new { type = "mention", offset = 0, length = 14 }]);
         await Process(mention); await Process(mention);
-        Assert(aiCalls == 1 && sent.Count(x => x.Method == "sendMessage") == 2, "Response was repeated on update replay");
-        Assert(sent.Any(x => x.Method == "setMessageReaction") && sent.Any(x => x.Method == "deleteMessage"), "Loading UX incomplete");
+        Assert(aiCalls == 1 && sent.Count(x => x.Method == "sendMessage") == 1, "Response was repeated on update replay");
+        Assert(sent.Any(x => x.Method == "setMessageReaction") && sent.Any(x => x.Method == "sendChatAction"), "Reaction/typing UX incomplete");
+        Assert(store.Log(chat: -100123).Any(x => x.Direction == "out" && x.Text == "Тестовый ответ"), "Outgoing answer not logged");
         count++; Console.WriteLine("PASS worker authorization, moderation, real response path and replay idempotence (mock APIs)");
         sent.Clear();
         await Process(Message(1, 0, 6, 1, "/deadline siaod | Практика №99 | 2026-11-30 | 6"));
@@ -362,7 +366,7 @@ try
         await (Task)typeof(BotWorker).GetMethod("Process", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(worker, [Element(new { message = focus }), CancellationToken.None])!;
         var replies = sent.Where(x => x.Method == "sendMessage").ToArray();
-        Assert(replies.Length == 2 && replies.All(x => x.Payload.Field("message_thread_id").ValueKind == JsonValueKind.Undefined),
+        Assert(replies.Length == 1 && replies.All(x => x.Payload.Field("message_thread_id").ValueKind == JsonValueKind.Undefined),
             "General-topic reply ignored or sent an invalid topic 1 parameter");
         Assert(store.History(store.Config.GroupId, 1, int.MaxValue, 30).Count == 2, "General-topic bot response stored in a different history");
         count++; Console.WriteLine("PASS General topic accepts topic-less updates and sends replies without thread ID 1");
@@ -371,10 +375,10 @@ try
     using (var store = new BotStore(Config("publisher.db")))
     {
         store.Config.MorningTime = "00:00";
-        store.Config.Periods = [new(2, "00:00", "23:59"), new(6, "00:00", "23:59")];
+        store.Config.R.Periods = [new(2, "00:00", "23:59"), new(6, "00:00", "23:59")];
         var realNow = DateTimeOffset.UtcNow;
         var today = DateOnly.FromDateTime(store.Config.LocalNow(realNow)).ToString("yyyy-MM-dd");
-        var draft = Deadlines.Resolve(store.Config, new("create", SubjectId: "siaod", Work: "Практика №1", Date: today, Period: 6),
+        var draft = Deadlines.Resolve(store.Config, new("create", SubjectId: "siaod", Work: "Практика №1", Date: today, Period: 6, Room: "А412"),
             null, [], 1, "source", realNow);
         store.SaveDraft(draft);
         var first = store.Confirm(1, draft.Token, realNow);
@@ -388,7 +392,7 @@ try
         Assert(sent.Count(x => x.Method == "pinChatMessage") == 1, "Urgent deadline not pinned exactly once");
         Assert(sent.Where(x => x.Method == "sendMessage").All(x => x.Payload.Number("chat_id") == store.Config.GroupId &&
             x.Payload.Number("message_thread_id") == store.Config.DeadlinesTopicId), "Publication escaped the configured topic");
-        var second = Deadlines.Resolve(store.Config, new("create", SubjectId: "siaod", Work: "Практика №2", Date: today, Period: 6),
+        var second = Deadlines.Resolve(store.Config, new("create", SubjectId: "siaod", Work: "Практика №2", Date: today, Period: 6, Room: "А412"),
             null, store.AllDeadlines(), 1, "source", realNow);
         store.SaveDraft(second); store.Confirm(1, second.Token, realNow);
         sent.Clear(); await Publish();
@@ -406,9 +410,10 @@ try
     using (var http = new HttpClient(new FakeHandler(_ => Task.FromResult<object>(new { choices = new[] { new { message = new { content = "" }, finish_reason = "length" } } })))
         { BaseAddress = new Uri("https://openrouter.test/") })
     {
-        try { await new OpenRouterClient(http, Config(), "test").Chat("{}", CancellationToken.None); throw new Exception("Empty model output accepted"); }
+        try { await new OpenRouterClient(http, Config(), "test").Chat("", "{}", "test", true, CancellationToken.None); throw new Exception("Empty model output accepted"); }
         catch (InvalidDataException) { count++; Console.WriteLine("PASS empty visible model answer is rejected"); }
     }
+    count += await NewFeatureTests.Run(temp, f => Config(f));
     Console.WriteLine($"All {count} checks passed. No real Telegram or OpenRouter calls.");
 }
 finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(temp, true); }

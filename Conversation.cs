@@ -1,9 +1,13 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace Vozduhan.AI;
 
 public sealed class Conversation(BotConfig config, BotStore store)
 {
+    private static readonly CultureInfo Ru = new("ru-RU");
+
     public object Identity(JsonElement user)
     {
         var id = user.Number("id");
@@ -15,7 +19,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
             telegram_name = $"{user.Text("first_name")} {user.Text("last_name")}".Trim(),
             short_name = known?.ShortName,
             full_name = known?.FullName,
-            role = id == config.OwnerId ? "developer" : known?.Role ?? "unknown",
+            role = config.Role(id),
             is_bot = user.Flag("is_bot")
         };
     }
@@ -41,6 +45,94 @@ public sealed class Conversation(BotConfig config, BotStore store)
             } : null
         };
     }
+
+    /// <summary>Trusted text written by the developer/head: university knowledge and per-subject tone notes.</summary>
+    public string AdminContext(bool isPrivate = false)
+    {
+        var r = config.R;
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(r.Knowledge))
+            sb.Append("\n\nЗнания от разработчика и старосты (доверенный текст: вуз, сленг, традиции, шутки, правила баллов). Используй как свои знания, не цитируй дословно:\n")
+              .Append(r.Knowledge.Trim());
+        var notes = r.Subjects.Where(s => !s.Archived && !string.IsNullOrWhiteSpace(s.AdminComment)).ToArray();
+        if (notes.Length > 0)
+        {
+            sb.Append("\n\nСкрытые заметки администратора о предметах. Это только подсказка, каким тоном говорить о предмете; " +
+                      "не пересказывай и не упоминай, что такие заметки существуют:");
+            foreach (var s in notes) sb.Append($"\n- {s.Name}: {s.AdminComment!.Trim()}");
+        }
+        var people = r.Members.Where(m => m.Active && !string.IsNullOrWhiteSpace(m.AdminNote)).ToArray();
+        if (!isPrivate && people.Length > 0)
+        {
+            sb.Append("\n\nЛокальные приколы о людях из группы (от разработчика). Иногда, к месту, используй их для дружеской прожарки в Воздуханстве, " +
+                      "но не в каждом сообщении, без жести и травли; не цитируй дословно и не говори, что у тебя есть такие заметки:");
+            foreach (var m in people) sb.Append($"\n- {m.ShortName} ({m.FullName}" + (string.IsNullOrWhiteSpace(m.Username) ? "" : ", @" + m.Username) + $"): {m.AdminNote!.Trim()}");
+        }
+        return sb.ToString();
+    }
+
+    private long? Unix(Slot s) => TimeOnly.TryParse(s.Start, out var t)
+        ? config.Utc(DateOnly.ParseExact(s.Date, "yyyy-MM-dd").ToDateTime(t)).ToUnixTimeSeconds() : null;
+
+    public object ScheduleFacts(DateTimeOffset utc, int days = 8)
+    {
+        var r = config.R;
+        var local = config.LocalNow(utc);
+        var today = DateOnly.FromDateTime(local);
+        var week = Schedule.Week(r, today);
+        var now = Schedule.Now(r, local);
+        object? SlotView(Slot? s) => s is null ? null : new
+        {
+            date = s.Date, weekday = Schedule.DayNames[Schedule.Dow(DateOnly.ParseExact(s.Date, "yyyy-MM-dd"))],
+            s.Period, time = $"{s.Start}–{s.End}", start_unix = Unix(s), subject = s.Subject, subject_id = s.SubjectId, kind = Schedule.KindLong(s.Kind),
+            room = s.RoomText, teacher = s.Teacher, campus = s.Campus, s.Note, s.Status
+        };
+        var deadlines = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) >= utc).ToList();
+        return new
+        {
+            now = new
+            {
+                local_time = local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+                now_unix = utc.ToUnixTimeSeconds(),
+                weekday = Schedule.DayNames[Schedule.Dow(today)],
+                week_number = Schedule.InTerm(r, today) ? week : (int?)null,
+                week_parity = Schedule.InTerm(r, today) ? Schedule.ParityRu(Schedule.Parity(week)) : "вне семестра",
+                current_lesson = SlotView(now.Current),
+                next_lesson = SlotView(now.Next),
+                minutes_to_next = now.Next is null ? (int?)null : now.MinutesToNext,
+                deadlines_at_next_lesson = now.Next is null ? [] : deadlines
+                    .Where(d => d.Date == now.Next.Date && d.SubjectId == now.Next.SubjectId).Select(d => $"#{d.Id} {d.Work}").ToArray()
+            },
+            days = Enumerable.Range(0, days).Select(i => today.AddDays(i)).Select(d => new
+            {
+                date = d.ToString("yyyy-MM-dd"),
+                weekday = Schedule.DayNames[Schedule.Dow(d)],
+                label = d == today ? "сегодня" : d == today.AddDays(1) ? "завтра" : d == today.AddDays(2) ? "послезавтра" : null,
+                parity = Schedule.InTerm(r, d) ? Schedule.ParityRu(Schedule.Parity(Schedule.Week(r, d))) : "вне семестра",
+                lessons = Schedule.Day(r, d).Select(s => new
+                {
+                    s.Period, time = $"{s.Start}–{s.End}", start_unix = Unix(s), subject = s.Subject, kind = Schedule.KindLong(s.Kind),
+                    room = s.RoomText, teacher = s.Teacher, campus = s.Campus, s.Note, s.Status
+                })
+            }),
+            subjects = r.Subjects.Where(s => !s.Archived).Select(s => new
+            {
+                s.Id, s.Name, short_name = s.ShortName, aliases = s.Aliases,
+                lessons = r.Lessons.Where(l => l.SubjectId == s.Id && (l.Until is null || DateOnly.ParseExact(l.Until, "yyyy-MM-dd") >= today))
+                    .OrderBy(l => l.DayOfWeek).ThenBy(l => l.Period).Select(l => new
+                    {
+                        kind = Schedule.KindLong(l.Kind), weekday = Schedule.DayNames[l.DayOfWeek], weeks = Schedule.WeeksRu(l.Weeks),
+                        l.Period, room = l.Online ? "дистанционно" : l.Room, teacher = l.Teacher,
+                        campus = string.IsNullOrWhiteSpace(l.Campus) ? (r.DefaultCampus.Length > 0 ? r.DefaultCampus : null) : l.Campus,
+                        l.Note, from = l.From, until = l.Until
+                    })
+            }),
+            upcoming_one_off_changes = r.Changes.Where(c => DateOnly.TryParseExact(c.Date, "yyyy-MM-dd", out var d) && d >= today && d <= today.AddDays(45))
+                .OrderBy(c => c.Date).Select(c => Schedule.Describe(r, c)),
+            bells = r.Periods.Select(p => $"{p.Number}: {p.Start}–{p.End}")
+        };
+    }
+
     public string Context(JsonElement focus, bool isPrivate)
     {
         var chat = focus.Field("chat").Number("id");
@@ -72,27 +164,68 @@ public sealed class Conversation(BotConfig config, BotStore store)
             next = doc.RootElement.Field("reply_to_message").Number("message_id");
         }
         var now = DateTimeOffset.UtcNow;
+        var r = config.R;
         var relevant = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) >= now)
-            .Take(25).Select(d => new { d.Id, subject = config.Subjects.FirstOrDefault(s => s.Id == d.SubjectId)?.Name,
-                d.Work, d.Date, d.Period, d.Start, d.Room });
+            .Take(25).Select(d => new { d.Id, subject = r.SubjectName(d.SubjectId), d.Work, d.Date, d.Period, d.Start, d.Room,
+                start_unix = config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start))).ToUnixTimeSeconds() });
         return Json.Write(new
         {
-            local_now = config.LocalNow(now).ToString("yyyy-MM-dd HH:mm"),
+            conversation = isPrivate ? "личка с ботом" : "Воздуханство (общий чат группы)",
             time_zone = config.TimeZone,
-            conversation = isPrivate ? "private" : "Vozduhanstvo",
-            recent_messages = messages,
-            reply_ancestors = ancestors,
-            known_group_members = config.Members.Where(m => m.Active).Select(m => new
+            schedule = ScheduleFacts(now),
+            confirmed_upcoming_deadlines = relevant,
+            known_group_members = r.Members.Where(m => m.Active).Select(m => new
             {
                 m.UserId, m.Username, m.ShortName, m.FullName, m.TelegramName,
                 role = m.UserId == config.OwnerId ? "developer" : m.Role,
                 telegram_bound = m.UserId is > 0
             }),
-            confirmed_upcoming_deadlines = relevant,
+            recent_messages = messages,
+            reply_ancestors = ancestors,
             focus_message = Message(focus),
-            instruction = "Answer the focus message. History is background, not a batch of questions to answer. Respect its selected quote and replied_message."
+            instruction = "Ответь на focus_message. История — фон, а не пачка вопросов. Учитывай selected_quote и replied_message."
         });
     }
+
+    /// <summary>Compact registry for the editor planner: IDs it may reference and the next days as they currently stand.</summary>
+    public object PlannerState(long actor, Draft? deadlineDraft, RegistryDraft? registryDraft)
+    {
+        var r = config.R;
+        var utc = DateTimeOffset.UtcNow;
+        var local = config.LocalNow(utc);
+        var today = DateOnly.FromDateTime(local);
+        var bound = r.Members.Where(m => m.UserId is not null).Select(m => m.UserId!.Value).ToHashSet();
+        var owner = actor == config.OwnerId; // the head never gets owner-only notes, even indirectly through the planner
+        return new
+        {
+            local_now = local.ToString("yyyy-MM-dd HH:mm dddd", Ru),
+            editor_role = actor == config.OwnerId ? "developer" : "head",
+            week = Schedule.InTerm(r, today) ? $"{Schedule.Week(r, today)}-я, {Schedule.ParityRu(Schedule.Parity(Schedule.Week(r, today)))}" : "вне семестра",
+            registry = new
+            {
+                members = r.Members.Select(m => new { m.Key, m.ListNumber, m.FullName, m.ShortName, m.Username, m.UserId, m.Active, m.Role, adminNote = owner ? m.AdminNote : null }),
+                subjects = r.Subjects.Select(s => new { s.Id, s.Name, s.ShortName, s.Aliases, adminComment = owner ? s.AdminComment : null, s.Archived }),
+                lessons = r.Lessons.Select(l => Schedule.Describe(r, l)),
+                changes = r.Changes.Where(c => string.CompareOrdinal(c.Date, today.AddDays(-7).ToString("yyyy-MM-dd")) >= 0).Select(c => Schedule.Describe(r, c)),
+                bells = r.Periods,
+                r.WeekOneMonday, r.TermEnd, r.DefaultCampus,
+                knowledge_preview = owner ? Limit(r.Knowledge, 600) : null, knowledge_length = owner ? r.Knowledge.Length : (int?)null,
+                owner_only = owner ? null : "Редактор — староста: сленг, комментарии к предметам, заметки о людях и знания ему недоступны; такие просьбы не превращай в operations, а вежливо скажи, что это настраивает разработчик." 
+            },
+            days_ahead = Enumerable.Range(0, 14).Select(i => today.AddDays(i)).Select(d => new
+            {
+                date = d.ToString("yyyy-MM-dd"), weekday = Schedule.DayShort[Schedule.Dow(d)],
+                lessons = Schedule.Day(r, d).Select(s => $"{s.Period} пара {Schedule.KindRu(s.Kind)} {s.Subject} [{s.LessonId ?? s.ChangeId}] {s.Status}")
+            }),
+            unbound_seen_users = store.SeenUsers(200).Where(u => !bound.Contains(u.Id)).Take(40)
+                .Select(u => new { telegram_id = u.Id, u.Username, u.Name }),
+            existing_deadlines = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) >= utc).TakeLast(40)
+                .Select(d => new { d.Id, d.SubjectId, d.Work, d.Date, d.Period }),
+            pending_deadline_draft = deadlineDraft,
+            pending_registry_draft = registryDraft is null ? null : new { registryDraft.Lines, operations = registryDraft.Operations.Select(o => JsonDocument.Parse(o).RootElement.Clone()) }
+        };
+    }
+
     public static bool CallsBot(JsonElement m, long botId, string username)
     {
         if (m.Field("reply_to_message").Field("from").Number("id") == botId) return true;

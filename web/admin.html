@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vozduhan.AI · админка</title>
+<style>
+:root{
+  --bg:#f3f5f9;--panel:#ffffff;--panel2:#f8f9fc;--line:#e3e7ef;--text:#141821;--muted:#677084;--faint:#9aa2b4;
+  --accent:#2f6bff;--accent2:#14b8c4;--accent-soft:#e8efff;--ink:#ffffff;
+  --lec:#2f6bff;--pr:#14a36b;--lab:#e08a00;--bad:#e5484d;--warn:#e08a00;--ok:#14a36b;
+  --in:#eef1f7;--out:#e3ecff;--shadow:0 1px 2px #1018280d,0 4px 16px #1018280a;--r:14px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0c0f15;--panel:#141922;--panel2:#10141c;--line:#252c3a;--text:#e9ecf2;--muted:#98a2b6;--faint:#677084;
+  --accent:#6f95ff;--accent2:#2dd4df;--accent-soft:#1a2440;--ink:#0b0e14;
+  --lec:#7c9cff;--pr:#3ccf8e;--lab:#f5b544;--bad:#ff6b6f;--warn:#f5b544;--ok:#3ccf8e;
+  --in:#1b212d;--out:#1c2a4f;--shadow:0 1px 2px #0006,0 6px 24px #0005;}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
+.app{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
+aside{position:sticky;top:0;height:100vh;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 12px}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 18px}
+.logo{width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;color:#fff;font-weight:800;font-size:16px;box-shadow:0 4px 14px #2f6bff40}
+.brand b{display:block;font-size:15px;letter-spacing:-.01em}.brand small{color:var(--muted);font-size:12px}
+nav{display:flex;flex-direction:column;gap:2px;overflow:auto}
+nav button{display:flex;align-items:center;gap:10px;border:0;background:none;color:var(--muted);padding:8px 10px;border-radius:10px;cursor:pointer;font:inherit;text-align:left;white-space:nowrap}
+nav button .i{width:20px;text-align:center}
+nav button:hover{background:var(--panel2);color:var(--text)}
+nav button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+nav .sep{height:1px;background:var(--line);margin:8px 6px}
+.me{margin-top:auto;border-top:1px solid var(--line);padding:12px 8px 0;display:flex;align-items:center;gap:10px}
+.av{width:32px;height:32px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:700}
+.me .t{flex:1;min-width:0}.me .t div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.me small{color:var(--muted)}
+main{padding:28px 32px 120px;max-width:1240px;width:100%}
+.ph{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.ph h1{font-size:22px;letter-spacing:-.02em;margin:0}.ph p{margin:4px 0 0;color:var(--muted);max-width:720px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px;box-shadow:var(--shadow)}
+.card h3{margin:0 0 10px;font-size:14px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.muted{color:var(--muted)}.small{font-size:12px}.faint{color:var(--faint)}
+button.b,a.b{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:10px;padding:7px 12px;cursor:pointer;font:inherit;text-decoration:none;transition:border-color .15s,background .15s}
+button.b:hover,a.b:hover{border-color:var(--accent)}
+button.p{background:var(--accent);border-color:var(--accent);color:var(--ink);font-weight:600}
+button.p:hover{filter:brightness(1.07)}
+button.d{color:var(--bad)}button.d:hover{border-color:var(--bad)}
+button.ic{padding:6px 9px}
+input,select,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px;max-width:100%;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{width:100%;min-height:90px;resize:vertical;line-height:1.55}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--faint);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:var(--panel2)}
+tr.off td{opacity:.5}
+.tw{overflow-x:auto}
+.chip{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;margin:2px 4px 2px 0}
+.tag{display:inline-block;border-radius:6px;padding:0 6px;font-size:11px;font-weight:700;letter-spacing:.03em}
+.k-lecture{color:var(--lec);background:color-mix(in srgb,var(--lec) 14%,transparent)}
+.k-practice{color:var(--pr);background:color-mix(in srgb,var(--pr) 14%,transparent)}
+.k-lab{color:var(--lab);background:color-mix(in srgb,var(--lab) 16%,transparent)}
+.secret{border-left:3px solid var(--accent2);background:color-mix(in srgb,var(--accent2) 8%,transparent);padding:6px 10px;border-radius:8px;margin-top:8px}
+.week{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.day{margin:0}
+.day h4{margin:0 0 10px;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+.day h4 span small{color:var(--muted);font-weight:400;margin-left:6px}
+.day.today{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft),var(--shadow)}
+.slot{border:1px solid var(--line);border-left:4px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px;cursor:pointer;background:var(--panel2);transition:transform .1s,border-color .15s}
+.slot:hover{transform:translateY(-1px);border-color:var(--accent)}
+.slot.lecture{border-left-color:var(--lec)}.slot.practice{border-left-color:var(--pr)}.slot.lab{border-left-color:var(--lab)}
+.slot.cancelled{opacity:.5}.slot.cancelled .sn{text-decoration:line-through}
+.slot .t1{display:flex;gap:8px;align-items:baseline}.slot .n{font-weight:800;font-size:15px;min-width:14px}
+.slot .sn{font-weight:600}
+.st{font-size:11px;border-radius:6px;padding:0 6px;margin-left:4px}
+.st.cancelled{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+.st.changed{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.st.added{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.empty{color:var(--faint);padding:10px 0;text-align:center}
+.bar{position:fixed;left:50%;bottom:20px;transform:translate(-50%,140%);z-index:20;background:var(--text);color:var(--bg);border-radius:999px;padding:8px 8px 8px 20px;display:flex;gap:8px;align-items:center;box-shadow:0 12px 40px #0004;transition:transform .25s,visibility .25s;visibility:hidden}
+.bar.show{transform:translate(-50%,0);visibility:visible}
+.bar button.b{border-color:transparent}
+.bar .b:not(.p){background:transparent;color:var(--bg)}
+dialog{border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--text);padding:22px;width:min(580px,calc(100vw - 32px));max-height:88vh;box-shadow:0 24px 80px #0006}
+dialog::backdrop{background:#0a0d1499;backdrop-filter:blur(3px)}
+dialog h2{margin:0 0 6px;font-size:18px}
+.f{display:grid;grid-template-columns:170px 1fr;gap:10px 12px;align-items:center;margin:14px 0}
+.f label{color:var(--muted);font-size:13px}
+.f input:not([type=checkbox]),.f select,.f textarea{width:100%}
+.f .own{color:var(--accent2)}
+.log{display:grid;grid-template-columns:300px 1fr;gap:14px}
+.chats{max-height:72vh;overflow:auto;padding:8px}
+.chats div.c{padding:9px 10px;border-radius:10px;cursor:pointer}.chats div.c.on,.chats div.c:hover{background:var(--accent-soft)}
+.msgs{height:62vh;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px}
+.m{max-width:80%;padding:8px 12px;border-radius:14px 14px 14px 4px;background:var(--in);white-space:pre-wrap;word-break:break-word;cursor:pointer}
+.m.out,.m.out-edit{align-self:flex-end;background:var(--out);border-radius:14px 14px 4px 14px}
+.m.delete{opacity:.6;font-style:italic;align-self:flex-end;background:transparent;border:1px dashed var(--line)}
+.m .h{font-size:11px;color:var(--muted);margin-bottom:2px}
+pre{white-space:pre-wrap;word-break:break-word;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;max-height:46vh;overflow:auto;font-size:12px}
+.toast{position:fixed;right:20px;top:20px;z-index:30;background:var(--panel);color:var(--text);border:1px solid var(--line);box-shadow:var(--shadow);padding:10px 16px;border-radius:12px;opacity:0;transform:translateY(-8px);transition:all .2s;pointer-events:none}
+.toast.show{opacity:1;transform:none}
+ul.lines{padding-left:18px;margin:8px 0;max-height:50vh;overflow:auto}
+ul.lines li{margin:3px 0}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;box-shadow:var(--shadow)}
+.stat b{display:block;font-size:20px;letter-spacing:-.02em}.stat span{color:var(--muted);font-size:12px}
+@media (max-width:900px){
+  .app{grid-template-columns:minmax(0,1fr)}
+  aside{position:sticky;top:0;height:auto;z-index:10;flex-direction:row;align-items:center;padding:8px 10px;border-right:0;border-bottom:1px solid var(--line);gap:8px}
+  .brand{padding:0}.brand div{display:none}
+  nav{flex-direction:row;overflow-x:auto;scrollbar-width:none;flex:1;min-width:0}
+  nav .sep{display:none}nav button .l{display:none}nav button.on .l{display:inline}
+  .me{margin:0;border:0;padding:0}.me .t{display:none}
+  main{padding:16px 16px 110px}
+  .log{grid-template-columns:1fr}
+  .f{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><div class="logo">V</div><div><b>Vozduhan.AI</b><small id="grp">админка</small></div></div>
+    <nav id="nav"></nav>
+    <div class="me"><div class="av" id="av">?</div><div class="t"><div id="who"></div><small id="ver"></small></div><button class="b ic" id="logout" title="Выйти">↩</button></div>
+  </aside>
+  <main id="main"></main>
+</div>
+<div class="bar" id="bar"><span>Есть несохранённые изменения</span><button class="b" id="reset">Сбросить</button><button class="b p" id="save">Проверить и сохранить</button></div>
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast"></div>
+<script>
+const DAYS=["","Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"];
+const SD=["","ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
+const KIND={lecture:"ЛК",practice:"ПР",lab:"ЛАБ"};
+const WEEKS={all:"все недели",odd:"нечётные",even:"чётные"};
+const S={tab:"week",me:null,version:0,reg:null,draft:null,history:[],weekDate:null,chat:null};
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const clone=o=>JSON.parse(JSON.stringify(o));
+const dirty=()=>S.reg&&JSON.stringify(S.reg)!==JSON.stringify(S.draft);
+const OWNER=()=>!!S.me?.owner;
+function toast(t){const e=$("#toast");e.textContent=t;e.classList.add("show");clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove("show"),2600)}
+async function api(path,body){
+  const r=await fetch("/api/"+path,body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json","X-Vozduhan":"1"},body:JSON.stringify(body)});
+  if(r.status===401){document.body.innerHTML='<main style="margin:auto;max-width:480px;padding:40px 16px"><div class="card"><h2>Сессия закончилась</h2><p class="muted">Получи новую ссылку командой /web в личке бота.</p></div></main>';throw new Error("401")}
+  const j=await r.json().catch(()=>({ok:false,error:"Ответ не JSON"}));j.status=r.status;return j}
+const subj=id=>(S.draft.subjects||[]).find(s=>s.id===id);
+const sname=id=>subj(id)?.name||id||"?";
+const fmtDate=d=>{const[,m,dd]=d.split("-");return dd+"."+m};
+const dow=d=>new Date(d+"T12:00:00").getDay()||7;
+const addDays=(d,n)=>{const x=new Date(d+"T12:00:00");x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)};
+const time=ts=>new Date(ts*1000).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+const tag=k=>`<span class="tag k-${k}">${KIND[k]}</span>`;
+const page=(title,sub,actions="")=>`<div class="ph"><div><h1>${title}</h1>${sub?`<p>${sub}</p>`:""}</div><div class="row">${actions}</div></div>`;
+
+// ---------- dialogs ----------
+function form(title,fields,values={},extra=""){
+  return new Promise(resolve=>{
+    const d=$("#dlg");
+    d.innerHTML=`<h2>${esc(title)}</h2>${extra}<form method="dialog"><div class="f">${fields.map(f=>{
+      const v=values[f.k];let input;
+      if(f.type==="select")input=`<select name="${f.k}">${f.options.map(o=>`<option value="${esc(o[0])}" ${String(v??"")===String(o[0])?"selected":""}>${esc(o[1])}</option>`).join("")}</select>`;
+      else if(f.type==="checkbox")input=`<input type="checkbox" name="${f.k}" ${v?"checked":""}>`;
+      else if(f.type==="textarea")input=`<textarea name="${f.k}" rows="${f.rows||4}" ${f.ph?`placeholder="${esc(f.ph)}"`:""}>${esc(v)}</textarea>`;
+      else input=`<input name="${f.k}" type="${f.type||"text"}" value="${esc(v??"")}" ${f.ph?`placeholder="${esc(f.ph)}"`:""} ${f.ro?"readonly":""}>`;
+      return `<label class="${f.own?"own":""}">${f.own?"🤫 ":""}${esc(f.label)}</label>${input}`}).join("")}</div>
+      <div class="row" style="justify-content:flex-end"><button class="b" value="cancel">Отмена</button><button class="b p" value="ok">Готово</button></div></form>`;
+    d.onclose=()=>{
+      if(d.returnValue!=="ok")return resolve(null);
+      const out={};
+      for(const f of fields){const el=d.querySelector(`[name="${f.k}"]`);let v=f.type==="checkbox"?el.checked:el.value.trim();
+        if(f.type==="number")v=v===""?null:Number(v);else if(v===""&&f.type!=="checkbox")v=null;out[f.k]=v}
+      resolve(out)};
+    d.returnValue="";d.showModal()})}
+function info(title,html){const d=$("#dlg");d.innerHTML=`<h2>${esc(title)}</h2>${html}<form method="dialog" class="row" style="justify-content:flex-end;margin-top:14px"><button class="b">Закрыть</button></form>`;d.onclose=null;d.showModal()}
+function menu(title,items,extra=""){return new Promise(res=>{const d=$("#dlg");
+  d.innerHTML=`<h2>${esc(title)}</h2>${extra}<div style="display:grid;gap:8px;margin-top:14px">${items.map((it,i)=>`<button class="b ${it.cls||""}" data-i="${i}" style="justify-content:center">${esc(it.t)}</button>`).join("")}<button class="b" data-i="-1" style="justify-content:center">Закрыть</button></div>`;
+  // Resolve only after the close event: otherwise a following form() would receive this dialog's close.
+  let pick=-1;d.onclose=()=>res(pick);d.querySelectorAll("button").forEach(b=>b.onclick=()=>{pick=+b.dataset.i;d.close()});d.showModal()})}
+const subjOptions=()=>S.draft.subjects.filter(s=>!s.archived).map(s=>[s.id,s.name]);
+const periodOptions=blank=>[...(blank?[["","—"]]:[]),...S.draft.periods.map(p=>[p.number,`${p.number} (${p.start}–${p.end})`])];
+const kindOptions=[["lecture","Лекция"],["practice","Практика"],["lab","Лабораторная"]];
+
+// ---------- load / save ----------
+async function load(){
+  const [me,reg]=await Promise.all([api("me"),api("registry")]);
+  S.me=me;S.version=reg.version;S.reg=reg.registry;S.draft=clone(reg.registry);S.history=reg.history;S.weekDate=S.weekDate||me.today;
+  $("#who").textContent=me.name;$("#av").textContent=(me.name||"?")[0];$("#grp").textContent=me.group+" · админка";
+  $("#ver").textContent=`${me.owner?"разработчик":"староста"} · версия ${S.version}`;render()}
+async function save(){
+  const dry=await api("registry?dry=1",{baseVersion:S.version,registry:S.draft});
+  if(!dry.ok)return info("Так не сохранится",`<p>${esc(dry.error)}</p>`);
+  const d=$("#dlg");
+  d.innerHTML=`<h2>Сохранить изменения?</h2><p class="muted small">Всё применяется сразу: бот начнёт отвечать по-новому.</p><ul class="lines">${dry.lines.map(l=>`<li>${esc(l)}</li>`).join("")||"<li>Нет изменений</li>"}</ul>
+  <form method="dialog" class="row" style="justify-content:flex-end"><button class="b" value="cancel">Отмена</button><button class="b p" value="ok">Сохранить</button></form>`;
+  d.onclose=async()=>{if(d.returnValue!=="ok")return;
+    const r=await api("registry",{baseVersion:S.version,registry:S.draft});
+    if(r.ok){toast("Сохранено · версия "+r.version);await load()}
+    else if(r.status===409)info("Кто-то успел раньше",`<p>${esc(r.error)}</p><p class="muted">Нажми «Сбросить», чтобы загрузить свежую версию, и внеси правку заново.</p>`);
+    else info("Ошибка",`<p>${esc(r.error)}</p>`)};
+  d.returnValue="";d.showModal()}
+function touch(){render()}
+$("#save").onclick=save;$("#reset").onclick=()=>{load();toast("Загружена сохранённая версия")};
+$("#logout").onclick=async()=>{await api("logout",{});location.reload()};
+window.onbeforeunload=e=>{if(dirty()){e.preventDefault();e.returnValue=""}};
+
+// ---------- navigation ----------
+const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["-"],
+  ["subjects","🎓","Предметы"],["members","👥","Группа"],/*OWNER*/["knowledge","🧠","Знания",true],/*END*/["settings","🔔","Звонки и семестр"],["-"],
+  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","ИИ-запросы",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
+function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
+  $("#nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{S.tab=b.dataset.k;render();window.scrollTo(0,0)})}
+function render(){nav();$("#bar").classList.toggle("show",!!dirty());const el=$("#main");el.innerHTML="";VIEWS[S.tab](el)}
+const VIEWS={};
+
+// ---------- week ----------
+VIEWS.week=async el=>{
+  el.innerHTML=page("Неделя","Расписание с учётом разовых изменений. Нажми на пару, чтобы отменить или поменять её на конкретный день.",
+    `<button class="b ic" id="pw">←</button><input type="date" id="wd" value="${S.weekDate}"><button class="b ic" id="nw">→</button><button class="b" id="tw">Сегодня</button>`)+
+    `<div class="stats" id="wst"></div><div class="week" id="wk"></div>${dirty()?'<p class="muted small" style="margin-top:12px">Неделя показана по сохранённой версии — сохрани изменения, чтобы увидеть их здесь.</p>':""}`;
+  $("#pw").onclick=()=>{S.weekDate=addDays(S.weekDate,-7);render()};$("#nw").onclick=()=>{S.weekDate=addDays(S.weekDate,7);render()};
+  $("#tw").onclick=()=>{S.weekDate=S.me.today;render()};$("#wd").onchange=e=>{S.weekDate=e.target.value;render()};
+  const w=await api("week?date="+S.weekDate);
+  const all=w.days.flatMap(d=>d.slots),live=all.filter(s=>s.status!=="cancelled");
+  $("#wst").innerHTML=`<div class="stat"><b>${w.inTerm?w.week+"-я":"—"}</b><span>${w.inTerm?w.parity+" неделя":"вне семестра"}</span></div>
+    <div class="stat"><b>${live.length}</b><span>пар на неделе</span></div><div class="stat"><b>${live.filter(s=>s.kind==="lecture").length} / ${live.filter(s=>s.kind!=="lecture").length}</b><span>лекций / практик</span></div>
+    <div class="stat"><b>${all.filter(s=>s.status!=="regular").length}</b><span>разовых изменений</span></div>`;
+  $("#wk").innerHTML=w.days.map(d=>`<div class="card day ${d.date===S.me.today?"today":""}"><h4><span>${DAYS[dow(d.date)]}<small>${fmtDate(d.date)}</small></span><button class="b ic small" data-add="${d.date}" title="Разовое изменение">＋</button></h4>
+    ${d.slots.length?d.slots.map((s,i)=>`<div class="slot ${s.kind} ${s.status}" data-d="${d.date}" data-i="${i}"><div class="t1"><span class="n">${s.period}</span><span class="sn">${esc(s.subject)}</span></div>
+      <div class="small muted">${tag(s.kind)} ${s.start}–${s.end}${s.status!=="regular"?`<span class="st ${s.status}">${{cancelled:"отменена",changed:"изменена",added:"разово"}[s.status]}</span>`:""}</div>
+      <div class="small muted">${esc([s.online?(s.room?s.room+" · ":"")+"дистанционно":s.room,s.teacher,s.campus].filter(Boolean).join(" · "))}${s.note?`<div class="faint">${esc(s.note)}</div>`:""}</div></div>`).join(""):'<div class="empty">Пар нет</div>'}</div>`).join("");
+  el.querySelectorAll("[data-add]").forEach(b=>b.onclick=async()=>{
+    const date=b.dataset.add;
+    const i=await menu(`${DAYS[dow(date)]}, ${fmtDate(date)}`,[{t:"Добавить разовую пару"},{t:"Весь день без пар"}]);
+    if(i===0)return editChange({date,type:"add",kind:"lecture"},-1);
+    if(i===1){const v=await form("День без пар",[{k:"note",label:"Причина",ph:"праздник"}]);if(!v)return;S.draft.changes.push({date,type:"dayoff",note:v.note});touch()}});
+  el.querySelectorAll(".slot").forEach(x=>x.onclick=async()=>{
+    const s=w.days.find(d=>d.date===x.dataset.d).slots[+x.dataset.i];
+    const items=[];
+    if(s.lessonId&&s.status!=="cancelled")items.push({t:"Отменить эту пару "+fmtDate(s.date),k:"cancel",cls:"d"},{t:"Изменить только на "+fmtDate(s.date),k:"modify"});
+    if(s.changeId)items.push({t:"Убрать разовое изменение",k:"undo",cls:"d"});
+    if(s.lessonId)items.push({t:"Изменить в постоянном расписании",k:"lesson"});
+    const i=await menu(`${s.subject} · ${fmtDate(s.date)}`,items,`<p class="muted">${s.period} пара · ${KIND[s.kind]} · ${esc([s.room,s.teacher].filter(Boolean).join(" · "))}</p>`);
+    if(i<0)return;const k=items[i].k;
+    if(k==="cancel"){const v=await form("Отмена пары",[{k:"note",label:"Причина",ph:"препод заболел"}]);if(!v)return;S.draft.changes.push({date:s.date,type:"cancel",lessonId:s.lessonId,note:v.note});touch()}
+    if(k==="modify"){const v=await form("Изменение на "+fmtDate(s.date),[{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"kind",label:"Тип",type:"select",options:[["","как обычно"],...kindOptions]},{k:"room",label:"Кабинет"},{k:"teacher",label:"Преподаватель"},{k:"online",label:"Дистанционно",type:"checkbox"},{k:"note",label:"Примечание"}],{online:s.online});
+      if(!v)return;S.draft.changes.push({date:s.date,type:"modify",lessonId:s.lessonId,period:v.period?+v.period:null,kind:v.kind,room:v.room,teacher:v.teacher,online:v.online,note:v.note});touch()}
+    if(k==="undo"){S.draft.changes=S.draft.changes.filter(c=>c.id!==s.changeId);touch()}
+    if(k==="lesson")editLesson(S.draft.lessons.findIndex(l=>l.id===s.lessonId))})};
+
+// ---------- lessons ----------
+const lessonFields=()=>[{k:"subjectId",label:"Предмет",type:"select",options:subjOptions()},{k:"kind",label:"Тип",type:"select",options:kindOptions},
+  {k:"dayOfWeek",label:"День",type:"select",options:[1,2,3,4,5,6,7].map(d=>[d,DAYS[d]])},{k:"period",label:"Пара",type:"select",options:periodOptions()},
+  {k:"weeks",label:"Недели",type:"select",options:Object.entries(WEEKS)},{k:"room",label:"Кабинет"},{k:"teacher",label:"Преподаватель"},
+  {k:"campus",label:"Корпус",ph:S.draft.defaultCampus||"по умолчанию"},{k:"online",label:"Дистанционно",type:"checkbox"},{k:"note",label:"Примечание"},
+  {k:"from",label:"Действует с",type:"date"},{k:"until",label:"Действует по",type:"date"}];
+async function editLesson(i){
+  const l=i>=0?S.draft.lessons[i]:{kind:"practice",weeks:"all",dayOfWeek:1,period:S.draft.periods[0]?.number};
+  const v=await form(i>=0?"Пара "+(l.id||""):"Новая пара",lessonFields(),l,'<p class="muted small">Постоянная правка действует на все недели. Для одного дня — «Неделя» → пара. Чтобы поменять с какой-то даты, поставь старой паре «Действует по», а новую добавь с «Действует с».</p>');
+  if(!v)return;v.dayOfWeek=+v.dayOfWeek;v.period=+v.period;
+  if(i>=0)S.draft.lessons[i]={...l,...v};else S.draft.lessons.push(v);touch()}
+VIEWS.lessons=el=>{
+  const L=S.draft.lessons.map((l,i)=>({...l,i})).sort((a,b)=>a.dayOfWeek-b.dayOfWeek||a.period-b.period||a.weeks.localeCompare(b.weeks));
+  el.innerHTML=page("Постоянное расписание","Шаблон по дням недели для чётных и нечётных недель.",`<button class="b p" id="addL">＋ Пара</button>`)+
+  [1,2,3,4,5,6,7].map(d=>{const rows=L.filter(l=>l.dayOfWeek===d);return rows.length?`<div class="card"><h3>${DAYS[d]}</h3><div class="tw"><table><thead><tr><th>№</th><th>Тип</th><th>Предмет</th><th>Недели</th><th>Кабинет</th><th>Преподаватель</th><th>Корпус</th><th>Период</th><th></th></tr></thead><tbody>
+  ${rows.map(l=>`<tr><td><b>${l.period}</b></td><td>${tag(l.kind)}</td><td>${esc(sname(l.subjectId))}${l.note?`<div class="faint small">${esc(l.note)}</div>`:""}</td><td>${WEEKS[l.weeks]}</td><td>${esc(l.online?"дистанционно":l.room||"")}</td><td>${esc(l.teacher||"")}</td><td>${esc(l.campus||"")}</td><td class="small muted">${l.from?"с "+l.from:""} ${l.until?"по "+l.until:""}</td>
+  <td><div class="row" style="flex-wrap:nowrap"><button class="b ic" data-e="${l.i}">✏️</button><button class="b ic d" data-x="${l.i}">✕</button></div></td></tr>`).join("")}</tbody></table></div></div>`:""}).join("");
+  $("#addL").onclick=()=>editLesson(-1);
+  el.querySelectorAll("[data-e]").forEach(b=>b.onclick=()=>editLesson(+b.dataset.e));
+  el.querySelectorAll("[data-x]").forEach(b=>b.onclick=()=>{const l=S.draft.lessons[+b.dataset.x];
+    if(S.draft.changes.some(c=>c.lessonId&&c.lessonId===l.id))return info("Нельзя удалить","<p>На эту пару ссылаются разовые изменения. Убери их или поставь паре «Действует по».</p>");
+    S.draft.lessons.splice(+b.dataset.x,1);touch()})};
+
+// ---------- one-off changes ----------
+const CT={add:"Разовая пара",cancel:"Отмена",modify:"Изменение",dayoff:"День без пар"};
+async function editChange(c,idx){
+  const v=await form(idx>=0?"Изменение "+(c.id||""):"Разовое изменение",[{k:"date",label:"Дата",type:"date"},{k:"type",label:"Что",type:"select",options:Object.entries(CT)},
+    {k:"lessonId",label:"Пара (отмена/изменение)",type:"select",options:[["","—"],...S.draft.lessons.filter(l=>l.id).map(l=>[l.id,`${SD[l.dayOfWeek]} ${l.period} ${KIND[l.kind]} ${sname(l.subjectId)} (${WEEKS[l.weeks]})`])]},
+    {k:"subjectId",label:"Предмет",type:"select",options:[["","—"],...subjOptions()]},{k:"kind",label:"Тип",type:"select",options:[["","—"],...kindOptions]},
+    {k:"period",label:"Пара №",type:"select",options:periodOptions(true)},{k:"room",label:"Кабинет"},{k:"teacher",label:"Преподаватель"},{k:"campus",label:"Корпус"},
+    {k:"online",label:"Дистанционно",type:"checkbox"},{k:"note",label:"Примечание"}],c);
+  if(!v)return;if(v.period)v.period=+v.period;if(!v.online)v.online=c.type==="modify"||c.online!=null?v.online:null;
+  if(idx>=0)S.draft.changes[idx]={...c,...v};else S.draft.changes.push(v);touch()}
+function describeChange(c){const l=S.draft.lessons.find(x=>x.id===c.lessonId);
+  const target=l?`${l.period} пара ${KIND[l.kind]} ${sname(l.subjectId)}`:c.subjectId?sname(c.subjectId):"";
+  const d=[c.type==="add"||c.type==="modify"?((c.kind?KIND[c.kind]:"")+(c.period?` ${c.period} пара`:"")).trim():"",c.room&&"каб. "+c.room,c.online?"дистанционно":"",c.teacher,c.campus,c.note].filter(Boolean).join(", ");
+  return c.type==="dayoff"?(c.note||"нет занятий"):c.type==="add"?`${sname(c.subjectId)}, ${d}`:`${target}${d?" → "+d:""}`}
+VIEWS.changes=el=>{
+  const today=S.me.today;const C=S.draft.changes.map((c,i)=>({...c,i})).sort((a,b)=>a.date.localeCompare(b.date));
+  const row=c=>`<tr class="${c.date<today?"off":""}"><td><b>${fmtDate(c.date)}</b> <span class="muted">${SD[dow(c.date)]}</span></td><td><span class="st ${{add:"added",cancel:"cancelled",modify:"changed",dayoff:"cancelled"}[c.type]}">${CT[c.type]}</span></td><td>${esc(describeChange(c))}</td><td><div class="row" style="flex-wrap:nowrap"><button class="b ic" data-e="${c.i}">✏️</button><button class="b ic d" data-x="${c.i}">✕</button></div></td></tr>`;
+  el.innerHTML=page("Разовые изменения","Действуют только в свою дату: отмена, перенос, дистанционка, доп. пара, выходной. Удобнее добавлять из «Недели».",`<button class="b p" id="addC">＋ Изменение</button>`)+
+  `<div class="card tw"><table><thead><tr><th>Дата</th><th>Что</th><th>Подробности</th><th></th></tr></thead><tbody>${C.filter(c=>c.date>=today).map(row).join("")||'<tr><td colspan="4" class="empty">Нет предстоящих изменений</td></tr>'}</tbody></table></div>
+  ${C.some(c=>c.date<today)?`<div class="card tw"><h3>Прошедшие</h3><table><tbody>${C.filter(c=>c.date<today).reverse().map(row).join("")}</tbody></table></div>`:""}`;
+  $("#addC").onclick=()=>editChange({date:S.me.today,type:"add"},-1);
+  el.querySelectorAll("[data-e]").forEach(b=>b.onclick=()=>editChange(S.draft.changes[+b.dataset.e],+b.dataset.e));
+  el.querySelectorAll("[data-x]").forEach(b=>b.onclick=()=>{S.draft.changes.splice(+b.dataset.x,1);touch()})};
+
+// ---------- subjects ----------
+VIEWS.subjects=el=>{
+  el.innerHTML=page("Предметы",/*OWNER*/OWNER()?"Сленг и комментарии видишь только ты: бот по ним понимает студентов и подбирает тон («там все спят», «препод душнит»).":/*END*/"Названия и архив предметов. Пары — во вкладке «Расписание».",`<button class="b p" id="addS">＋ Предмет</button>`)+
+  `<div class="week">`+S.draft.subjects.map((s,i)=>`<div class="card" style="${s.archived?"opacity:.55":""}"><div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:nowrap"><div><b>${esc(s.name)}</b><div class="faint small">${esc(s.id)}${s.shortName?" · "+esc(s.shortName):""}${s.archived?" · архив":""}</div></div><button class="b ic" data-e="${i}">✏️</button></div>
+/*OWNER*/  ${OWNER()?`<div style="margin-top:8px">${(s.aliases||[]).map(a=>`<span class="chip">${esc(a)}</span>`).join("")||'<span class="faint small">сленга нет</span>'}</div>${s.adminComment?`<div class="secret small">🤫 ${esc(s.adminComment)}</div>`:""}`:""}/*END*/
+  <div class="muted small" style="margin-top:8px">${S.draft.lessons.filter(l=>l.subjectId===s.id).map(l=>`${tag(l.kind)} ${SD[l.dayOfWeek]} ${l.period}${l.weeks!=="all"?" ("+WEEKS[l.weeks]+")":""}${l.teacher?" · "+esc(l.teacher):""}`).join("<br>")}</div></div>`).join("")+`</div>`;
+  const edit=async i=>{const s=i>=0?S.draft.subjects[i]:{aliases:[]};
+    const fields=[{k:"id",label:"ID (латиница)",ro:i>=0,ph:"matan"},{k:"name",label:"Название"},{k:"shortName",label:"Короткое"}];
+/*OWNER*/    if(OWNER())fields.push({k:"aliases",label:"Сленг через запятую",type:"textarea",rows:2,own:true},{k:"adminComment",label:"Комментарий для бота",type:"textarea",rows:3,own:true,ph:"там все спят"});/*END*/
+    fields.push({k:"archived",label:"В архиве",type:"checkbox"});
+    const v=await form(i>=0?s.name:"Новый предмет",fields,{...s,aliases:(s.aliases||[]).join(", ")});
+    if(!v)return;v.id=(v.id||"").toLowerCase();
+    if(OWNER())v.aliases=(v.aliases||"").split(",").map(x=>x.trim()).filter(Boolean);else{v.aliases=s.aliases||[];v.adminComment=s.adminComment}
+    if(i>=0)S.draft.subjects[i]={...s,...v};else S.draft.subjects.push(v);touch()};
+  $("#addS").onclick=()=>edit(-1);el.querySelectorAll("[data-e]").forEach(b=>b.onclick=()=>edit(+b.dataset.e))};
+
+// ---------- members ----------
+VIEWS.members=el=>{
+  const M=S.draft.members.map((m,i)=>({...m,i})).sort((a,b)=>(b.active-a.active)||((a.listNumber||999)-(b.listNumber||999)));
+  const act=S.draft.members.filter(m=>m.active);
+  el.innerHTML=page("Группа",`Отчисленных и переведённых не удаляй — делай неактивными: история и дедлайны останутся целы. Без Telegram ID человек есть в списке, но бот ему не отвечает./*OWNER*/${OWNER()?" 🤫-заметки о людях видишь только ты — бот иногда использует их для прожарки в Воздуханстве.":""}/*END*/`,`<button class="b p" id="addM">＋ Участник</button>`)+
+  `<div class="stats"><div class="stat"><b>${act.length}</b><span>в списке</span></div><div class="stat"><b>${act.filter(m=>m.userId!=null).length}</b><span>с Telegram ID</span></div><div class="stat"><b>${S.draft.members.length-act.length}</b><span>неактивных</span></div></div>
+  <div class="card tw"><table><thead><tr><th>№</th><th>ФИО</th><th>Имя</th><th>Username</th><th>Telegram ID</th><th>Роль</th><th></th></tr></thead><tbody>
+  ${M.map(m=>`<tr class="${m.active?"":"off"}"><td>${m.listNumber||""}</td><td>${esc(m.fullName)}${m.note?`<div class="faint small">${esc(m.note)}</div>`:""}/*OWNER*/${OWNER()&&m.adminNote?`<div class="secret small">🤫 ${esc(m.adminNote)}</div>`:""}/*END*/</td><td>${esc(m.shortName)}</td><td>${m.username?"@"+esc(m.username):""}</td><td>${m.userId??'<span class="faint">нет</span>'}</td>
+  <td>${m.role==="head"?'<span class="chip">⭐ староста</span>':""}${m.active?"":'<span class="chip">неактивен</span>'}</td>
+  <td><div class="row" style="flex-wrap:nowrap"><button class="b ic" data-e="${m.i}">✏️</button>${m.active?`<button class="b d" data-off="${m.i}">Убрать</button>`:`<button class="b" data-on="${m.i}">Вернуть</button>`}</div></td></tr>`).join("")}</tbody></table></div>`;
+  const edit=async i=>{const m=i>=0?S.draft.members[i]:{active:true,role:"member",listNumber:Math.max(0,...act.map(x=>x.listNumber||0))+1};
+    const fields=[{k:"listNumber",label:"№ по списку",type:"number"},{k:"fullName",label:"ФИО"},{k:"shortName",label:"Как звать"},{k:"username",label:"Username"},{k:"userId",label:"Telegram ID",type:"number"},{k:"telegramName",label:"Имя в Telegram"},{k:"email",label:"Почта"},{k:"note",label:"Тех. заметка",ph:"почему ушёл и т.п."}];
+/*OWNER*/    if(OWNER())fields.push({k:"adminNote",label:"Заметка для бота",type:"textarea",rows:3,own:true,ph:"Лёха вечно про видеокарты, опять купил б/у 3060"},{k:"role",label:"Роль",type:"select",options:[["member","участник"],["head","староста"]]});/*END*/
+    const v=await form(i>=0?m.fullName:"Новый участник",fields,m,OWNER()?"":'<p class="muted small">Назначить старосту может только разработчик.</p>');
+    if(!v)return;v.username=(v.username||"").replace(/^@/,"");v.listNumber=v.listNumber||0;
+    if(!OWNER()){v.adminNote=m.adminNote;v.role=m.role}
+    if(OWNER()&&v.role==="head")S.draft.members.forEach(x=>{if(x.role==="head")x.role="member"});
+    if(i>=0)S.draft.members[i]={...m,...v};else S.draft.members.push(v);touch()};
+  $("#addM").onclick=()=>edit(-1);el.querySelectorAll("[data-e]").forEach(b=>b.onclick=()=>edit(+b.dataset.e));
+  el.querySelectorAll("[data-off]").forEach(b=>b.onclick=async()=>{const m=S.draft.members[+b.dataset.off];const v=await form("Убрать из активного списка",[{k:"note",label:"Причина",ph:"отчислен / перевёлся"}],{},`<p class="muted">${esc(m.fullName)}</p>`);if(!v)return;m.active=false;if(v.note)m.note=v.note;touch()});
+  el.querySelectorAll("[data-on]").forEach(b=>b.onclick=()=>{S.draft.members[+b.dataset.on].active=true;touch()})};
+
+/*OWNER*/// ---------- knowledge (owner) ----------
+VIEWS.knowledge=el=>{
+  el.innerHTML=page("Знания для бота","Попадает в системный промпт: вуз и корпуса, традиции и мемы (ПТУ МИРЭА, штаны-лестница…), правила баллов и практик, примеры тона. Видишь только ты.")+
+  `<div class="card"><textarea id="kn" style="min-height:58vh" placeholder="Пиши как есть — бот прочитает.">${esc(S.draft.knowledge)}</textarea><div class="faint small" id="kc" style="margin-top:6px"></div></div>`;
+  const t=$("#kn"),c=$("#kc");const upd=()=>c.textContent=t.value.length+" / 30000 символов";upd();
+  t.oninput=()=>{S.draft.knowledge=t.value;upd();$("#bar").classList.toggle("show",!!dirty())}};
+
+/*END*/
+// ---------- settings ----------
+VIEWS.settings=el=>{
+  el.innerHTML=page("Звонки и семестр","Время пар и отсчёт чётных/нечётных недель.")+
+  `<div class="card"><h3>Звонки</h3><table><thead><tr><th>Пара</th><th>Начало</th><th>Конец</th><th></th></tr></thead><tbody>${S.draft.periods.map((p,i)=>`<tr><td><b>${p.number}</b></td><td><input type="time" data-s="${i}" value="${p.start}"></td><td><input type="time" data-e="${i}" value="${p.end}"></td><td><button class="b ic d" data-x="${i}">✕</button></td></tr>`).join("")}</tbody></table>
+  <button class="b" id="addP" style="margin-top:10px">＋ Пара</button></div>
+  <div class="card"><h3>Семестр</h3><div class="f"><label>Понедельник 1-й (нечётной) недели</label><input type="date" id="w1" value="${S.draft.weekOneMonday}">
+  <label>Конец семестра</label><input type="date" id="te" value="${S.draft.termEnd||""}"><label>Корпус по умолчанию</label><input id="dc" value="${esc(S.draft.defaultCampus)}"></div>
+  <p class="muted small">По этим настройкам сегодня (${fmtDate(S.me.today)}) — <b id="wk"></b>.</p></div>
+  <div class="card"><h3>Экспорт</h3><p class="muted">Текущий реестр в формате конфига — чтобы перенести в <code>config/bot.local.json</code>. Если поднять там <code>registryVersion</code>, конфиг при деплое заменит базу.</p><a class="b" href="/api/export" download>⬇ Скачать JSON</a></div>`;
+  const wk=()=>{const a=new Date(S.draft.weekOneMonday+"T12:00:00"),b=new Date(S.me.today+"T12:00:00");const n=Math.floor((b-a)/864e5/7)+1;$("#wk").textContent=`${n}-я неделя, ${Math.abs(n%2)===1?"нечётная":"чётная"}`};wk();
+  el.querySelectorAll("[data-s]").forEach(x=>x.onchange=()=>{S.draft.periods[+x.dataset.s].start=x.value;touch()});
+  el.querySelectorAll("[data-e]").forEach(x=>x.onchange=()=>{S.draft.periods[+x.dataset.e].end=x.value;touch()});
+  el.querySelectorAll("[data-x]").forEach(x=>x.onclick=()=>{S.draft.periods.splice(+x.dataset.x,1);touch()});
+  $("#addP").onclick=()=>{const n=Math.max(0,...S.draft.periods.map(p=>p.number))+1;S.draft.periods.push({number:n,start:"00:00",end:"00:00"});touch()};
+  $("#w1").onchange=e=>{S.draft.weekOneMonday=e.target.value;touch()};$("#te").onchange=e=>{S.draft.termEnd=e.target.value||null;touch()};$("#dc").onchange=e=>{S.draft.defaultCampus=e.target.value;touch()}};
+
+// ---------- deadlines ----------
+VIEWS.deadlines=async el=>{
+  el.innerHTML=page("Дедлайны","Сохранённый здесь дедлайн сразу публикуется в теме дедлайнов, как из Telegram. Кабинет и время берутся из расписания.",`<button class="b p" id="addD">＋ Дедлайн</button>`)+`<div id="dl" class="card tw"><div class="empty">Загрузка…</div></div>`;
+  const r=await api("deadlines");
+  const row=d=>`<tr class="${d.past||d.status!=="active"?"off":""}"><td class="faint">#${d.id}</td><td><b>${fmtDate(d.date)}</b> <span class="muted">${SD[dow(d.date)]}</span></td><td>${d.period} · ${d.start}</td><td>${esc(d.subject)}</td><td>${esc(d.work)}${d.note?`<div class="faint small">${esc(d.note)}</div>`:""}</td><td>${esc(d.room)}</td>
+    <td>${d.status==="active"?(d.past?'<span class="chip">прошёл</span>':'<span class="st added">активен</span>'):'<span class="st cancelled">отменён</span>'}</td>
+    <td>${d.status==="active"&&!d.past?`<div class="row" style="flex-wrap:nowrap"><button class="b" data-mv="${d.id}">Перенести</button><button class="b d" data-cn="${d.id}">Отменить</button></div>`:""}</td></tr>`;
+  $("#dl").innerHTML=`<table><thead><tr><th>ID</th><th>Дата</th><th>Пара</th><th>Предмет</th><th>Работа</th><th>Кабинет</th><th>Статус</th><th></th></tr></thead><tbody>${r.deadlines.map(row).join("")||'<tr><td colspan="8" class="empty">Пока нет</td></tr>'}</tbody></table>`;
+  const send=async(body,title)=>{const pre=await api("deadline",{...body,dry:true});
+    if(!pre.ok)return info("Не хватает данных",`${pre.preview?`<pre>${esc(pre.preview)}</pre>`:""}<p>${esc(pre.error)}</p>`);
+    const i=await menu(title,[{t:"Сохранить и опубликовать",cls:"p"}],`<pre>${esc(pre.preview)}</pre>`);if(i!==0)return;
+    const s=await api("deadline",body);if(s.ok){toast("Сохранено");render()}else info("Ошибка",`<p>${esc(s.error)}</p>`)};
+  $("#addD").onclick=async()=>{const v=await form("Новый дедлайн",[{k:"subjectId",label:"Предмет",type:"select",options:subjOptions()},{k:"work",label:"Работа",ph:"Практика №11"},{k:"date",label:"Дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"room",label:"Кабинет",ph:"из расписания"},{k:"note",label:"Публичное примечание"}],{date:S.me.today});
+    if(!v)return;send({action:"create",...v,period:v.period?+v.period:null},"Проверь карточку")};
+  el.querySelectorAll("[data-mv]").forEach(b=>b.onclick=async()=>{const v=await form("Перенос #"+b.dataset.mv,[{k:"date",label:"Новая дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"note",label:"Публичное примечание"}]);
+    if(!v)return;send({action:"update",targetId:+b.dataset.mv,date:v.date,period:v.period?+v.period:null,note:v.note},"Перенос")});
+  el.querySelectorAll("[data-cn]").forEach(b=>b.onclick=()=>send({action:"cancel",targetId:+b.dataset.cn},"Отмена сдачи"))};
+
+// ---------- log ----------
+VIEWS.log=async el=>{
+  el.innerHTML=page("Журнал сообщений","Всё, что бот получил и отправил: личка, Воздуханство, темы. Нажми на сообщение — увидишь исходный JSON"+(/*OWNER*/OWNER()?" и запросы к ИИ.":/*END*/"."))+
+  `<div class="log"><div class="card chats" id="cl"><div class="empty">Загрузка…</div></div><div class="card"><div class="row" style="margin-bottom:10px;flex-wrap:nowrap"><input id="lq" placeholder="Поиск по тексту${S.chat?" в этом чате":" по всем чатам"}" style="flex:1"><button class="b" id="lgo">Найти</button></div><div class="msgs" id="ml"><div class="empty">Выбери чат слева или ищи по всем</div></div><button class="b" id="more" style="margin-top:8px;display:none">Показать раньше</button></div></div>`;
+  const r=await api("chats");
+  $("#cl").innerHTML=r.chats.map((c,i)=>`<div class="c ${S.chat&&S.chat.chat===c.chat&&S.chat.topic===c.topic?"on":""}" data-i="${i}"><div>${esc(c.title)}</div><div class="faint small">${c.count} сообщ. · ${time(c.last)}</div></div>`).join("")||'<div class="empty">Пусто</div>';
+  let before=null,rows=[];
+  const show=async reset=>{if(reset){before=null;rows=[]}
+    const q=$("#lq").value.trim();const p=new URLSearchParams();if(S.chat){p.set("chat",S.chat.chat);p.set("topic",S.chat.topic)}if(q)p.set("q",q);if(before)p.set("before",before);
+    const res=await api("log?"+p);rows=rows.concat(res.rows||[]);if(res.rows?.length)before=res.rows[res.rows.length-1].id;
+    $("#more").style.display=(res.rows||[]).length>=150?"":"none";
+    $("#ml").innerHTML=rows.slice().reverse().map(m=>`<div class="m ${m.direction}" data-id="${m.id}" data-chat="${m.chat}" data-msg="${m.message}"><div class="h">${["in","edit","callback"].includes(m.direction)?esc(m.name||"")+(m.username?" @"+esc(m.username):"")+" · "+m.sender:"бот"} · ${time(m.time)}${m.direction==="edit"?" · правка":""}${m.direction==="out-edit"?" · правка поста":""}${!S.chat?" · чат "+esc(String(m.chat)):""}</div>${esc(m.text)}</div>`).join("")||'<div class="empty">Нет сообщений</div>';
+    if(reset)$("#ml").scrollTop=$("#ml").scrollHeight;
+    $("#ml").querySelectorAll(".m").forEach(x=>x.onclick=async()=>{const raw=await api("raw?id="+x.dataset.id);
+      const ai=/*OWNER*/OWNER()?await api("ai?tag="+encodeURIComponent(`chat:${x.dataset.chat}:${x.dataset.msg}`)):/*END*/{rows:[]};
+      let pretty=raw.raw||"{}";try{pretty=JSON.stringify(JSON.parse(pretty),null,2)}catch{}
+      info("Сообщение",`${ai.rows.length?`<h3>Запросы к ИИ по этому сообщению</h3><div class="row">${ai.rows.map(a=>`<button class="b" data-ai="${a.id}">${esc(a.kind)} · ${a.ms} мс${a.error?" · ошибка":""}</button>`).join("")}</div>`:""}<h3>Исходный JSON</h3><pre>${esc(pretty)}</pre>`);
+      document.querySelectorAll("[data-ai]").forEach(b=>b.onclick=()=>showAi(+b.dataset.ai))})};
+  $("#cl").querySelectorAll("[data-i]").forEach(x=>x.onclick=()=>{S.chat=r.chats[+x.dataset.i];$("#cl").querySelectorAll(".c").forEach(y=>y.classList.toggle("on",y===x));show(true)});
+  $("#lgo").onclick=()=>show(true);$("#lq").onkeydown=e=>{if(e.key==="Enter")show(true)};$("#more").onclick=()=>show(false);
+  if(S.chat)show(true)};
+/*OWNER*/async function showAi(id){const r=await api("ai?id="+id);const a=r.rows?.[0];if(!a)return;
+  let req=a.request;try{req=JSON.stringify(JSON.parse(a.request),null,2)}catch{}
+  info(`ИИ · ${a.kind} · ${a.ms} мс`,`<p class="faint small">${esc(a.model)} · ${time(a.time)} · ${esc(a.tag)}</p>${a.error?`<p style="color:var(--bad)">${esc(a.error)}</p>`:""}<h3>Ответ</h3><pre>${esc(a.response)}</pre><h3>Данные запроса</h3><pre>${esc(req)}</pre><h3>Системный промпт</h3><pre>${esc(a.system)}</pre>`)}
+VIEWS.ai=async el=>{el.innerHTML=page("Запросы к ИИ","Промпт, данные и ответ каждого запроса — чтобы ловить баги. Хранятся aiLogDays дней.")+`<div class="card tw" id="al"><div class="empty">Загрузка…</div></div>`;
+  const r=await api("ai?limit=100");
+  $("#al").innerHTML=`<table><thead><tr><th>Когда</th><th>Тип</th><th>Сообщение</th><th>Время</th><th>Ответ</th></tr></thead><tbody>${(r.rows||[]).map(a=>`<tr data-id="${a.id}" style="cursor:pointer"><td>${time(a.time)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small faint">${esc(a.tag)}</td><td>${a.ms} мс</td><td class="small">${a.error?`<span style="color:var(--bad)">${esc(a.error)}</span>`:esc(a.response)}</td></tr>`).join("")||'<tr><td colspan="5" class="empty">Пока нет</td></tr>'}</tbody></table>`;
+  $("#al").querySelectorAll("tr[data-id]").forEach(x=>x.onclick=()=>showAi(+x.dataset.id))};
+
+/*END*/
+// ---------- seen users ----------
+VIEWS.seen=async el=>{el.innerHTML=page("Люди в Telegram","Все, кто писал боту или в группу. Если человек есть в списке без Telegram ID — привяжи, и бот начнёт ему отвечать.")+`<div class="card tw" id="su"><div class="empty">Загрузка…</div></div>`;
+  const r=await api("seen");
+  $("#su").innerHTML=`<table><thead><tr><th>Telegram ID</th><th>Имя</th><th>Username</th><th>Последний раз</th><th>Сообщ.</th><th>В списке</th><th></th></tr></thead><tbody>${r.users.map(u=>`<tr><td class="faint">${u.id}</td><td>${esc(u.name)}</td><td>${u.username?"@"+esc(u.username):""}</td><td>${time(u.lastSeen)}</td><td>${u.count}</td><td>${u.member?esc(u.member):'<span class="faint">—</span>'}</td><td>${u.member?"":`<button class="b" data-b="${u.id}" data-u="${esc(u.username)}">Привязать</button>`}</td></tr>`).join("")||'<tr><td colspan="7" class="empty">Пока никого</td></tr>'}</tbody></table>`;
+  $("#su").querySelectorAll("[data-b]").forEach(b=>b.onclick=async()=>{const free=S.draft.members.map((m,i)=>({m,i})).filter(x=>x.m.userId==null);
+    if(!free.length)return info("Некого привязывать","<p>У всех записей уже есть Telegram ID. Добавь человека во вкладке «Группа».</p>");
+    const v=await form("Привязать ID "+b.dataset.b,[{k:"i",label:"К записи",type:"select",options:free.map(x=>[x.i,`${x.m.listNumber||"•"} ${x.m.fullName}`])}]);
+    if(!v)return;const m=S.draft.members[+v.i];m.userId=+b.dataset.b;if(!m.username&&b.dataset.u)m.username=b.dataset.u;touch();toast("Привязано — не забудь сохранить")})};
+
+// ---------- history ----------
+VIEWS.history=el=>{el.innerHTML=page("История реестра","Каждое сохранение — новая версия. Откат тоже создаёт версию, так что ничего не теряется.")+`<div class="card tw"><table><thead><tr><th>Версия</th><th>Когда</th><th>Кто</th><th>Откуда</th><th>Что изменилось</th><th></th></tr></thead><tbody>${S.history.map(h=>{
+  const who=h.actor===0?"конфиг":S.draft.members.find(m=>m.userId===h.actor)?.shortName||h.actor;const lines=h.summary.split("\n").filter(Boolean);
+  return `<tr><td><b>${h.version}</b></td><td>${time(h.time)}</td><td>${esc(who)}</td><td class="small muted">${esc(h.source)}</td><td class="small" style="white-space:pre-line">${esc(lines.slice(0,6).join("\n"))||'<span class="faint">—</span>'}${lines.length>6?"\n…":""}</td><td>${h.version!==S.version?`<button class="b" data-r="${h.version}">Откатить</button>`:'<span class="chip">текущая</span>'}</td></tr>`}).join("")}</tbody></table></div>`;
+  el.querySelectorAll("[data-r]").forEach(b=>b.onclick=async()=>{const i=await menu("Откат к версии "+b.dataset.r,[{t:"Откатить",cls:"p"}],'<p class="muted">Создаст новую версию с содержимым выбранной. Можно откатиться обратно.</p>');
+    if(i!==0)return;const r=await api("restore",{version:+b.dataset.r});if(r.ok){toast("Откат выполнен");load()}else info("Не получилось",`<p>${esc(r.error)}</p>`)})};
+
+load().catch(e=>{if(e.message!=="401")$("#main").innerHTML=`<div class="card">Ошибка загрузки: ${esc(e.message)}</div>`});
+</script>
+</body>
+</html>

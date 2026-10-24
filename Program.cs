@@ -35,12 +35,25 @@ var dataPath = Environment.GetEnvironmentVariable("BOT_DATA_PATH");
 if (!string.IsNullOrWhiteSpace(dataPath)) config.DataPath = dataPath;
 config.Validate();
 if (args.Contains("--validate-config")) { Console.WriteLine("Configuration is valid. No Telegram/OpenRouter requests made."); return; }
+if (args.Contains("--web-link"))
+{
+    // Works while the service is running and even when Telegram is unreachable.
+    using var tool = new BotStore(config, tool: true);
+    var token = tool.CreateWebToken(config.OwnerId, "login", TimeSpan.FromMinutes(10));
+    Console.WriteLine($"{config.Web.PublicUrl.TrimEnd('/')}/login?t={token}");
+    Console.WriteLine("One-time link for the owner, valid for 10 minutes.");
+    return;
+}
 if (string.IsNullOrWhiteSpace(telegramToken)) throw new InvalidOperationException("TELEGRAM_BOT_TOKEN is missing");
+var store = new BotStore(config);
+var ai = new OpenRouterClient(new HttpClient { BaseAddress = new Uri("https://openrouter.ai/"), Timeout = Timeout.InfiniteTimeSpan },
+    config, Environment.GetEnvironmentVariable("OPENROUTER_API_KEY"));
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddSingleton(config);
-builder.Services.AddSingleton<BotStore>();
+builder.Services.AddSingleton(store);
 builder.Services.AddSingleton(telegram);
-builder.Services.AddSingleton(new OpenRouterClient(new HttpClient { BaseAddress = new Uri("https://openrouter.ai/"), Timeout = Timeout.InfiniteTimeSpan },
-    config, Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")));
-builder.Services.AddHostedService<BotWorker>();
+builder.Services.AddSingleton(ai);
+builder.Services.AddSingleton<BotWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<BotWorker>());
+if (config.Web.Enabled) builder.Services.AddHostedService<AdminWeb>();
 await builder.Build().RunAsync();

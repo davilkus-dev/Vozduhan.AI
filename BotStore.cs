@@ -2,13 +2,13 @@ using Microsoft.Data.Sqlite;
 
 namespace Vozduhan.AI;
 
-public sealed class BotStore : IDisposable
+public sealed partial class BotStore : IDisposable
 {
     private readonly SqliteConnection db;
     private readonly object gate = new();
     public BotConfig Config { get; }
 
-    public BotStore(BotConfig config)
+    public BotStore(BotConfig config, bool tool = false)
     {
         Config = config;
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(config.DataPath))!);
@@ -16,7 +16,7 @@ public sealed class BotStore : IDisposable
         db.Open();
         Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;");
         var version = Convert.ToInt32(Scalar("PRAGMA user_version"));
-        if (version > 1) throw new InvalidDataException("Database schema is newer than this application");
+        if (version > 2) throw new InvalidDataException("Database schema is newer than this application");
         Exec("""
             CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS inbox(id INTEGER PRIMARY KEY, actor INTEGER NOT NULL, payload TEXT NOT NULL,
@@ -36,16 +36,42 @@ public sealed class BotStore : IDisposable
                 pinned INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL,
                 actor INTEGER NOT NULL, action TEXT NOT NULL, payload TEXT NOT NULL);
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS registry_versions(id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL,
+                actor INTEGER NOT NULL, source TEXT NOT NULL, summary TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS rdrafts(actor INTEGER PRIMARY KEY, token TEXT UNIQUE NOT NULL,
+                expires INTEGER NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS chat_log(id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, chat INTEGER NOT NULL,
+                chat_type TEXT NOT NULL, topic INTEGER NOT NULL, message INTEGER NOT NULL, sender INTEGER NOT NULL,
+                direction TEXT NOT NULL, text TEXT NOT NULL, raw TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS chat_log_chat ON chat_log(chat,topic,id);
+            CREATE INDEX IF NOT EXISTS chat_log_sender ON chat_log(sender,id);
+            CREATE INDEX IF NOT EXISTS chat_log_time ON chat_log(time);
+            CREATE TABLE IF NOT EXISTS ai_log(id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, kind TEXT NOT NULL,
+                tag TEXT NOT NULL, model TEXT NOT NULL, system TEXT NOT NULL, request TEXT NOT NULL, response TEXT NOT NULL,
+                ms INTEGER NOT NULL, error TEXT);
+            CREATE INDEX IF NOT EXISTS ai_log_tag ON ai_log(tag);
+            CREATE INDEX IF NOT EXISTS ai_log_time ON ai_log(time);
+            CREATE TABLE IF NOT EXISTS seen_users(id INTEGER PRIMARY KEY, username TEXT NOT NULL, name TEXT NOT NULL,
+                first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, last_chat INTEGER NOT NULL, count INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS web_tokens(hash TEXT PRIMARY KEY, actor INTEGER NOT NULL, kind TEXT NOT NULL,
+                expires INTEGER NOT NULL, created INTEGER NOT NULL);
+            PRAGMA user_version=2;
             """);
-        Exec("UPDATE inbox SET state=0 WHERE state=1");
-        Exec("UPDATE inbox SET priority=2 WHERE state=0 AND json_valid(payload) AND json_type(payload,'$.callback_query')='object'");
+        if (!tool)
+        {
+            Exec("UPDATE inbox SET state=0 WHERE state=1");
+            Exec("UPDATE inbox SET priority=2 WHERE state=0 AND json_valid(payload) AND json_type(payload,'$.callback_query')='object'");
+        }
         var binding = $"{config.GroupId}:{config.ChatTopicId}:{config.DeadlinesTopicId}";
         var oldBinding = Get("binding");
         if (oldBinding is not null && oldBinding != binding)
             throw new InvalidDataException("Use a separate database when changing group/topic IDs");
-        Set("binding", binding);
-        Set("registry", Json.Write(config));
+        if (!tool)
+        {
+            Set("binding", binding);
+            Set("registry", Json.Write(config));
+        }
+        LoadRegistry(tool);
     }
 
     private SqliteCommand Command(string sql, params (string Key, object? Value)[] args)
@@ -169,13 +195,16 @@ public sealed class BotStore : IDisposable
     {
         lock (gate) Exec("DELETE FROM drafts WHERE actor=$a AND token=$t", ("a", actor), ("t", token));
     }
-    public Deadline Confirm(long actor, string token, DateTimeOffset now)
+    public Deadline Confirm(long actor, string token, DateTimeOffset now) => Commit(actor, null, token, now);
+    /// <summary>Saves a fully resolved draft without the per-editor draft slot (web admin).</summary>
+    public Deadline ConfirmDirect(long actor, Draft draft, DateTimeOffset now) => Commit(actor, draft, null, now);
+    private Deadline Commit(long actor, Draft? direct, string? token, DateTimeOffset now)
     {
         lock (gate)
         {
             if (!Config.CanEdit(actor)) throw new InvalidOperationException("Редактировать могут только разработчик и староста.");
             using var tx = db.BeginTransaction();
-            var draft = Draft(actor, token) ?? throw new InvalidOperationException("Карточка уже обработана, заменена или устарела.");
+            var draft = direct ?? Draft(actor, token!) ?? throw new InvalidOperationException("Карточка уже обработана, заменена или устарела.");
             if (draft.Missing.Length != 0) throw new InvalidOperationException("Сначала уточни недостающие поля.");
             var all = AllDeadlines();
             var old = all.FirstOrDefault(d => d.Id == draft.TargetId);
@@ -208,7 +237,7 @@ public sealed class BotStore : IDisposable
                     $"\n\nРаньше: {old.Date}, {old.Period}-я пара, {old.Start}–{old.End}, {old.Room}.";
                 PutDelivery($"change:{id}:{d.Version}", Config.DeadlinesTopicId, text, now.ToUnixTimeSeconds(), now.AddDays(1).ToUnixTimeSeconds());
             }
-            Discard(actor, token);
+            if (token is not null) Discard(actor, token);
             RebuildMorning(d.Date, now);
             if (old is not null && old.Date != d.Date) RebuildMorning(old.Date, now);
             tx.Commit();
@@ -294,6 +323,10 @@ public sealed class BotStore : IDisposable
             Exec("DELETE FROM messages WHERE sent<$s", ("s", now.AddDays(-Config.HistoryDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM inbox WHERE state IN (2,3) AND id<(SELECT COALESCE(MAX(id),0)-10000 FROM inbox)");
             Exec("DELETE FROM drafts WHERE expires<$s", ("s", now.ToUnixTimeSeconds()));
+            Exec("DELETE FROM rdrafts WHERE expires<$s", ("s", now.ToUnixTimeSeconds()));
+            Exec("DELETE FROM web_tokens WHERE expires<$s", ("s", now.ToUnixTimeSeconds()));
+            Exec("DELETE FROM chat_log WHERE time<$s", ("s", now.AddDays(-Config.LogDays).ToUnixTimeSeconds()));
+            Exec("DELETE FROM ai_log WHERE time<$s", ("s", now.AddDays(-Config.AiLogDays).ToUnixTimeSeconds()));
             var day = now.ToString("yyyy-MM-dd");
             if (Get("backup_day") == day) return;
             var folder = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Config.DataPath))!, "backups");

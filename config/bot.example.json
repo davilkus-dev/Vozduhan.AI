@@ -11,11 +11,36 @@
   "maxPins": 3,
   "contextMessages": 30,
   "historyDays": 30,
-  "weekOneMonday": "2026-09-07",
+  "logDays": 365,
+  "aiLogDays": 30,
   "model": "z-ai/glm-5.3-flash",
   "aiTimeoutSeconds": 90,
   "maxOutputTokens": 4096,
   "maxDailyChatRequestsPerUser": 40,
+  "groupName": "ИКБО-66-25",
+  "university": "РТУ МИРЭА",
+  "reactionChance": 0.7,
+  "reactions": [
+    "👀",
+    "👍",
+    "👌"
+  ],
+  "splitReplies": true,
+  "typingCharsPerSecond": 18,
+  "web": {
+    "enabled": true,
+    "listen": "http://*:8080/",
+    "publicUrl": "http://10.8.0.23:8080",
+    "allowedNetworks": [
+      "10.8.0.0/24",
+      "127.0.0.0/8"
+    ],
+    "sessionDays": 7
+  },
+  "registryVersion": 1,
+  "weekOneMonday": "2026-08-31",
+  "termEnd": null,
+  "defaultCampus": "Вернадка",
   "members": [
     {
       "userId": 1001,
@@ -42,20 +67,101 @@
       "username": "",
       "listNumber": 3,
       "role": "member",
-      "active": true
+      "active": true,
+      "adminNote": "вечно рассказывает про видеокарты"
     }
   ],
   "subjects": [
-    { "id": "siaod", "name": "СиАОД", "room": "А412", "aliases": ["сиад", "сиаод", "СиАОД"] },
-    { "id": "java", "name": "Java", "room": "REPLACE_ROOM", "aliases": ["джава", "ява"] }
+    {
+      "id": "siaod",
+      "name": "Структуры и алгоритмы обработки данных",
+      "shortName": "СиАОД",
+      "aliases": [
+        "сиаод",
+        "сиад"
+      ],
+      "adminComment": "препод строгий, но справедливый"
+    },
+    {
+      "id": "java",
+      "name": "Программирование на языке Джава",
+      "shortName": "Java",
+      "aliases": [
+        "джава",
+        "ява"
+      ]
+    }
   ],
   "periods": [
-    { "number": 2, "start": "10:40", "end": "12:10" },
-    { "number": 6, "start": "18:00", "end": "19:30" }
+    {
+      "number": 1,
+      "start": "09:00",
+      "end": "10:30"
+    },
+    {
+      "number": 2,
+      "start": "10:40",
+      "end": "12:10"
+    },
+    {
+      "number": 3,
+      "start": "12:40",
+      "end": "14:10"
+    },
+    {
+      "number": 4,
+      "start": "14:20",
+      "end": "15:50"
+    },
+    {
+      "number": 5,
+      "start": "16:20",
+      "end": "17:50"
+    },
+    {
+      "number": 6,
+      "start": "18:00",
+      "end": "19:30"
+    }
   ],
   "lessons": [
-    { "subjectId": "siaod", "dayOfWeek": 1, "period": 6, "weeks": "all", "from": "2026-09-01", "until": "2026-12-31" },
-    { "subjectId": "java", "dayOfWeek": 1, "period": 2, "weeks": "all", "from": "2026-09-01", "until": "2026-12-31" }
+    {
+      "subjectId": "siaod",
+      "dayOfWeek": 4,
+      "period": 5,
+      "weeks": "odd",
+      "kind": "lecture",
+      "room": "А-13",
+      "teacher": "Лектор Л. Л."
+    },
+    {
+      "subjectId": "siaod",
+      "dayOfWeek": 4,
+      "period": 3,
+      "weeks": "all",
+      "kind": "practice",
+      "room": "И-204-а",
+      "teacher": "Практик П. П."
+    },
+    {
+      "subjectId": "java",
+      "dayOfWeek": 5,
+      "period": 3,
+      "weeks": "all",
+      "kind": "practice",
+      "room": "И-203-б"
+    }
   ],
-  "scheduleOverrides": []
+  "scheduleChanges": [
+    {
+      "date": "2026-10-31",
+      "type": "add",
+      "subjectId": "java",
+      "kind": "lecture",
+      "period": 6,
+      "online": true,
+      "note": "пример разовой пары"
+    }
+  ],
+  "knowledge": "Здесь общий текст о вузе, сленге, традициях и правилах баллов."
 }

@@ -13,5 +13,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Remove="tests/**/*.cs" />
+    <EmbeddedResource Include="web/admin.html" LogicalName="admin.html" />
   </ItemGroup>
 </Project>
