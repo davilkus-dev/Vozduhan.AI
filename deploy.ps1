@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $dist = Join-Path $root 'publish'
 if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
@@ -26,6 +26,7 @@ if (Test-Path $archive) { Remove-Item $archive }
 if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed' }
 scp $archive 'dolbilkus:/tmp/vozduhan-ai-deploy.tar.gz'
 if ($LASTEXITCODE -ne 0) { throw 'Upload failed' }
-ssh dolbilkus 'set -e; mkdir -p /opt/vozduhan-ai; tar -xzf /tmp/vozduhan-ai-deploy.tar.gz -C /opt/vozduhan-ai; rm /tmp/vozduhan-ai-deploy.tar.gz; sudo install -m 644 /opt/vozduhan-ai/vozduhan-ai.service /etc/systemd/system/vozduhan-ai.service; if [ -f /opt/vozduhan-ai/bot.config.json ]; then sudo install -o davilkus -g davilkus -m 600 /opt/vozduhan-ai/bot.config.json /etc/vozduhan-ai.json; rm /opt/vozduhan-ai/bot.config.json; elif [ ! -f /etc/vozduhan-ai.json ]; then sudo install -o davilkus -g davilkus -m 600 /opt/vozduhan-ai/bot.example.json /etc/vozduhan-ai.json; fi; sudo systemctl daemon-reload; sudo -u davilkus env BOT_CONFIG_PATH=/etc/vozduhan-ai.json /usr/bin/dotnet /opt/vozduhan-ai/Vozduhan.AI.dll --validate-config; sudo systemctl restart vozduhan-ai.service; systemctl is-active vozduhan-ai.service'
+ssh -t dolbilkus 'set -e; mkdir -p /opt/vozduhan-ai; tar -xzf /tmp/vozduhan-ai-deploy.tar.gz -C /opt/vozduhan-ai; rm /tmp/vozduhan-ai-deploy.tar.gz; sudo install -m 644 /opt/vozduhan-ai/vozduhan-ai.service /etc/systemd/system/vozduhan-ai.service; if [ -f /opt/vozduhan-ai/bot.config.json ]; then sudo install -o davilkus -g davilkus -m 600 /opt/vozduhan-ai/bot.config.json /etc/vozduhan-ai.json; rm /opt/vozduhan-ai/bot.config.json; elif [ ! -f /etc/vozduhan-ai.json ]; then sudo install -o davilkus -g davilkus -m 600 /opt/vozduhan-ai/bot.example.json /etc/vozduhan-ai.json; fi; sudo systemctl daemon-reload; sudo -u davilkus env BOT_CONFIG_PATH=/etc/vozduhan-ai.json /usr/bin/dotnet /opt/vozduhan-ai/Vozduhan.AI.dll --validate-config; sudo systemctl restart vozduhan-ai.service; systemctl is-active vozduhan-ai.service'
 if ($LASTEXITCODE -ne 0) { throw 'Deployment failed' }
 Write-Host 'Deployment complete.'
+
