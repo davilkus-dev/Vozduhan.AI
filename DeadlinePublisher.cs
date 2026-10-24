@@ -85,6 +85,12 @@ public sealed partial class BotWorker
         var probeKey = "post_probe:" + key;
         var currentTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (p?.Text == text && long.TryParse(store.Get(probeKey), out var lastProbe) && currentTime - lastProbe < 300) return;
+        var manualKey = p is null ? null : $"manual_msg:{config.GroupId}:{p.MessageId}";
+        if (manualKey is not null && store.Get(manualKey) is not null)
+        {
+            if (p!.Text == text) return; // edited by hand and nothing changed in the data: leave it alone
+            store.Delete(manualKey);      // the deadline itself changed: the fresh card wins
+        }
         if (p is not null)
         {
             try

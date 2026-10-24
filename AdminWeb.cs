@@ -349,6 +349,75 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, 200, new { ok = true, intro });
                 return;
             }
+            case "/api/ai-settings" when !post && owner:
+                await Send(response, 200, new { ok = true, current = config.AiSnapshot(), file = config.FileAi, saved = store.Get("ai_settings") is not null });
+                return;
+            case "/api/ai-settings" when post && owner:
+            {
+                if (body.Field("reset").ValueKind == JsonValueKind.True)
+                {
+                    store.Delete("ai_settings");
+                    if (config.FileAi is { } f) { config.Model = f.Model; config.ModelRouting = new(f.ModelRouting); config.ReasoningEffort = new(f.ReasoningEffort); }
+                    await Send(response, 200, new { ok = true, current = config.AiSnapshot() });
+                    return;
+                }
+                var next = Json.Read<AiSettings>(body.Field("settings").GetRawText());
+                next.ModelRouting = next.ModelRouting.Where(x => !string.IsNullOrWhiteSpace(x.Value)).ToDictionary(x => x.Key, x => x.Value.Trim());
+                if (!AiSettings.ValidModel(next.Model = next.Model.Trim()) || next.ModelRouting.Values.Any(v => !AiSettings.ValidModel(v)))
+                { await Send(response, 400, new { ok = false, error = "ID модели в формате OpenRouter: провайдер/модель, например google/gemini-3.8-flash" }); return; }
+                if (next.ReasoningEffort.Values.Any(v => v is not ("minimal" or "low" or "medium" or "high")))
+                { await Send(response, 400, new { ok = false, error = "Уровень мышления: minimal, low, medium или high" }); return; }
+                // Routing replaces fully; efforts merge onto defaults.
+                config.ModelRouting = new();
+                config.ApplyAi(next);
+                store.Set("ai_settings", Json.Write(config.AiSnapshot()));
+                await Send(response, 200, new { ok = true, current = config.AiSnapshot() });
+                return;
+            }
+            case "/api/ai-test" when post && owner:
+            {
+                var model = body.Text("model")?.Trim() ?? "";
+                if (!AiSettings.ValidModel(model)) { await Send(response, 400, new { ok = false, error = "Неверный ID модели" }); return; }
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    var text = await worker.TestModel(model, ct);
+                    await Send(response, 200, new { ok = true, ms = clock.ElapsedMilliseconds, text });
+                }
+                catch (Exception e) when (!ct.IsCancellationRequested) { await Send(response, 200, new { ok = false, ms = clock.ElapsedMilliseconds, error = e.Message }); }
+                return;
+            }
+            case "/api/message" when !post && owner:
+            {
+                var row = store.LogEntry(L("id") ?? 0);
+                if (row is null) { await Send(response, 404, new { ok = false, error = "Нет такого сообщения" }); return; }
+                var r = row.Value;
+                var editable = r.Direction is "out" or "out-edit";
+                string html = r.Text;
+                try
+                {
+                    var raw = JsonDocument.Parse(r.Raw).RootElement;
+                    html = r.Direction == "out-edit" ? raw.Text("text") ?? r.Text
+                        : TelegramHtml.FromEntities(raw.Text("text") ?? r.Text, raw.Field("entities"));
+                }
+                catch (JsonException) { }
+                await Send(response, 200, new { ok = true, editable, chat = r.Chat, message = r.Message, html });
+                return;
+            }
+            case "/api/message/edit" when post && owner:
+            case "/api/message/delete" when post && owner:
+            {
+                var row = store.LogEntry(body.Field("id").GetInt64());
+                if (row is null || row.Value.Direction is not ("out" or "out-edit")) { await Send(response, 400, new { ok = false, error = "Менять можно только сообщения бота" }); return; }
+                try
+                {
+                    if (path.EndsWith("delete")) await worker.DeleteSent(row.Value.Chat, row.Value.Message, ct);
+                    else await worker.EditSent(row.Value.Chat, row.Value.Message, body.Text("html") ?? "", ct);
+                    await Send(response, 200, new { ok = true });
+                }
+                catch (TelegramError e) { await Send(response, 400, new { ok = false, error = "Telegram: " + e.Description }); }
+                return;
+            }
             case "/api/chats" when !post:
                 await Send(response, 200, new { ok = true, chats = store.LogChats().Where(c => owner || c.Chat != config.OwnerId) });
                 return;

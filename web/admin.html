@@ -101,6 +101,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--panel2);border:1
 .toast{position:fixed;right:20px;top:20px;z-index:30;background:var(--panel);color:var(--text);border:1px solid var(--line);box-shadow:var(--shadow);padding:10px 16px;border-radius:12px;opacity:0;transform:translateY(-8px);transition:all .2s;pointer-events:none}
 .toast.show{opacity:1;transform:none}
 .pi{margin:2px 0}.pi .row{gap:6px}
+.row>button.b.pb{flex:0 0 auto}
 button.b.pb{padding:2px 7px;font-size:12px;border-radius:8px;line-height:1.3}
 details.pv{margin:6px 0 2px}details.pv summary{cursor:pointer;color:var(--accent);font-size:12px}
 .tgv{white-space:pre-wrap;word-break:break-word;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:6px;max-width:560px;font-size:13px}
@@ -216,7 +217,7 @@ window.onbeforeunload=e=>{if(dirty()){e.preventDefault();e.returnValue=""}};
 // ---------- navigation ----------
 const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["plan","🛎","План бота"],["-"],
   ["subjects","🎓","Предметы"],["members","👥","Группа"],/*OWNER*/["knowledge","🧠","Знания",true],/*END*/["settings","🔔","Звонки и семестр"],["-"],
-  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","ИИ-запросы",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
+  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
 function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
   $("#nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{S.tab=b.dataset.k;render();window.scrollTo(0,0)})}
 function render(){nav();$("#bar").classList.toggle("show",!!dirty());const el=$("#main");el.innerHTML="";VIEWS[S.tab](el)}
@@ -478,15 +479,42 @@ VIEWS.log=async el=>{
     $("#ml").querySelectorAll(".m").forEach(x=>x.onclick=async()=>{const raw=await api("raw?id="+x.dataset.id);
       const ai=/*OWNER*/OWNER()?await api("ai?tag="+encodeURIComponent(`chat:${x.dataset.chat}:${x.dataset.msg}`)):/*END*/{rows:[]};
       let pretty=raw.raw||"{}";try{pretty=JSON.stringify(JSON.parse(pretty),null,2)}catch{}
-      info("Сообщение",`${ai.rows.length?`<h3>Запросы к ИИ по этому сообщению</h3><div class="row">${ai.rows.map(a=>`<button class="b" data-ai="${a.id}">${esc(a.kind)} · ${a.ms} мс${a.error?" · ошибка":""}</button>`).join("")}</div>`:""}<h3>Исходный JSON</h3><pre>${esc(pretty)}</pre>`);
-      document.querySelectorAll("[data-ai]").forEach(b=>b.onclick=()=>showAi(+b.dataset.ai))})};
+      /*OWNER*/const msg=await api("message?id="+x.dataset.id);/*END*/
+      info("Сообщение",/*OWNER*/(msg&&msg.editable?`<div class="row" style="margin-bottom:8px"><button class="b p" id="medit">✏️ Изменить</button><button class="b d" id="mdel">🗑 Удалить</button></div>`:"")+/*END*/`${ai.rows.length?`<h3>Запросы к ИИ по этому сообщению</h3><div class="row">${ai.rows.map(a=>`<button class="b" data-ai="${a.id}">${esc(a.kind)} · ${a.ms} мс${a.error?" · ошибка":""}</button>`).join("")}</div>`:""}<h3>Исходный JSON</h3><pre>${esc(pretty)}</pre>`);
+      document.querySelectorAll("[data-ai]").forEach(b=>b.onclick=()=>showAi(+b.dataset.ai));
+      /*OWNER*/
+      const me=$("#medit"),md=$("#mdel");
+      if(me)me.onclick=async()=>{$("#dlg").close();await new Promise(r=>setTimeout(r,0));
+        const v=await form("Изменить сообщение бота",[{k:"html",label:"Текст",type:"textarea",rows:12}],{html:msg.html},'<p class="muted small">HTML Telegram: &lt;b&gt;, &lt;i&gt;, &lt;u&gt;, &lt;s&gt;, &lt;tg-spoiler&gt;, &lt;code&gt;, &lt;blockquote&gt;, &lt;a href&gt;. Можно и **markdown** — бот переведёт. Уведомление людям не придёт.</p>');
+        if(!v)return;const r2=await api("message/edit",{id:+x.dataset.id,html:v.html||""});if(r2.ok){toast("Сообщение изменено");show(true)}else info("Не получилось",`<p>${esc(r2.error)}</p>`)};
+      if(md)md.onclick=async()=>{$("#dlg").close();await new Promise(r=>setTimeout(r,0));
+        const i=await menu("Удалить сообщение бота?",[{t:"Удалить",cls:"d"}],'<p class="muted">Telegram разрешает удалять сообщения не старше 48 часов.</p>');
+        if(i!==0)return;const r2=await api("message/delete",{id:+x.dataset.id});if(r2.ok){toast("Удалено");show(true)}else info("Не получилось",`<p>${esc(r2.error)}</p>`)};
+      /*END*/
+    })};
   $("#cl").querySelectorAll("[data-i]").forEach(x=>x.onclick=()=>{S.chat=r.chats[+x.dataset.i];$("#cl").querySelectorAll(".c").forEach(y=>y.classList.toggle("on",y===x));show(true)});
   $("#lgo").onclick=()=>show(true);$("#lq").onkeydown=e=>{if(e.key==="Enter")show(true)};$("#more").onclick=()=>show(false);
   if(S.chat)show(true)};
 /*OWNER*/async function showAi(id){const r=await api("ai?id="+id);const a=r.rows?.[0];if(!a)return;
   let req=a.request;try{req=JSON.stringify(JSON.parse(a.request),null,2)}catch{}
   info(`ИИ · ${a.kind} · ${a.ms} мс`,`<p class="faint small">${esc(a.model)} · ${time(a.time)} · ${esc(a.tag)}</p>${a.error?`<p style="color:var(--bad)">${esc(a.error)}</p>`:""}<h3>Ответ</h3><pre>${esc(a.response)}</pre><h3>Данные запроса</h3><pre>${esc(req)}</pre><h3>Системный промпт</h3><pre>${esc(a.system)}</pre>`)}
-VIEWS.ai=async el=>{el.innerHTML=page("Запросы к ИИ","Промпт, данные и ответ каждого запроса — чтобы ловить баги. Хранятся aiLogDays дней.")+`<div class="card tw" id="al"><div class="empty">Загрузка…</div></div>`;
+const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"]];
+const SUGGEST=["google/gemini-3.8-flash","deepseek/deepseek-v4.1-flash","z-ai/glm-5.3","z-ai/glm-5.3-flash"];
+VIEWS.ai=async el=>{el.innerHTML=page("Нейронки и запросы","Какая модель что делает — и промпт, данные и ответ каждого запроса, чтобы ловить баги. Логи хранятся aiLogDays дней.")+
+  `<div class="card" id="aiset"><div class="empty">Загрузка…</div></div><div class="card tw" id="al"><div class="empty">Загрузка…</div></div>`;
+  const st=await api("ai-settings");const c=st.current;
+  const eff=(k,v)=>`<select id="ef_${k}" style="width:110px;flex:0 0 110px" title="уровень мышления">${["minimal","low","medium","high"].map(x=>`<option ${x===v?"selected":""}>${x}</option>`).join("")}</select>`;
+  $("#aiset").innerHTML=`<h3>🤖 Модели</h3><p class="muted small">Любой ID модели с OpenRouter (провайдер/модель). Пустое поле у задачи — основная модель. Если модель недоступна, бот повторит запрос на основной. Действует сразу.</p>
+    <datalist id="mlist">${SUGGEST.map(m=>`<option value="${m}">`).join("")}</datalist>
+    <div class="f"><label>Основная модель</label><div class="row" style="flex-wrap:nowrap"><input id="m_main" list="mlist" value="${esc(c.model)}" style="flex:1 1 auto;min-width:0"><button class="b pb" data-test="m_main">Проверить</button></div>
+    ${KINDS.map(([k,t])=>`<label>${t}</label><div class="row" style="flex-wrap:nowrap"><input id="m_${k}" list="mlist" placeholder="основная" value="${esc(c.modelRouting[k]||"")}" style="flex:1 1 auto;min-width:0">${eff(k,c.reasoningEffort[k]||"low")}<button class="b pb" data-test="m_${k}">Проверить</button></div>`).join("")}</div>
+    <div class="row"><button class="b p" id="m_save">Сохранить</button><button class="b" id="m_reset">Сбросить к конфигу</button><span class="muted small">${st.saved?"сейчас действуют настройки из админки":"сейчас действуют настройки из конфига"}</span></div>`;
+  el.querySelectorAll("[data-test]").forEach(b=>b.onclick=async()=>{const m=$("#"+b.dataset.test).value.trim()||$("#m_main").value.trim();b.disabled=true;b.textContent="…";
+    const x=await api("ai-test",{model:m});b.disabled=false;b.textContent="Проверить";toast(x.ok?`✅ ${m}: «${(x.text||"").slice(0,40)}» за ${x.ms} мс`:`❌ ${m}: ${x.error}`)});
+  $("#m_save").onclick=async()=>{const settings={model:$("#m_main").value.trim(),modelRouting:{},reasoningEffort:{}};
+    for(const [k] of KINDS){const v=$("#m_"+k).value.trim();if(v)settings.modelRouting[k]=v;settings.reasoningEffort[k]=$("#ef_"+k).value}
+    const x=await api("ai-settings",{settings});if(x.ok){toast("Модели сохранены");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)};
+  $("#m_reset").onclick=async()=>{await api("ai-settings",{reset:true});toast("Вернул модели из конфига");render()};
   const r=await api("ai?limit=100");
   $("#al").innerHTML=`<table><thead><tr><th>Когда</th><th>Тип</th><th>Сообщение</th><th>Время</th><th>Ответ</th></tr></thead><tbody>${(r.rows||[]).map(a=>`<tr data-id="${a.id}" style="cursor:pointer"><td>${time(a.time)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small faint">${esc(a.tag)}</td><td>${a.ms} мс</td><td class="small">${a.error?`<span style="color:var(--bad)">${esc(a.error)}</span>`:esc(a.response)}</td></tr>`).join("")||'<tr><td colspan="5" class="empty">Пока нет</td></tr>'}</tbody></table>`;
   $("#al").querySelectorAll("tr[data-id]").forEach(x=>x.onclick=()=>showAi(+x.dataset.id))};

@@ -217,6 +217,18 @@ public sealed partial class BotWorker
         })), 700);
     }
 
+    // ---------- Manual edits of anything the bot already sent ----------
+
+    internal async Task EditSent(long chat, int message, string html, CancellationToken ct)
+    {
+        await telegram.Edit(chat, message, TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(html)), ct, html: true);
+        // The publisher must not "repair" a hand-edited card back to its generated text.
+        store.Set($"manual_msg:{chat}:{message}", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
+    }
+    internal Task<string> TestModel(string model, CancellationToken ct) =>
+        ai.Complete("Ответь ровно одним словом по-русски.", "Скажи «работаю».", false, ct, "test", "admin-test", model);
+    internal async Task DeleteSent(long chat, int message, CancellationToken ct) => await telegram.Delete(chat, message, ct);
+
     // ---------- Warm-up: prepare a planned post in advance, review and edit it ----------
 
     public sealed record Prep(string Text, long At, string Source);

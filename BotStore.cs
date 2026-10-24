@@ -78,6 +78,8 @@ public sealed partial class BotStore : IDisposable
         // Initiative settings edited in the web admin override the config file until reset.
         Config.FileAmbient ??= Config.Ambient;
         if (Get("ambient_settings") is { } saved) Config.Ambient = Json.Read<AmbientSettings>(saved);
+        Config.FileAi ??= Config.AiSnapshot();
+        if (Get("ai_settings") is { } ai) Config.ApplyAi(Json.Read<AiSettings>(ai));
     }
 
     private SqliteCommand Command(string sql, params (string Key, object? Value)[] args)

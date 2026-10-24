@@ -20,14 +20,14 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     /// One model call with adaptive effort: reasoning depth depends on the task kind (config.reasoningEffort), and an answer cut
     /// by the output limit (finish_reason=length, empty content or broken JSON) is regenerated with a doubled budget up to the ceiling.
     /// </summary>
-    public async Task<string> Complete(string system, string user, bool json, CancellationToken ct, string kind = "other", string tag = "")
+    public async Task<string> Complete(string system, string user, bool json, CancellationToken ct, string kind = "other", string tag = "", string? modelOverride = null)
     {
         if (!Available) throw new InvalidOperationException("OpenRouter key is missing");
         var clock = Stopwatch.StartNew();
         string? result = null;
         Exception? failure = null;
         var effort = config.Effort(kind);
-        var model = config.ModelFor(kind);
+        var model = modelOverride ?? config.ModelFor(kind);
         var budget = config.MaxOutputTokens;
         var attempts = 0;
         try
@@ -38,12 +38,22 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             {
                 attempts++;
                 (string? content, string? finish) answer;
-                try { answer = await Attempt(model, system, user, json, effort, budget, timeout.Token); }
-                catch (HttpRequestException) when (model != config.Model)
+                try { answer = await Attempt(model, system, user, json, effort, budget, false, timeout.Token); }
+                catch (HttpRequestException e) when (e.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.NotFound)
                 {
-                    // The full model is unavailable or rate-limited: planning still works on Flash.
+                    // Some models reject reasoning/json options: retry the same model in compatibility mode.
+                    try { answer = await Attempt(model, system, user, json, effort, budget, true, timeout.Token); }
+                    catch (HttpRequestException) when (model != config.Model && modelOverride is null)
+                    {
+                        model = config.Model;
+                        answer = await Attempt(model, system, user, json, effort, budget, false, timeout.Token);
+                    }
+                }
+                catch (HttpRequestException) when (model != config.Model && modelOverride is null)
+                {
+                    // The routed model is unavailable or rate-limited: fall back to the main model.
                     model = config.Model;
-                    answer = await Attempt(model, system, user, json, effort, budget, timeout.Token);
+                    answer = await Attempt(model, system, user, json, effort, budget, false, timeout.Token);
                 }
                 var (content, finish) = answer;
                 var cut = finish is "length" or "max_tokens" || string.IsNullOrEmpty(content) || (json && !ValidJson(content));
@@ -74,7 +84,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     {
         try { using var _ = JsonDocument.Parse(text); return true; } catch (JsonException) { return false; }
     }
-    private async Task<(string? Content, string? Finish)> Attempt(string model, string system, string user, bool json, string effort, int budget, CancellationToken ct)
+    private async Task<(string? Content, string? Finish)> Attempt(string model, string system, string user, bool json, string effort, int budget, bool compat, CancellationToken ct)
     {
         await slots.WaitAsync(ct);
         try
@@ -86,10 +96,10 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             {
                 model,
                 messages = new[] { new { role = "system", content = system }, new { role = "user", content = user } },
-                reasoning = new { effort, exclude = true },
+                reasoning = compat ? null : new { effort, exclude = true },
                 temperature = json ? 0.3 : 1.0, top_p = 0.95, max_tokens = budget,
-                provider = new { allow_fallbacks = true, require_parameters = true, data_collection = "deny" },
-                response_format = json ? new { type = "json_object" } : null
+                provider = new { allow_fallbacks = true, require_parameters = !compat, data_collection = "deny" },
+                response_format = json && !compat ? new { type = "json_object" } : null
             }, options: Json.Options);
             using var response = await http.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode) throw new HttpRequestException($"OpenRouter returned HTTP {(int)response.StatusCode}", null, response.StatusCode);

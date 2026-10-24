@@ -168,6 +168,11 @@ public sealed partial class BotStore
                 r.GetString(7), r.GetString(8), r.IsDBNull(9) ? null : r.GetString(9), r.IsDBNull(10) ? null : r.GetString(10)),
             ("c", chat), ("tp", topic), ("s", sender), ("q", string.IsNullOrWhiteSpace(q) ? null : q), ("b", beforeId), ("n", Math.Clamp(limit, 1, 500)), ("x", excludeChat));
     }
+    public (long Chat, int Message, string Direction, string Text, string Raw)? LogEntry(long id)
+    {
+        lock (gate) return Query("SELECT chat,message,direction,text,raw FROM chat_log WHERE id=$id",
+            r => ((long, int, string, string, string)?)(r.GetInt64(0), r.GetInt32(1), r.GetString(2), r.GetString(3), r.GetString(4)), ("id", id)).FirstOrDefault();
+    }
     public (long Chat, string Raw)? LogRow(long id)
     {
         lock (gate) return Query("SELECT chat,raw FROM chat_log WHERE id=$id", r => ((long Chat, string Raw)?)(r.GetInt64(0), r.GetString(1)), ("id", id)).FirstOrDefault();

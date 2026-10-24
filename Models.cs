@@ -99,6 +99,15 @@ public sealed class AmbientSettings
     public string EveReminderTime { get; set; } = "20:00";
 }
 
+/// <summary>Model choice editable from the web admin (owner). Any OpenRouter model id works.</summary>
+public sealed class AiSettings
+{
+    public string Model { get; set; } = "";
+    public Dictionary<string, string> ModelRouting { get; set; } = new();
+    public Dictionary<string, string> ReasoningEffort { get; set; } = new();
+    public static bool ValidModel(string id) => System.Text.RegularExpressions.Regex.IsMatch(id, @"^[\w.\-]+/[\w.:\-]+$");
+}
+
 public sealed class WebSettings
 {
     public bool Enabled { get; set; } = true;
@@ -296,6 +305,16 @@ public sealed class BotConfig
     {
         ["plan"] = "z-ai/glm-5.3", ["deadline"] = "z-ai/glm-5.3", ["wakeplan"] = "z-ai/glm-5.3"
     };
+    public AiSettings AiSnapshot() => new() { Model = Model, ModelRouting = new(ModelRouting), ReasoningEffort = new(ReasoningEffort) };
+    public void ApplyAi(AiSettings a)
+    {
+        if (a.Model.Length > 0) Model = a.Model;
+        ModelRouting = new(a.ModelRouting.Where(x => x.Value.Length > 0));
+        var effort = new Dictionary<string, string>(ReasoningEffort);
+        foreach (var (k, v) in a.ReasoningEffort) effort[k] = v;
+        ReasoningEffort = effort; // swapped whole: readers never see a half-updated dictionary
+    }
+    [JsonIgnore] public AiSettings? FileAi { get; set; }
     public string ModelFor(string kind) =>
         ModelRouting.TryGetValue(kind, out var m) || ModelRouting.TryGetValue(kind.Split('-')[0], out m) ? m : Model;
     public string Effort(string kind) =>

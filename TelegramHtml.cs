@@ -137,6 +137,40 @@ public static partial class TelegramHtml
     }
     private static string EscapeAll(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
+    /// <summary>Rebuilds Telegram HTML from a message's text and entities (offsets are UTF-16, like .NET strings).</summary>
+    public static string FromEntities(string text, System.Text.Json.JsonElement entities)
+    {
+        var list = entities.ValueKind == System.Text.Json.JsonValueKind.Array ? entities.EnumerateArray()
+            .Select(e => (Start: (int)e.Number("offset"), End: (int)(e.Number("offset") + e.Number("length")), E: e))
+            .Where(x => x.Start >= 0 && x.End <= text.Length && x.End > x.Start).OrderBy(x => x.Start).ThenByDescending(x => x.End).ToList() : [];
+        string Open(System.Text.Json.JsonElement e) => e.Text("type") switch
+        {
+            "bold" => "<b>", "italic" => "<i>", "underline" => "<u>", "strikethrough" => "<s>", "spoiler" => "<tg-spoiler>",
+            "code" => "<code>", "pre" => e.Text("language") is { Length: > 0 } l ? $"<pre><code class=\"language-{WebUtility.HtmlEncode(l)}\">" : "<pre>",
+            "text_link" => $"<a href=\"{WebUtility.HtmlEncode(e.Text("url"))}\">",
+            "text_mention" => $"<a href=\"tg://user?id={e.Field("user").Number("id")}\">",
+            "blockquote" => "<blockquote>", "expandable_blockquote" => "<blockquote expandable>",
+            "date_time" => $"<tg-time unix=\"{e.Number("unix_time")}\"" + (e.Text("date_time_format") is { Length: > 0 } f ? $" format=\"{f}\"" : "") + ">",
+            _ => ""
+        };
+        string Close(System.Text.Json.JsonElement e) => e.Text("type") switch
+        {
+            "bold" => "</b>", "italic" => "</i>", "underline" => "</u>", "strikethrough" => "</s>", "spoiler" => "</tg-spoiler>", "code" => "</code>",
+            "pre" => e.Text("language") is { Length: > 0 } ? "</code></pre>" : "</pre>", "text_link" or "text_mention" => "</a>",
+            "blockquote" or "expandable_blockquote" => "</blockquote>", "date_time" => "</tg-time>", _ => ""
+        };
+        var sb = new StringBuilder();
+        var open = new Stack<(int End, System.Text.Json.JsonElement E)>();
+        var next = 0;
+        for (var i = 0; i <= text.Length; i++)
+        {
+            while (open.Count > 0 && open.Peek().End == i) sb.Append(Close(open.Pop().E));
+            while (next < list.Count && list[next].Start == i) { sb.Append(Open(list[next].E)); open.Push((list[next].End, list[next].E)); next++; }
+            if (i < text.Length) sb.Append(EscapeAll(text[i].ToString()));
+        }
+        return sb.ToString();
+    }
+
     /// <summary>Plain-text fallback when Telegram still rejects the markup.</summary>
     public static string Plain(string html) => WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", ""));
 }

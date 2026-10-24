@@ -241,6 +241,39 @@ static class NewFeatureTests
                 c.ModelFor("deadline") == "z-ai/glm-5.3" && c.ModelFor("ambient-deadline") == c.Model && c.ModelFor("chat") == c.Model, "Model routing wrong");
         });
 
+        Check("models: compatibility retry, fallback to the main model, explicit override", () =>
+        {
+            var bodies = new List<string>();
+            using var http = new HttpClient(new FakeStatus(async request =>
+            {
+                var body = await request.Content!.ReadAsStringAsync(); bodies.Add(body);
+                if (body.Contains("\"model\":\"vendor/strict\"") && body.Contains("\"reasoning\"")) return (HttpStatusCode.BadRequest, new { error = "no provider" });
+                if (body.Contains("\"model\":\"vendor/down\"")) return (HttpStatusCode.ServiceUnavailable, new { error = "down" });
+                return (HttpStatusCode.OK, new { choices = new[] { new { message = new { content = "ок" }, finish_reason = "stop" } } });
+            })) { BaseAddress = new Uri("https://openrouter.test/") };
+            var c = make("models.db");
+            c.ModelRouting = new() { ["plan"] = "vendor/strict", ["wakeplan"] = "vendor/down" };
+            var client = new OpenRouterClient(http, c, "k");
+            Assert(client.Complete("s", "u", false, CancellationToken.None, "plan").GetAwaiter().GetResult() == "ок" && bodies.Count == 2 &&
+                !bodies[1].Contains("\"reasoning\"") && bodies[1].Contains("vendor/strict"), "Compatibility retry failed");
+            bodies.Clear();
+            Assert(client.Complete("s", "u", false, CancellationToken.None, "wakeplan").GetAwaiter().GetResult() == "ок" && bodies.Last().Contains(c.Model), "Fallback to main model failed");
+            bodies.Clear();
+            client.Complete("s", "u", false, CancellationToken.None, "chat", "", "google/gemini-3.8-flash").GetAwaiter().GetResult();
+            Assert(bodies.Single().Contains("google/gemini-3.8-flash"), "Override ignored");
+            Assert(AiSettings.ValidModel("deepseek/deepseek-v4.1-flash") && !AiSettings.ValidModel("rm -rf"), "Model id validation");
+        });
+
+        Check("sent messages: entities become editable HTML", () =>
+        {
+            var msg = El(new { text = "Бро, А-13 тут", entities = new object[] { new { type = "bold", offset = 0, length = 3 }, new { type = "code", offset = 5, length = 4 },
+                new { type = "blockquote", offset = 0, length = 13 } } });
+            var html = TelegramHtml.FromEntities(msg.Text("text")!, msg.Field("entities"));
+            Assert(html == "<blockquote><b>Бро</b>, <code>А-13</code> тут</blockquote>", "Entities→HTML wrong: " + html);
+            var emoji = El(new { text = "😄 <жирно>", entities = new[] { new { type = "italic", offset = 3, length = 7 } } });
+            Assert(TelegramHtml.FromEntities(emoji.Text("text")!, emoji.Field("entities")) == "😄 <i>&lt;жирно&gt;</i>", "UTF-16 offsets/escaping wrong");
+        });
+
         Check("chat answers split on separator lines and never produce empty parts", () =>
         {
             Assert(OpenRouterClient.Parts("Бро, сегодня философия\n||\nИ дедлайн…\n||\nСоболезную").SequenceEqual(["Бро, сегодня философия", "И дедлайн…", "Соболезную"]), "Split failed");
@@ -568,6 +601,14 @@ static class NewFeatureTests
         return count;
     }
 
+    sealed class FakeStatus(Func<HttpRequestMessage, Task<(HttpStatusCode, object)>> response) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var (code, body) = await response(request);
+            return new(code) { Content = new StringContent(Json.Write(body), Encoding.UTF8, "application/json") };
+        }
+    }
     sealed class Fake(Func<HttpRequestMessage, Task<object>> response) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>

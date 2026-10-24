@@ -14,12 +14,8 @@
   "historyDays": 30,
   "logDays": 365,
   "aiLogDays": 30,
-  "model": "z-ai/glm-5.3-flash",
-  "modelRouting": {
-    "plan": "z-ai/glm-5.3",
-    "deadline": "z-ai/glm-5.3",
-    "wakeplan": "z-ai/glm-5.3"
-  },
+  "model": "google/gemini-3.8-flash",
+  "modelRouting": {},
   "aiTimeoutSeconds": 90,
   "maxOutputTokens": 4096,
   "maxDailyChatRequestsPerUser": 40,
