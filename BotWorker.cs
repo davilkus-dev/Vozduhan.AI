@@ -1,3 +1,4 @@
+using System.Net;
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
@@ -187,7 +188,8 @@ public sealed partial class BotWorker : BackgroundService
         }
     }
 
-    private static readonly string[] ScheduleCommands = ["/today", "/tomorrow", "/week", "/date", "/next"];
+    private static readonly string[] PublicCommands = ["/today", "/tomorrow", "/week", "/date", "/next", "/deadlines", "/subjects", "/roster", "/help", "/start"];
+    private static readonly string[] ManagementCommands = ["/web", "/undo", "/discard", "/where", "/deadline", "/edit", "/move", "/cancel"];
     private static readonly string[] DeadlineCommands = ["/deadline", "/edit", "/move", "/cancel"];
 
     private async Task Process(JsonElement update, CancellationToken ct)
@@ -229,18 +231,26 @@ public sealed partial class BotWorker : BackgroundService
         if (!isPrivate)
         {
             if (!Conversation.CallsBot(m, botId, username)) return;
-            if (ScheduleCommands.Contains(command) || command == "/deadlines") { await Respond(m, responseKey, Info(command, words), ct); return; }
+            // Commands in the group are answered deterministically and never reveal editor/owner data.
+            if (PublicCommands.Contains(command)) { await Respond(m, responseKey, Info(command, words), ct, html: true); return; }
+            if (command.Length > 0)
+            {
+                await Respond(m, responseKey, ManagementCommands.Contains(command)
+                    ? "Это команда для лички со мной 🙂"
+                    : $"Не знаю команду {WebUtility.HtmlEncode(command)} 🤔\n\n" + Help(false), ct, html: true);
+                return;
+            }
             await ChatGuarded(m, responseKey, false, actor, ct);
             return;
         }
         switch (command)
         {
             case "/start" or "/help":
-                await Respond(m, responseKey, Help(editor), ct); return;
+                await Respond(m, responseKey, Help(editor), ct, html: true); return;
             case "/where" when actor == config.OwnerId:
                 await Respond(m, responseKey, $"Твой ID: {actor}\nРазрешённая группа: {config.GroupId}\nВоздуханство: {config.ChatTopicId}\nДедлайны: {config.DeadlinesTopicId}\nВерсия реестра: {store.RegistryVersion()}", ct); return;
             case "/deadlines" or "/subjects" or "/roster" or "/today" or "/tomorrow" or "/week" or "/date" or "/next":
-                await Respond(m, responseKey, Info(command, words, editor, actor == config.OwnerId), ct); return;
+                await Respond(m, responseKey, Info(command, words, editor, actor == config.OwnerId), ct, html: true); return;
             case "/web" when editor:
                 await Respond(m, responseKey, WebLink(actor), ct); return;
             case "/undo" when editor:
@@ -255,68 +265,78 @@ public sealed partial class BotWorker : BackgroundService
             else await Respond(m, responseKey, "Дедлайны меняют только разработчик и староста. Я могу показать их через /deadlines.", ct);
             return;
         }
-        if (command.Length > 0) { await Respond(m, responseKey, "Не знаю такой команды. " + Help(editor), ct); return; }
+        if (command.Length > 0) { await Respond(m, responseKey, $"Не знаю команду {WebUtility.HtmlEncode(command)} 🤔\n\n" + Help(editor), ct, html: true); return; }
         if (editor) { await AdminDialog(m, responseKey, actor, text, ct); return; }
         await ChatGuarded(m, responseKey, true, actor, ct);
     }
 
     private static string Help(bool editor)
     {
-        var help = "Я на месте. В Воздуханстве отвечаю по @упоминанию и на ответы мне, в личке — на всё.\n" +
-            "/today, /tomorrow — пары на сегодня и завтра\n/week [next] — неделя\n/date 31.10 — пары на дату\n/next — следующая пара\n" +
-            "/deadlines — ближайшие сдачи\n/subjects — предметы и преподаватели\n/roster — список группы";
-        if (editor) help += "\n\nТы редактор. Пиши обычным текстом — я сам пойму, болтовня это, дедлайн или изменение расписания/списка, " +
-            "и перед сохранением покажу карточку.\nПримеры: «31-го в субботу матан лекция 6-й парой дистанционно», «Иванова отчислили», " +
-            "«добавь к философии сленг шаманство», «к матану комментарий: препод душнит».\n" +
-            "/web — ссылка в веб-админку (через VPN)\n/undo — откатить последнее изменение реестра\n" +
-            "/deadline subjectId | работа | YYYY-MM-DD | пара [| кабинет] — дедлайн без ИИ\n/edit ID текст изменений\n/move ID YYYY-MM-DD [пара]\n/cancel ID\n/discard — убрать черновики\n/where — IDs чата и тем";
+        var help = "👋 <b>Что я умею</b>\n\n" +
+            "🗓 <b>Расписание</b>\n/today — пары сегодня\n/tomorrow — пары завтра\n/next — какая пара следующая\n" +
+            "/week — неделя (<code>/week next</code> — следующая)\n/date 31.10 — пары на дату\n\n" +
+            "📌 <b>Учёба</b>\n/deadlines — ближайшие сдачи\n/subjects — предметы и преподаватели\n/roster — список группы\n\n" +
+            "💬 А ещё можно просто спросить: «где матан?», «что завтра?». В Воздуханстве — через @упоминание или ответом на моё сообщение, в личке — как угодно.";
+        if (editor) help += "\n\n🛠 <b>Для редакторов</b>\nПиши обычным текстом — пойму, болтовня это, дедлайн или изменение расписания/списка, и покажу карточку перед сохранением.\n" +
+            "<i>«31-го в субботу матан лекция 6-й парой дистанционно», «Иванова отчислили»</i>\n" +
+            "/web — веб-админка (через VPN)\n/undo — откатить последнее изменение\n" +
+            "<code>/deadline id | работа | YYYY-MM-DD | пара [| кабинет]</code> — дедлайн без ИИ\n/edit ID текст · /move ID дата [пара] · /cancel ID\n/discard — убрать черновики · /where — IDs";
         return help;
     }
 
+    /// <summary>Command answers in Telegram HTML. In the group editor/owner extras are never shown.</summary>
     private string Info(string command, string[] words, bool editor = false, bool owner = false)
     {
+        static string H(string? x) => WebUtility.HtmlEncode(x ?? "");
         var r = config.R;
-        var today = DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow));
+        var local = config.LocalNow(DateTimeOffset.UtcNow);
+        var today = DateOnly.FromDateTime(local);
         switch (command)
         {
-            case "/today": return Schedule.DayText(r, today, "Сегодня");
-            case "/tomorrow": return Schedule.DayText(r, today.AddDays(1), "Завтра");
-            case "/week": return Conversation.Limit(Schedule.WeekText(r, words.Length > 1 && words[1].StartsWith("next", StringComparison.OrdinalIgnoreCase) || words.Length > 1 && words[1].StartsWith("след") ? today.AddDays(7) : today), 3900);
+            case "/today": return ScheduleHtml.Day(r, today, "Сегодня");
+            case "/tomorrow": return ScheduleHtml.Day(r, today.AddDays(1), "Завтра");
+            case "/week":
+                var next = words.Length > 1 && (words[1].StartsWith("next", StringComparison.OrdinalIgnoreCase) || words[1].StartsWith("след", StringComparison.OrdinalIgnoreCase));
+                return ScheduleHtml.Week(r, next ? today.AddDays(7) : today, today);
             case "/date":
-                return words.Length > 1 && ParseDate(words[1], today) is { } d ? Schedule.DayText(r, d) : "Формат: /date 31.10 или /date 2026-10-31";
-            case "/next":
-            {
-                var now = Schedule.Now(r, config.LocalNow(DateTimeOffset.UtcNow));
-                var parts = new List<string>();
-                if (now.Current is not null) parts.Add("Сейчас: " + Schedule.Line(now.Current));
-                parts.Add(now.Next is null ? "Ближайших пар не вижу." : "Следующая: " + Schedule.Line(now.Next, true) + (now.MinutesToNext < 24 * 60 ? $" (через {now.MinutesToNext / 60} ч {now.MinutesToNext % 60} мин)" : ""));
-                return string.Join("\n", parts);
-            }
+                return words.Length > 1 && ParseDate(words[1], today) is { } d ? ScheduleHtml.Day(r, d) : "Формат: <code>/date 31.10</code> или <code>/date 2026-10-31</code>";
+            case "/next": return ScheduleHtml.Next(r, local);
             case "/deadlines":
             {
-                var rows = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) >= DateTimeOffset.UtcNow).ToArray();
-                return rows.Length == 0 ? "Подтверждённых будущих дедлайнов пока нет." : Conversation.Limit(string.Join("\n\n", rows.Select(d => Deadlines.Facts(config, d))), 3900);
+                var rows = store.AllDeadlines().Where(x => x.Status == "active" && Deadlines.Ends(config, x) >= DateTimeOffset.UtcNow).ToArray();
+                if (rows.Length == 0) return "⏰ <b>Дедлайны</b>\n\nПодтверждённых будущих сдач пока нет 🎉";
+                return "⏰ <b>Ближайшие дедлайны</b>" + string.Concat(rows.Take(25).Select(x =>
+                {
+                    var day = DateOnly.Parse(x.Date);
+                    var left = day.DayNumber - today.DayNumber;
+                    var when = left == 0 ? "сегодня" : left == 1 ? "завтра" : $"{Schedule.DayShort[Schedule.Dow(day)].ToLowerInvariant()} {day:dd.MM}";
+                    return $"\n\n<b>{H(r.SubjectName(x.SubjectId))}</b> — {H(x.Work)}\n📅 {when}, {x.Period} пара ({x.Start}) · 🚪 <code>{H(x.Room)}</code>" +
+                        (string.IsNullOrWhiteSpace(x.Note) ? "" : $"\n<i>{H(x.Note)}</i>") + $" <i>#{x.Id}</i>";
+                }));
             }
             case "/subjects":
-                if (r.Subjects.Length == 0) return "Реестр предметов пуст. Добавь предметы в веб-админке (/web) или напиши мне, что добавить.";
-                return Conversation.Limit(string.Join("\n\n", r.Subjects.Where(s => !s.Archived).Select(s =>
+                if (r.Subjects.Length == 0) return "Предметов пока нет.";
+                return "🎓 <b>Предметы</b>" + string.Concat(r.Subjects.Where(x => !x.Archived).Select(x =>
                 {
-                    var lessons = r.Lessons.Where(l => l.SubjectId == s.Id && (l.Until is null || DateOnly.ParseExact(l.Until, "yyyy-MM-dd") >= today)).ToArray();
-                    var teachers = lessons.GroupBy(l => l.Kind).OrderBy(g => g.Key == "lecture" ? 0 : 1)
-                        .Select(g => Schedule.KindRu(g.Key) + ": " + string.Join(", ", g.Select(l => l.Teacher).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct().DefaultIfEmpty("—")));
-                    return $"{s.Name}" + (editor ? $" ({s.Id})" : "") + (owner && (s.Aliases ?? []).Length > 0 ? "\nСленг: " + string.Join(", ", s.Aliases!) : "") +
-                        (owner && !string.IsNullOrWhiteSpace(s.AdminComment) ? "\n🤫 " + s.AdminComment : "") +
-                        (lessons.Length > 0 ? "\n" + string.Join(" · ", teachers) : "");
-                })), 3900);
+                    var lessons = r.Lessons.Where(l => l.SubjectId == x.Id && (l.Until is null || DateOnly.ParseExact(l.Until, "yyyy-MM-dd") >= today)).ToArray();
+                    var who = lessons.GroupBy(l => l.Kind).OrderBy(g => g.Key == "lecture" ? 0 : 1).Select(g =>
+                        $"{(g.Key == "lecture" ? "Лекции" : g.Key == "lab" ? "Лабы" : "Практики")}: " +
+                        string.Join(", ", g.Select(l => l.Teacher).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct().Select(H).DefaultIfEmpty("—")));
+                    return $"\n\n<b>{H(x.Name)}</b>" + (editor ? $" <code>{H(x.Id)}</code>" : "") +
+                        (lessons.Length > 0 ? "\n" + string.Join("\n", who) : "") +
+                        (owner && (x.Aliases ?? []).Length > 0 ? "\n🤫 сленг: " + H(string.Join(", ", x.Aliases!)) : "") +
+                        (owner && !string.IsNullOrWhiteSpace(x.AdminComment) ? "\n🤫 " + H(x.AdminComment) : "");
+                }));
             case "/roster":
             {
                 var active = r.Members.Where(x => x.Active).OrderBy(x => x.ListNumber == 0 ? int.MaxValue : x.ListNumber).ThenBy(x => x.FullName)
-                    .Select(x => $"{(x.ListNumber > 0 ? x.ListNumber + "." : "•")} {x.FullName}" + (x.Role == "head" ? " ⭐ староста" : "") +
-                        (editor ? (string.IsNullOrWhiteSpace(x.Username) ? "" : " @" + x.Username) + (x.UserId is null ? " ❔ нет Telegram ID" : "") : ""));
-                var text = $"👥 Список группы ({r.Members.Count(x => x.Active)}):\n" + string.Join("\n", active);
+                    .Select(x => $"{(x.ListNumber > 0 ? x.ListNumber + "." : "•")} {H(x.FullName)}" + (x.Role == "head" ? " ⭐" : "") +
+                        (editor ? (string.IsNullOrWhiteSpace(x.Username) ? "" : " @" + H(x.Username)) + (x.UserId is null ? " ❔" : "") : ""));
+                var text = $"👥 <b>Список группы</b> · {r.Members.Count(x => x.Active)} чел.\n<blockquote expandable>" + string.Join("\n", active) + "</blockquote>";
+                if (editor) text += "\n<i>⭐ староста" + (r.Members.Any(x => x.Active && x.UserId is null) ? " · ❔ нет Telegram ID — бот такому не отвечает" : "") + "</i>";
                 var gone = r.Members.Where(x => !x.Active).ToArray();
-                if (editor && gone.Length > 0) text += "\n\nНеактивные:\n" + string.Join("\n", gone.Select(x => $"• {x.FullName}" + (string.IsNullOrWhiteSpace(x.Note) ? "" : $" — {x.Note}")));
-                return Conversation.Limit(text, 3900);
+                if (editor && gone.Length > 0) text += "\n\n<b>Неактивные</b>\n" + string.Join("\n", gone.Select(x => $"• {H(x.FullName)}" + (string.IsNullOrWhiteSpace(x.Note) ? "" : $" — <i>{H(x.Note)}</i>")));
+                return text;
             }
         }
         return Help(editor);
@@ -362,7 +382,7 @@ public sealed partial class BotWorker : BackgroundService
                 answer = "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны и /today от этого не пропали.";
             }
             finally { typing.Cancel(); await indicator; }
-            answer = Conversation.Limit(answer, 3900);
+            answer = Conversation.Limit(Json.Unescape(answer), 3900);
             store.SavePost(answerKey, 0, answer);
         }
         var parts = config.SplitReplies ? OpenRouterClient.Parts(answer) : [answer.Replace("\n" + OpenRouterClient.Split + "\n", "\n")];
@@ -420,10 +440,15 @@ public sealed partial class BotWorker : BackgroundService
         await Task.Delay(TimeSpan.FromMilliseconds(ms), ct);
     }
 
-    private async Task Respond(JsonElement to, string key, string text, CancellationToken ct, object? keyboard = null)
+    private async Task Respond(JsonElement to, string key, string text, CancellationToken ct, object? keyboard = null, bool html = false)
     {
-        var sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), text, ct,
-            keyboard, (int)to.Number("message_id"));
+        JsonElement sent;
+        try { sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), text, ct, keyboard, (int)to.Number("message_id"), html); }
+        catch (TelegramError e) when (html && e.Code == 400 && e.Description.Contains("parse", StringComparison.OrdinalIgnoreCase))
+        {
+            log.LogWarning("Telegram rejected command HTML: {Error}", Failure(e));
+            sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), TelegramHtml.Plain(text), ct, keyboard, (int)to.Number("message_id"));
+        }
         store.SavePost(key, (int)sent.Number("message_id"), "");
         store.Remember(sent.Field("chat").Number("id"), sent.TopicId(), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
     }

@@ -15,8 +15,8 @@ public sealed class Conversation(BotConfig config, BotStore store)
         return new
         {
             telegram_id = id,
-            username = user.Text("username") ?? known?.Username,
-            telegram_name = $"{user.Text("first_name")} {user.Text("last_name")}".Trim(),
+            telegram_username = (user.Text("username") ?? known?.Username) is { Length: > 0 } u ? "@" + u : null,
+            telegram_display_name_not_username = $"{user.Text("first_name")} {user.Text("last_name")}".Trim(),
             short_name = known?.ShortName,
             full_name = known?.FullName,
             role = config.Role(id),
@@ -176,9 +176,14 @@ public sealed class Conversation(BotConfig config, BotStore store)
             confirmed_upcoming_deadlines = relevant,
             known_group_members = r.Members.Where(m => m.Active).Select(m => new
             {
-                m.UserId, m.Username, m.ShortName, m.FullName, m.TelegramName,
-                role = m.UserId == config.OwnerId ? "developer" : m.Role,
-                telegram_bound = m.UserId is > 0
+                list_number = m.ListNumber, full_name = m.FullName, short_name = m.ShortName,
+                role = m.UserId == config.OwnerId ? "developer" : m.Role == "head" ? "head (староста)" : "member",
+                // The only things that identify a Telegram account; display names are NOT usernames.
+                telegram_username = string.IsNullOrWhiteSpace(m.Username) ? null : "@" + m.Username,
+                telegram_link = string.IsNullOrWhiteSpace(m.Username) ? null : "https://t.me/" + m.Username,
+                telegram_id = m.UserId,
+                mention_html = m.UserId is > 0 ? $"<a href=\"tg://user?id={m.UserId}\">{System.Net.WebUtility.HtmlEncode(m.ShortName)}</a>" : null,
+                telegram_display_name_not_username = m.TelegramName
             }),
             recent_messages = messages,
             reply_ancestors = ancestors,

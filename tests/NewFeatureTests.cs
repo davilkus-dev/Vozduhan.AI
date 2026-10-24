@@ -202,6 +202,16 @@ static class NewFeatureTests
             Assert(full.Members.All(m => m.AdminNote is null) && full.WithSecretsFrom(c.R).Members.Single(m => m.UserId == 3).AdminNote!.Contains("3060"), "Redact/merge broken");
         });
 
+        Check("emoji are not escaped for the model and literal escapes from the model are repaired", () =>
+        {
+            Assert(Json.Write(new { t = "ок 😄" }).Contains("😄") && !Json.Write(new { t = "😄" }).Contains("\\u"), "Emoji escaped for the model");
+            Assert(Json.Write(new { t = "\\uD83D\\uDE04 literal" }).Contains("\\\\uD83D"), "Literal backslash text corrupted");
+            Assert(Json.Unescape("Миш \\uD83D\\uDE04 ок \\u2764") == "Миш 😄 ок ❤", "Model escapes not repaired: " + Json.Unescape("Миш \\uD83D\\uDE04 ок \\u2764"));
+            var r = make("html.db").R;
+            Assert(TelegramHtml.Sanitize(ScheduleHtml.Week(r, new DateOnly(2026, 11, 30), new DateOnly(2026, 11, 30))) == ScheduleHtml.Week(r, new DateOnly(2026, 11, 30), new DateOnly(2026, 11, 30)), "Week HTML not canonical");
+            Assert(ScheduleHtml.Day(r, new DateOnly(2026, 11, 30), "Сегодня").Contains("<b>СиАОД</b>"), "Day HTML lacks bold subject");
+        });
+
         Check("chat answers split on separator lines and never produce empty parts", () =>
         {
             Assert(OpenRouterClient.Parts("Бро, сегодня философия\n||\nИ дедлайн…\n||\nСоболезную").SequenceEqual(["Бро, сегодня философия", "И дедлайн…", "Соболезную"]), "Split failed");
@@ -232,6 +242,7 @@ static class NewFeatureTests
             var context = conv.Context(Msg(c.GroupId, c.ChatTopicId, 5, 3, "какая пара следующая?"), false);
             Assert(context.Contains("next_lesson") && context.Contains("сиаод") && context.Contains("А412"), "Schedule facts missing");
             Assert(!context.Contains("препод душнит") && !context.Contains("ПТУ МИРЭА"), "Admin text leaked into the untrusted part");
+            Assert(context.Contains("\"telegram_username\":\"@head\"") && context.Contains("https://t.me/head") && context.Contains("tg://user?id=2"), "Member contacts unclear: " + context);
             var system = conv.AdminContext();
             Assert(system.Contains("препод душнит") && system.Contains("ПТУ МИРЭА"), "Admin context missing");
             Assert(OpenRouterClient.ChatRules(c, true).Contains("староста") && OpenRouterClient.ChatRules(c, true).Contains("||"), "Russian rules / split hint missing");
@@ -307,6 +318,25 @@ static class NewFeatureTests
             sent.Clear();
             await Run(El(new { message = Msg(3, 0, 40, 3, "/date 30.11.2026") }));
             Assert(sent.Single(x => x.Method == "sendMessage").Payload.Text("text")!.Contains("СиАОД"), "/date failed");
+
+            // Group commands are deterministic HTML, never AI, never editor data.
+            async Task<string> GroupCommand(int id, string cmd)
+            {
+                sent.Clear();
+                var text = cmd + "@vozduhanAIbot";
+                await Run(El(new { message = El(new { message_id = id, date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), chat = new { id = c.GroupId, type = "supergroup" },
+                    message_thread_id = c.ChatTopicId, from = new { id = 1, first_name = "Миша" }, text, entities = new[] { new { type = "bot_command", offset = 0, length = text.Length } } }) }));
+                var reply = sent.Single(x => x.Method == "sendMessage").Payload;
+                Assert(reply.Text("parse_mode") == "HTML" && TelegramHtml.Sanitize(reply.Text("text")!) == reply.Text("text"), "Command HTML not clean: " + reply.Text("text"));
+                return reply.Text("text")!;
+            }
+            var aiBefore = s.AiCalls().Count;
+            Assert((await GroupCommand(60, "/roster")).Contains("Студент Тестовый") && !(await GroupCommand(61, "/roster")).Contains("@"), "Group roster wrong or leaks usernames");
+            Assert((await GroupCommand(62, "/help")).Contains("/today"), "Group help wrong");
+            Assert((await GroupCommand(63, "/roaster")).Contains("Не знаю команду"), "Unknown command went to AI");
+            Assert((await GroupCommand(64, "/web")).Contains("личк"), "Management command answered in the group");
+            Assert((await GroupCommand(65, "/week")).Contains("<blockquote>") && (await GroupCommand(66, "/today")).Contains("📅"), "Schedule HTML wrong");
+            Assert(s.AiCalls().Count == aiBefore, "Commands must not call the AI");
 
             // Incoming log + seen users (reflection: Poll is not running in tests).
             var logIn = typeof(BotWorker).GetMethod("LogIncoming", BindingFlags.Instance | BindingFlags.NonPublic)!;

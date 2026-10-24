@@ -12,7 +12,19 @@ public static class Json
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         WriteIndented = false
     };
-    public static string Write<T>(T value) => JsonSerializer.Serialize(value, Options);
+    /// <summary>
+    /// System.Text.Json escapes emoji as \uD83D\uDE04 even in relaxed mode. Models copy that literally into answers,
+    /// so emoji are written as real characters (still valid JSON).
+    /// </summary>
+    public static string Write<T>(T value) => Emoji.Replace(JsonSerializer.Serialize(value, Options),
+        m => char.ConvertFromUtf32(char.ConvertToUtf32((char)Convert.ToInt32(m.Groups[1].Value, 16), (char)Convert.ToInt32(m.Groups[2].Value, 16))));
+    private static readonly Regex Emoji = new(@"(?<=(?:^|[^\\])(?:\\\\)*)\\u(D[89AB][0-9A-F]{2})\\u(D[C-F][0-9A-F]{2})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    /// <summary>Turns literal \uXXXX escapes a model may still produce into characters.</summary>
+    public static string Unescape(string text) => Regex.Replace(text, @"\\u(D[89AB][0-9A-F]{2})\\u(D[C-F][0-9A-F]{2})|\\u([0-9A-F]{4})", m =>
+    {
+        if (m.Groups[3].Success) { var c = Convert.ToInt32(m.Groups[3].Value, 16); return c is >= 0xD800 and <= 0xDFFF ? "" : ((char)c).ToString(); }
+        return char.ConvertFromUtf32(char.ConvertToUtf32((char)Convert.ToInt32(m.Groups[1].Value, 16), (char)Convert.ToInt32(m.Groups[2].Value, 16)));
+    }, RegexOptions.IgnoreCase);
     public static T Read<T>(string value) => JsonSerializer.Deserialize<T>(value, Options)
         ?? throw new InvalidDataException("Empty JSON value");
 }
