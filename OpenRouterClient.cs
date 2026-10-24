@@ -27,6 +27,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         string? result = null;
         Exception? failure = null;
         var effort = config.Effort(kind);
+        var model = config.ModelFor(kind);
         var budget = config.MaxOutputTokens;
         var attempts = 0;
         try
@@ -36,7 +37,15 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             while (true)
             {
                 attempts++;
-                var (content, finish) = await Attempt(system, user, json, effort, budget, timeout.Token);
+                (string? content, string? finish) answer;
+                try { answer = await Attempt(model, system, user, json, effort, budget, timeout.Token); }
+                catch (HttpRequestException) when (model != config.Model)
+                {
+                    // The full model is unavailable or rate-limited: planning still works on Flash.
+                    model = config.Model;
+                    answer = await Attempt(model, system, user, json, effort, budget, timeout.Token);
+                }
+                var (content, finish) = answer;
                 var cut = finish is "length" or "max_tokens" || string.IsNullOrEmpty(content) || (json && !ValidJson(content));
                 if (!cut) { result = content!; break; }
                 if (budget >= config.MaxOutputTokensCeiling || attempts >= 3)
@@ -55,7 +64,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         {
             try
             {
-                Trace?.Invoke(new(kind, tag, $"{config.Model} · effort {effort} · max_tokens {budget}" + (attempts > 1 ? $" · попыток {attempts}" : ""),
+                Trace?.Invoke(new(kind, tag, $"{model} · effort {effort} · max_tokens {budget}" + (attempts > 1 ? $" · попыток {attempts}" : ""),
                     system, user, result ?? "", clock.ElapsedMilliseconds, failure is null ? null : failure.GetType().Name + ": " + failure.Message));
             }
             catch { /* logging must never break a reply */ }
@@ -65,7 +74,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     {
         try { using var _ = JsonDocument.Parse(text); return true; } catch (JsonException) { return false; }
     }
-    private async Task<(string? Content, string? Finish)> Attempt(string system, string user, bool json, string effort, int budget, CancellationToken ct)
+    private async Task<(string? Content, string? Finish)> Attempt(string model, string system, string user, bool json, string effort, int budget, CancellationToken ct)
     {
         await slots.WaitAsync(ct);
         try
@@ -75,7 +84,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             request.Headers.Add("X-OpenRouter-Title", "Vozduhan.AI");
             request.Content = JsonContent.Create(new
             {
-                model = config.Model,
+                model,
                 messages = new[] { new { role = "system", content = system }, new { role = "user", content = user } },
                 reasoning = new { effort, exclude = true },
                 temperature = json ? 0.3 : 1.0, top_p = 0.95, max_tokens = budget,

@@ -237,6 +237,8 @@ static class NewFeatureTests
             Assert(result == "{\"a\":1}" && bodies.Count == 2, "Cut answer not regenerated");
             Assert(bodies[0].Contains("\"max_tokens\":4096") && bodies[1].Contains("\"max_tokens\":8192"), "Budget not raised");
             Assert(bodies[0].Contains("\"effort\":\"medium\"") && c.Effort("chat") == "low", "Effort per kind wrong");
+            Assert(bodies[0].Contains("\"model\":\"z-ai/glm-5.3-flash\"") && c.ModelFor("plan") == "z-ai/glm-5.3" && c.ModelFor("wakeplan") == "z-ai/glm-5.3" &&
+                c.ModelFor("deadline") == "z-ai/glm-5.3" && c.ModelFor("ambient-deadline") == c.Model && c.ModelFor("chat") == c.Model, "Model routing wrong");
         });
 
         Check("chat answers split on separator lines and never produce empty parts", () =>

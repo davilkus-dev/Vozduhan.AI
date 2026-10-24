@@ -288,6 +288,16 @@ public sealed class BotConfig
     {
         ["chat"] = "low", ["deadline"] = "low", ["intro"] = "low", ["plan"] = "medium", ["wakeplan"] = "medium", ["ambient"] = "medium"
     };
+    /// <summary>
+    /// Model per task. Planning (editor requests, deadline parsing, wake-up plans) goes to the full model;
+    /// everything else uses Model (Flash) to save money. Unlisted kinds use Model.
+    /// </summary>
+    public Dictionary<string, string> ModelRouting { get; set; } = new()
+    {
+        ["plan"] = "z-ai/glm-5.3", ["deadline"] = "z-ai/glm-5.3", ["wakeplan"] = "z-ai/glm-5.3"
+    };
+    public string ModelFor(string kind) =>
+        ModelRouting.TryGetValue(kind, out var m) || ModelRouting.TryGetValue(kind.Split('-')[0], out m) ? m : Model;
     public string Effort(string kind) =>
         ReasoningEffort.TryGetValue(kind, out var e) || ReasoningEffort.TryGetValue(kind.Split('-')[0], out e) ? e : "low";
     public string GroupName { get; set; } = "ИКБО-66-25";
