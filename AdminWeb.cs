@@ -220,7 +220,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                         {
                             date = ds, weekday = Schedule.DayNames[Schedule.Dow(d)],
                             summary = config.SummaryTopicId > 0 ? new { time = a.SummaryTime, status = Status($"ambient:summary:{ds}") } : null,
-                            morning = new { time = a.MorningTime, status = Status($"ambient:morning:{ds}") },
+                            morning = a.MorningTime.Length == 0 ? null : new { time = a.MorningTime, status = Status($"ambient:morning:{ds}") },
                             spontaneous = spont?.Select((t, n) => new { time = t, status = Status($"ambient:spont:{ds}:{n}") }),
                             eve = tomorrow.Count == 0 || !a.EveReminders ? null : new { time = a.EveReminderTime, status = Status($"ambient:eve:{ds}"),
                                 about = tomorrow.Select(x => config.R.SubjectName(x.SubjectId) + " — " + x.Work) }
@@ -265,7 +265,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 {
                     var text = body.Text("text");
                     if (string.IsNullOrWhiteSpace(text)) { await Send(response, 400, new { ok = false, error = "Пустой текст" }); return; }
-                    await worker.PostAmbient("manual", null, ct, text);
+                    await worker.PostAmbient("manual", null, ct, text, body.Text("target") == "chat" ? config.ChatTopicId : null);
                     await Send(response, 200, new { ok = true });
                     return;
                 }

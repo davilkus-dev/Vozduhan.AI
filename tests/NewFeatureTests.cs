@@ -357,7 +357,7 @@ static class NewFeatureTests
             // ---- The bot's own initiative ----
             {
                 var ac = make("ambient.db");
-                ac.SummaryTopicId = 30; ac.Ambient.SpontaneousPerDay = 0;
+                ac.SummaryTopicId = 30; ac.Ambient.SpontaneousPerDay = 0; ac.Ambient.MorningTime = "08:00";
                 using var st = new BotStore(ac);
                 var aiRequests = new List<string>();
                 string wakePlan = "{}";
@@ -366,7 +366,7 @@ static class NewFeatureTests
                     var text = await request.Content!.ReadAsStringAsync();
                     lock (aiRequests) aiRequests.Add(text);
                     var content = text.Contains("планируешь, когда тебе") ? wakePlan
-                        : text.Contains("ЗАДАЧА: одна-две короткие строки") ? "Понедельник, держитесь"
+                        : text.Contains("утреннее сообщение группе в теме «Сводка»") ? "Понедельник, держитесь, @user3"
                         : text.Contains("ЗАДАЧА: утреннее") ? "Доброе утро!\n||\nСегодня СиАОД"
                         : text.Contains("ЗАДАЧА: ты сам решил") ? "SKIP"
                         : text.Contains("ЗАДАЧА: ты проснулся") ? "СиАОД через 3 дня, <b>шевелитесь</b>"
@@ -404,7 +404,8 @@ static class NewFeatureTests
                 var wplan = st.Wakeups(dl.Id);
                 Assert(wplan.Count == 2 && wplan.All(x => x.Source == "ai") && wplan[0].Reason == "за три дня" && wplan[1].Reason == "за два часа", "Wake-up plan not validated: " + Json.Write(wplan));
                 await Tick("2026-12-04T16:01:00Z");
-                Assert(sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("message_thread_id") == ac.ChatTopicId && x.Payload.Text("text")!.Contains("<b>шевелитесь</b>")), "Wake-up did not fire");
+                Assert(sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("message_thread_id") == 30 && x.Payload.Text("text")!.Contains("<b>шевелитесь</b>")), "Wake-up did not fire into «Сводка»");
+                Assert(aiRequests.Any(r => r.Contains("обязательно тегни")), "Tagging rule missing");
                 Assert(st.Wakeups(dl.Id).First().Status == "fired", "Wake-up fired twice risk");
                 Assert(aiRequests.Any(r => r.Contains("за три дня") && r.Contains("time_left")), "Wake-up context lacks reason/time left");
 
@@ -436,7 +437,7 @@ static class NewFeatureTests
                 var ptoken = Json.Read<Dictionary<string, JsonElement>>(st.Get("postdraft:1")!)["token"].GetString();
                 sent.Clear();
                 await Upd(El(new { callback_query = new { id = "p", from = new { id = 1 }, data = "apost:" + ptoken, message = new { message_id = 901, chat = new { id = 1 } } } }));
-                Assert(sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("chat_id") == ac.GroupId && x.Payload.Text("text") == "Сходка в 15:00, все к А-13"), "Manual post not sent");
+                Assert(sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("chat_id") == ac.GroupId && x.Payload.Number("message_thread_id") == 30 && x.Payload.Text("text") == "Сходка в 15:00, все к А-13"), "Manual post not sent to «Сводка»");
                 sent.Clear();
                 await Upd(El(new { message = Msg(2, 0, 902, 2, "/post спам") }));
                 Assert(!sent.Single(x => x.Method == "sendMessage").Payload.Text("text")!.Contains("Черновик"), "Head could trigger posts");

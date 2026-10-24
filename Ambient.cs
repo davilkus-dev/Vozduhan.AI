@@ -31,9 +31,9 @@ public sealed partial class BotWorker
         var today = DateOnly.FromDateTime(local);
         var date = today.ToString("yyyy-MM-dd");
         if (config.SummaryTopicId > 0) await Job($"ambient:summary:{date}", today, a.SummaryTime, local, () => MorningSummary(today, ct));
-        await Job($"ambient:morning:{date}", today, a.MorningTime, local, () => PostAmbient("morning", null, ct));
+        if (a.MorningTime.Length > 0) await Job($"ambient:morning:{date}", today, a.MorningTime, local, () => PostAmbient("morning", null, ct, topic: config.ChatTopicId));
         foreach (var (i, time) in SpontaneousPlan(today).Select((t, i) => (i, t)))
-            await Job($"ambient:spont:{date}:{i}", today, time, local, () => PostAmbient("spontaneous", null, ct));
+            await Job($"ambient:spont:{date}:{i}", today, time, local, () => PostAmbient("spontaneous", null, ct, topic: config.ChatTopicId));
         if (a.EveReminders) await Job($"ambient:eve:{date}", today, a.EveReminderTime, local, () => EveReminder(today.AddDays(1), ct));
         await PlanMissingWakeups(utc, ct);
         foreach (var w in store.DueWakeups(utc.ToUnixTimeSeconds()))
@@ -69,24 +69,30 @@ public sealed partial class BotWorker
         return plan;
     }
 
-    /// <summary>Generates and posts a message into Воздуханство. Returns the text or null when the model chose to stay silent.</summary>
-    internal async Task<string?> PostAmbient(string kind, object? extra, CancellationToken ct, string? ready = null)
+    /// <summary>
+    /// Generates and posts the bot's own message. Default target is «Сводка» (announcements and reminders);
+    /// only drops in Воздуханство are split into several chat-like messages.
+    /// </summary>
+    internal async Task<string?> PostAmbient(string kind, object? extra, CancellationToken ct, string? ready = null, int? topic = null)
     {
         await ambientGate.WaitAsync(ct);
         try
         {
-            var text = ready ?? await GenerateAmbient(kind, extra, ct);
+            var target = topic ?? ReminderTopic;
+            var chatty = target == config.ChatTopicId;
+            var text = ready ?? await GenerateAmbient(kind, extra, ct, chatty);
             if (text is null) return null;
-            await SendParts(config.GroupId, config.ChatTopicId, config.SplitReplies ? OpenRouterClient.Parts(text) : [text], null, 0, ct);
+            var parts = chatty && config.SplitReplies ? OpenRouterClient.Parts(text) : [OpenRouterClient.Join(text)];
+            await SendParts(config.GroupId, target, parts, null, chatty ? 0 : double.MaxValue, ct);
             conversation.AddRecentPost(text);
             return text;
         }
         finally { ambientGate.Release(); }
     }
-    internal async Task<string?> GenerateAmbient(string kind, object? extra, CancellationToken ct)
+    internal async Task<string?> GenerateAmbient(string kind, object? extra, CancellationToken ct, bool split = false)
     {
         string text;
-        try { text = await ai.Ambient(kind, conversation.AdminContext(false), conversation.AmbientContext(kind, extra), ct); }
+        try { text = await ai.Ambient(kind, conversation.AdminContext(false), conversation.AmbientContext(kind, extra), split, ct); }
         catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Ambient {Kind} generation failed: {Error}", kind, Failure(e)); return null; }
         text = Conversation.Limit(Json.Unescape(text).Trim(), 3900);
         return text.StartsWith(OpenRouterClient.Skip, StringComparison.OrdinalIgnoreCase) || text.Length == 0 ? null : text;
@@ -125,16 +131,17 @@ public sealed partial class BotWorker
         var lead = await GenerateAmbient("eve", null, ct) ?? "⏰ Завтра сдаём:";
         lead = TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(lead.Replace(OpenRouterClient.Split, " ")));
         var facts = string.Join("\n\n", due.Select(d => System.Net.WebUtility.HtmlEncode(Deadlines.Facts(config, d))));
-        await telegram.Send(config.GroupId, ReminderTopic, Conversation.Limit(lead, 600) + "\n\n" + facts, ct, html: true);
+        await telegram.Send(config.GroupId, EveTopic, Conversation.Limit(lead, 600) + "\n\n" + facts, ct, html: true);
     }
-    private int ReminderTopic => config.SummaryTopicId > 0 ? config.SummaryTopicId : config.DeadlinesTopicId;
+    private int ReminderTopic => config.SummaryTopicId > 0 ? config.SummaryTopicId : config.ChatTopicId;
+    private int EveTopic => config.SummaryTopicId > 0 ? config.SummaryTopicId : config.DeadlinesTopicId;
 
     /// <summary>Morning summary in «Сводка»: a creative lead, the day's schedule and the submissions of the next days (exact facts).</summary>
     internal async Task MorningSummary(DateOnly today, CancellationToken ct)
     {
         var lead = await GenerateAmbient("summary", null, ct);
         var sb = new System.Text.StringBuilder();
-        if (lead is not null) sb.Append(TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(Conversation.Limit(lead.Replace(OpenRouterClient.Split, " "), 300)))).Append("\n\n");
+        if (lead is not null) sb.Append(TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(Conversation.Limit(OpenRouterClient.Join(lead), 700)))).Append("\n\n");
         sb.Append(ScheduleHtml.Day(config.R, today, "Сегодня"));
         var soon = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) > DateTimeOffset.UtcNow &&
             DateOnly.Parse(d.Date) <= today.AddDays(3)).OrderBy(d => d.Date).ThenBy(d => d.Start).ToList();
@@ -227,13 +234,13 @@ public sealed partial class BotWorker
         await Respond(m, key, PostCard(text), ct, PostButtons(token), html: true);
     }
     private static string PostCard(string text) =>
-        "📝 <b>Черновик для Воздуханства</b>\n\n" + TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(text)).Replace("\n" + OpenRouterClient.Split + "\n", "\n<i>— новое сообщение —</i>\n");
+        "📝 <b>Черновик</b> — куда отправить?\n\n" + TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(OpenRouterClient.Join(text)));
     private static object PostButtons(string token) => new
     {
         inline_keyboard = new[]
         {
-            new[] { new { text = "Отправить", callback_data = "apost:" + token }, new { text = "Ещё вариант", callback_data = "aredo:" + token } },
-            new[] { new { text = "Не надо", callback_data = "ano:" + token } }
+            new[] { new { text = "📋 В Сводку", callback_data = "apost:" + token }, new { text = "💬 В Воздуханство", callback_data = "achat:" + token } },
+            new[] { new { text = "Ещё вариант", callback_data = "aredo:" + token }, new { text = "Не надо", callback_data = "ano:" + token } }
         }
     };
     private async Task PostCallback(JsonElement cb, string action, string token, CancellationToken ct)
@@ -262,8 +269,9 @@ public sealed partial class BotWorker
             default:
                 store.Set($"postdraft:{actor}", "{}");
                 await SafeCallback(cb.Text("id")!, "Отправляю…", ct);
-                await PostAmbient("manual", null, ct, doc.RootElement.Text("text"));
-                await telegram.Edit(actor, messageId, "✅ Отправлено в Воздуханство.", ct);
+                var chat = action == "achat";
+                await PostAmbient("manual", null, ct, doc.RootElement.Text("text"), chat ? config.ChatTopicId : ReminderTopic);
+                await telegram.Edit(actor, messageId, chat ? "✅ Отправлено в Воздуханство." : "✅ Отправлено в Сводку.", ct);
                 return;
         }
     }

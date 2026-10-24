@@ -40,8 +40,8 @@
   },
   "ambient": {
     "enabled": true,
-    "summaryTime": "07:55",
-    "morningTime": "08:00",
+    "summaryTime": "08:00",
+    "morningTime": "",
     "spontaneousPerDay": 2,
     "spontaneousChance": 0.5,
     "activeFrom": "10:00",

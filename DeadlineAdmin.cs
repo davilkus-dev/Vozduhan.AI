@@ -179,7 +179,7 @@ public sealed partial class BotWorker
         var actor = cb.Field("from").Number("id");
         if (!config.CanEdit(actor) || cb.Field("message").Field("chat").Number("id") != actor) return;
         var data = (cb.Text("data") ?? "").Split(':', 2);
-        if (data.Length == 2 && data[0] is "apost" or "aredo" or "ano")
+        if (data.Length == 2 && data[0] is "apost" or "achat" or "aredo" or "ano")
         {
             if (actor == config.OwnerId) await PostCallback(cb, data[0], data[1], ct);
             return;

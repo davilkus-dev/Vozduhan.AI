@@ -304,7 +304,7 @@ const SRC={ai:"🤖 ИИ",manual:"✋ вручную",post:"📝 пост"};
 const dt=ts=>new Date(ts*1000).toLocaleString("ru-RU",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 VIEWS.plan=async el=>{
   el.innerHTML=page("План бота","Когда бот сам проснётся и что напишет: утро, случайные вбросы, вечерние напоминания, будильники к дедлайнам (их расставляет ИИ, можно править) и подготовленные посты.")/*OWNER*/+
-  `<div class="card"><h3>✍️ Написать в Воздуханство</h3><p class="muted small">Повод или идея — бот напишет в своём стиле. Пусто — что-то по текущему моменту. Можно отправить сразу или запланировать.</p>
+  `<div class="card"><h3>✍️ Написать группе</h3><p class="muted small">Повод или идея — бот напишет в своём стиле. Пусто — что-то по текущему моменту. Можно отправить сразу (в Сводку или в Воздуханство) или запланировать — запланированное уходит в Сводку.</p>
    <textarea id="idea" rows="2" placeholder="сходка в 15:00 у А-13, всех зовём"></textarea>
    <div class="row" style="margin-top:8px"><button class="b p" id="gen">Сгенерировать</button><input type="datetime-local" id="pat"><button class="b" id="sched">Запланировать</button></div>
    <div id="genout"></div></div>`/*END*/+
@@ -312,23 +312,24 @@ VIEWS.plan=async el=>{
   /*OWNER*/
   $("#gen").onclick=async()=>{$("#genout").innerHTML='<p class="muted">Пишу…</p>';const r=await api("post-now",{idea:$("#idea").value});
     if(!r.ok){$("#genout").innerHTML=`<p style="color:var(--bad)">${esc(r.error)}</p>`;return}
-    $("#genout").innerHTML=`<pre style="margin-top:10px">${esc(r.text)}</pre><div class="row"><button class="b p" id="sendnow">Отправить</button><button class="b" id="again">Ещё вариант</button></div>`;
-    $("#sendnow").onclick=async()=>{const s2=await api("post-now",{send:true,text:r.text});if(s2.ok){toast("Отправлено в Воздуханство");$("#genout").innerHTML=""}else info("Ошибка",`<p>${esc(s2.error)}</p>`)};
+    $("#genout").innerHTML=`<pre style="margin-top:10px">${esc(r.text)}</pre><div class="row"><button class="b p" id="sendnow">📋 В Сводку</button><button class="b" id="sendchat">💬 В Воздуханство</button><button class="b" id="again">Ещё вариант</button></div>`;
+    const go=async target=>{const s2=await api("post-now",{send:true,text:r.text,target});if(s2.ok){toast(target==="chat"?"Отправлено в Воздуханство":"Отправлено в Сводку");$("#genout").innerHTML=""}else info("Ошибка",`<p>${esc(s2.error)}</p>`)};
+    $("#sendnow").onclick=()=>go("summary");$("#sendchat").onclick=()=>go("chat");
     $("#again").onclick=()=>$("#gen").click()};
   $("#sched").onclick=async()=>{const at=$("#pat").value,idea=$("#idea").value.trim();if(!at||!idea)return info("Не хватает данных","<p>Нужны идея и время.</p>");
     const r=await api("wakeup",{deadline:0,at,reason:idea});if(r.ok){toast("Запланировано");render()}else info("Ошибка",`<p>${esc(r.error)}</p>`)};
   /*END*/
   const r=await api("plan");const a=r.ambient;
-  const days=r.days.map(d=>`<tr><td><b>${fmtDate(d.date)}</b> <span class="muted">${esc(d.weekday)}</span></td><td>${d.summary?`📋 ${d.summary.time} сводка ${ST[d.summary.status]}<br>`:""}☀️ ${d.morning.time} ${ST[d.morning.status]}</td>
+  const days=r.days.map(d=>`<tr><td><b>${fmtDate(d.date)}</b> <span class="muted">${esc(d.weekday)}</span></td><td>${d.summary?`📋 ${d.summary.time} в Сводку ${ST[d.summary.status]}`:""}${d.morning?`<br>☀️ ${d.morning.time} в Воздуханство ${ST[d.morning.status]}`:""}</td>
     <td>${d.spontaneous?d.spontaneous.map(x=>`🎲 ${x.time} ${ST[x.status]}`).join("<br>")||'<span class="faint">без вбросов</span>':'<span class="faint">выберу утром</span>'}</td>
     <td>${d.eve?`🌙 ${d.eve.time} ${ST[d.eve.status]}<div class="faint small">${esc(d.eve.about.join("; "))}</div>`:'<span class="faint">—</span>'}</td></tr>`).join("");
   const groups={};for(const w of r.wakeups)(groups[w.deadline]??=[]).push(w);
   const wk=Object.entries(groups).sort((x,y)=>Math.min(...x[1].map(w=>w.due))-Math.min(...y[1].map(w=>w.due))).map(([id,ws])=>`<div class="card"><div class="row" style="justify-content:space-between"><h3 style="margin:0">${id==="0"?"📝 Отложенные посты":"⏰ "+esc(ws[0].deadlineTitle||"дедлайн #"+id)}</h3>
     ${id!=="0"?`<div class="row"><button class="b" data-add="${id}">＋ Напоминание</button><button class="b" data-re="${id}">🤖 Перепланировать</button></div>`:""}</div>
     <table><tbody>${ws.map(w=>`<tr class="${w.status==="pending"?"":"off"}"><td style="white-space:nowrap">${dt(w.due)}</td><td>${SRC[w.source]||esc(w.source)}</td><td>${esc(w.reason)}</td><td>${ST[w.status]||esc(w.status)}</td><td>${w.status==="pending"?`<button class="b ic d" data-del="${w.id}">✕</button>`:""}</td></tr>`).join("")}</tbody></table></div>`).join("");
-  $("#pl").innerHTML=`<div class="stats"><div class="stat"><b>${a.enabled?"вкл":"выкл"}</b><span>инициатива бота</span></div><div class="stat"><b>${a.morningTime}</b><span>утреннее сообщение</span></div>
+  $("#pl").innerHTML=`<div class="stats"><div class="stat"><b>${a.enabled?"вкл":"выкл"}</b><span>инициатива бота</span></div><div class="stat"><b>${a.summaryTime}</b><span>утро в «Сводку»</span></div>
     <div class="stat"><b>до ${a.spontaneousPerDay}</b><span>вбросов в день (${Math.round(a.spontaneousChance*100)}%), ${a.activeFrom}–${a.activeTo}</span></div><div class="stat"><b>${a.eveReminders?a.eveReminderTime:"выкл"}</b><span>напоминание накануне</span></div></div>
-    <div class="card tw"><h3>Ближайшие 7 дней</h3><table><thead><tr><th>День</th><th>Утро (Сводка / Воздуханство)</th><th>Вбросы в Воздуханство</th><th>Вечером в «Сводку»</th></tr></thead><tbody>${days}</tbody></table></div>
+    <div class="card tw"><h3>Ближайшие 7 дней</h3><table><thead><tr><th>День</th><th>Утро</th><th>Вбросы в Воздуханство</th><th>Вечером в «Сводку»</th></tr></thead><tbody>${days}</tbody></table></div>
     <h3>Будильники к дедлайнам</h3>${wk||'<div class="card empty">Пока нет — появятся, когда добавишь дедлайн</div>'}
     <h3>Подготовленные посты в темах</h3><div class="card tw"><table><tbody>${r.deliveries.map(x=>`<tr><td style="white-space:nowrap">${dt(x.due)}</td><td><span class="chip">${esc(x.topic)}</span></td><td><pre style="margin:0;max-height:160px">${esc(x.text)}</pre></td></tr>`).join("")||'<tr><td class="empty">Нет</td></tr>'}</tbody></table></div>
     <p class="muted small">Время в разделе можно менять в серверном конфиге (блок ambient). Опоздавшие больше чем на 2 часа события пропускаются, чтобы не заспамить чат после простоя.</p>`;

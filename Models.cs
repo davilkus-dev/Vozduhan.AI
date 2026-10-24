@@ -85,10 +85,10 @@ public sealed record ScheduleChange(string Date, string Type)
 public sealed class AmbientSettings
 {
     public bool Enabled { get; set; } = true;
-    /// <summary>Morning summary in the summary topic: day schedule and deadlines.</summary>
-    public string SummaryTime { get; set; } = "07:55";
-    /// <summary>Daily morning message in the chat topic (Воздуханство).</summary>
-    public string MorningTime { get; set; } = "08:00";
+    /// <summary>Morning post in «Сводка»: a lively message about the day, the schedule and the nearest submissions.</summary>
+    public string SummaryTime { get; set; } = "08:00";
+    /// <summary>Optional extra morning drop in Воздуханство; empty = off (the morning summary in «Сводка» covers it).</summary>
+    public string MorningTime { get; set; } = "";
     /// <summary>Up to this many spontaneous drops per day, each happens with SpontaneousChance.</summary>
     public int SpontaneousPerDay { get; set; } = 2;
     public double SpontaneousChance { get; set; } = 0.5;
@@ -368,7 +368,7 @@ public sealed class BotConfig
         if (OtherAiTopicIds.Contains(ChatTopicId)) throw new InvalidDataException("Chat topic cannot be moderated");
         if (SummaryTopicId < 0 || (SummaryTopicId > 0 && (SummaryTopicId == ChatTopicId || SummaryTopicId == DeadlinesTopicId)))
             throw new InvalidDataException("summaryTopicId must be a separate topic (or 0)");
-        if (new[] { Ambient.SummaryTime, Ambient.MorningTime, Ambient.ActiveFrom, Ambient.ActiveTo, Ambient.EveReminderTime }.Any(t => !TimeOnly.TryParseExact(t, "HH:mm", out _)) ||
+        if (new[] { Ambient.SummaryTime, Ambient.MorningTime.Length == 0 ? "00:00" : Ambient.MorningTime, Ambient.ActiveFrom, Ambient.ActiveTo, Ambient.EveReminderTime }.Any(t => !TimeOnly.TryParseExact(t, "HH:mm", out _)) ||
             Ambient.SpontaneousPerDay is < 0 or > 10 || Ambient.SpontaneousChance is < 0 or > 1 ||
             TimeOnly.Parse(Ambient.ActiveTo) <= TimeOnly.Parse(Ambient.ActiveFrom))
             throw new InvalidDataException("ambient: times HH:mm, activeFrom < activeTo, spontaneousPerDay 0..10, chance 0..1");
