@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace Vozduhan.AI;
 
 public sealed record AiTrace(string Kind, string Tag, string Model, string System, string Request, string Response, long Ms, string? Error);
-public sealed record PlanResult(string Intent, ParsedDeadline? Deadline, JsonElement[] Operations, string? Question);
+public sealed record PlanResult(string Intent, ParsedDeadline? Deadline, JsonElement[] Operations, string? Question, string? Idea = null);
 
 public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? key)
 {
@@ -129,6 +129,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         note (публичное примечание или null).
         note может честно пересказать сообщённую редактором причину или изменение от преподавателя, например «Цынгалев перенёс сдачу».
         Не выдумывай преподавателя и причину, не переноси в note личную болтовню. Редактор увидит note перед публикацией.
+        «Контроша», «кр», «контрольная» — work «Контрольная работа» (номер не обязателен). «Коллок» — «Коллоквиум».
         Номер практики не выводи из даты или истории. Для «сдаём практику» без номера/названия — work=null и спроси, какую.
         Предмет определяй только по названиям и сленгу из реестра. Не выдумывай работу, кабинет, дату, пару, людей.
         Недостающие поля можно взять из предыдущего черновика или явно указанного существующего дедлайна при правке.
@@ -165,10 +166,12 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         var instruction = $$"""
             Ты разбираешь личное сообщение редактора бота группы (разработчик или староста) и решаешь, что это.
             Верни только один JSON-объект:
-            {"intent": "chat" | "deadline" | "registry", "deadline": {...} | null, "operations": [...] | null, "question": строка | null}
+            {"intent": "chat" | "deadline" | "registry" | "post", "deadline": {...} | null, "operations": [...] | null, "idea": строка | null, "question": строка | null}
 
             chat — обычный разговор и вопросы («что завтра?», «где матан?», «как дела?»). Вопросы о расписании — это chat.
             deadline — добавить, изменить, перенести или отменить сдачу конкретной работы.
+            post — разработчик просит тебя самого написать/вкинуть что-то в Воздуханство («напиши в чат про сходку в 15:00», «вкинь утреннее»);
+            idea — суть того, о чём написать. Только для editor_role=developer; для старосты это chat.
             registry — изменить список группы, предметы, сленг, комментарии к предметам, расписание (постоянно или разово),
             звонки, настройки недель/семестра, текст знаний.
 
@@ -192,7 +195,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         var result = await Complete(instruction, user, true, ct, "plan", tag);
         using var doc = JsonDocument.Parse(result);
         var root = doc.RootElement;
-        var intent = root.Text("intent") is "deadline" or "registry" ? root.Text("intent")! : "chat";
+        var intent = root.Text("intent") is "deadline" or "registry" or "post" ? root.Text("intent")! : "chat";
         ParsedDeadline? deadline = null;
         if (root.Field("deadline").ValueKind == JsonValueKind.Object)
         {
@@ -201,28 +204,94 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         }
         var ops = root.Field("operations").ValueKind == JsonValueKind.Array
             ? root.Field("operations").EnumerateArray().Where(o => o.ValueKind == JsonValueKind.Object).Select(o => o.Clone()).ToArray() : [];
-        return new(intent, deadline, ops, root.Text("question"));
+        return new(intent, deadline, ops, root.Text("question"), root.Text("idea"));
     }
 
-    public async Task<(string News, string Morning)> Intros(string action, CancellationToken ct)
+    /// <summary>Lead lines for deadline posts. They may mention the supplied facts; the exact facts block is appended by the program.</summary>
+    public async Task<(string News, string Morning)> Intros(string action, object facts, CancellationToken ct)
     {
         try
         {
             using var shortTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            shortTimeout.CancelAfter(TimeSpan.FromSeconds(12));
+            shortTimeout.CancelAfter(TimeSpan.FromSeconds(15));
             var result = await Complete("""
-                Напиши две очень короткие вводные строки по-русски для постов о дедлайнах в неформальной студенческой группе.
-                Верни JSON {"news":"...","morning":"..."}. news предваряет указанное действие (create — новая сдача, update — изменение,
-                cancel — отмена): не пиши об изменении или отмене для create и о новой сдаче для cancel.
-                morning предваряет утренний список сегодняшних сдач. Можно студенческий сленг и лёгкий мат.
-                Каждая строка не длиннее 120 символов. Никаких фактов: имён, предметов, дат, времени, кабинетов.
-                Не пиши, что кто-то сдал или завалил. Точные факты программа добавит отдельно.
-                """, Json.Write(new { action }), true, shortTimeout.Token, "intro");
+                Ты пишешь вводные строки к постам о дедлайнах в теме «Дедлайны» неформальной студенческой группы.
+                Верни JSON {"news":"...","morning":"..."}.
+                news — заголовок-новость к действию action: create — новая сдача, update — изменение/перенос (сравни facts с previous),
+                cancel — отмена. Примеры тона: «!!! Арапов перенёс сдачу по философии на пятницу», «Свежак: по сиаоду назначили 2-ю практику, 31-го»,
+                «Отбой тревоги: сдачу по джаве отменили». Каждый раз по-новому, можно капс, «!!!», студенческий сленг и лёгкий мат.
+                morning — короткая строка для утреннего поста в день сдачи («Сегодня ДЕДЛАЙН! Не забудьте…»).
+                Используй только переданные факты (предмет, работа, дата, преподаватель из note). Не придумывай время, кабинет, причины.
+                Не пиши, что кто-то сдал или завалил. Каждая строка до 160 символов, без markdown и HTML. Точный блок фактов программа добавит ниже.
+                """, Json.Write(new { action, facts }), true, shortTimeout.Token, "intro");
             using var doc = JsonDocument.Parse(result);
-            return (Conversation.Limit(doc.RootElement.Text("news") ?? "Гайс, по сдаче новости.", 120),
-                Conversation.Limit(doc.RootElement.Text("morning") ?? "Гайс, сегодня у нас:", 120));
+            return (Conversation.Limit(Json.Unescape(doc.RootElement.Text("news") ?? "Гайс, по сдаче новости."), 160),
+                Conversation.Limit(Json.Unescape(doc.RootElement.Text("morning") ?? "Гайс, сегодня у нас:"), 160));
         }
         catch (Exception) when (!ct.IsCancellationRequested) { return ("Гайс, по сдаче новости.", "Гайс, сегодня у нас:"); }
+    }
+
+    public const string Skip = "SKIP";
+    /// <summary>The bot's own messages: morning, spontaneous drop, manual request, deadline wake-up, evening reminder lead.</summary>
+    public Task<string> Ambient(string kind, string adminContext, string context, CancellationToken ct)
+    {
+        var task = kind switch
+        {
+            "morning" => """
+                ЗАДАЧА: утреннее сообщение в Воздуханство от тебя самого — никто тебя не спрашивал, ты просто проснулся вместе с группой.
+                Это живой вброс в флудилку, а не сводка: полное расписание уже лежит в теме «Сводка», не дублируй его списком.
+                Опирайся на schedule.days[0] (сегодня) и дедлайны: какой день, сколько пар и где (корпус!), что из тяжёлого, что сегодня/скоро сдавать.
+                Пар нет — пожелай отдохнуть. Сегодня дедлайн — напомни громко. Можно иногда (не каждый день) тегнуть кого-то через @username,
+                если это к месту по заметкам о людях. Каждый раз по-новому: не повторяй recent_bot_posts ни по форме, ни по шуткам.
+                """,
+            "spontaneous" => $"""
+                ЗАДАЧА: ты сам решил вкинуть сообщение в Воздуханство посреди дня. Нужен реальный повод: скоро пара (schedule.now),
+                дедлайн сегодня/завтра, свежий разговор в recent_messages, к месту локальный прикол из заметок о людях.
+                Если повода нет или вброс будет натянутым — ответь ровно {Skip}. Не повторяй recent_bot_posts.
+                """,
+            "manual" => """
+                ЗАДАЧА: разработчик попросил тебя прямо сейчас написать в Воздуханство. Повод/идея — в поле idea (может быть пустым — тогда
+                напиши что-то уместное по текущему моменту: время суток, пары, дедлайны, недавний разговор). Пиши от себя, в своём стиле,
+                не упоминай, что тебя попросили. Если в idea есть время/место/событие — передай их точно. Не повторяй recent_bot_posts.
+                """,
+            "wakeup" => """
+                ЗАДАЧА: ты проснулся по своему же будильнику к дедлайну (поле wakeup: deadline — факты сдачи, reason — зачем ты себе это ставил,
+                time_left — сколько осталось). Вкинь в Воздуханство мотивационную прожарку/напоминание: что сдаём, когда, сколько осталось.
+                Чем ближе дедлайн — тем настойчивее. Факты (предмет, работа, дата, время, кабинет) бери только из wakeup.deadline.
+                Не повторяй recent_bot_posts.
+                """,
+            "summary" => """
+                ЗАДАЧА: одна-две короткие строки (до 250 символов) — вступление к утренней сводке в теме «Сводка». Ниже программа сама
+                выведет расписание дня и ближайшие сдачи, поэтому не перечисляй пары и кабинеты. Задай настроение дня: какой день,
+                тяжёлый или лёгкий, есть ли сегодня/завтра дедлайн, где пары (корпус). Пар нет — так и скажи. Без разделителей ||, без прожарок отдельных людей.
+                """,
+            _ => """
+                ЗАДАЧА: одна короткая вводная строка (до 200 символов) к вечернему напоминанию в теме «Сводка» о завтрашних сдачах
+                (tomorrow_deadlines). Можно назвать предметы и работы, но не время и кабинеты — их программа добавит ниже. Без разделителей ||.
+                """
+        };
+        return Complete(ChatRules(config, kind is not ("eve" or "summary")) + adminContext + "\n\n" + task, context, false, ct, "ambient-" + kind);
+    }
+
+    public sealed record WakeupPlan(DateTime At, string Reason);
+    /// <summary>Lets the model choose when to remind about a deadline. The caller validates every point.</summary>
+    public async Task<List<WakeupPlan>> PlanWakeups(object context, CancellationToken ct)
+    {
+        var result = await Complete("""
+            Ты планируешь, когда тебе (боту группы) проснуться и напомнить в общем чате о дедлайне. Смотри на дату и время сдачи,
+            сколько до неё осталось, расписание пар перед ней и другие дедлайны рядом. Выбери 1–5 моментов, как сделал бы заботливый,
+            но язвительный одногруппник: например за неделю, за 3 дня, вечером накануне, за пару часов, прямо перед парой.
+            Далёкий дедлайн — больше точек, близкий — меньше. Не ставь две точки ближе 2 часов друг к другу, не буди ночью (с 23:30 до 08:00),
+            все точки — строго в будущем и раньше начала пары сдачи.
+            Верни JSON {"wakeups":[{"at":"YYYY-MM-DD HH:mm","reason":"зачем (коротко, для себя)"}]} в местном времени.
+            """, Json.Write(context), true, ct, "wakeplan");
+        using var doc = JsonDocument.Parse(result);
+        var list = new List<WakeupPlan>();
+        if (doc.RootElement.Field("wakeups").ValueKind != JsonValueKind.Array) return list;
+        foreach (var w in doc.RootElement.Field("wakeups").EnumerateArray())
+            if (DateTime.TryParseExact(w.Text("at"), "yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var at))
+                list.Add(new(at, Conversation.Limit(w.Text("reason") ?? "", 200)));
+        return list;
     }
 
     /// <summary>Splits a chat answer on separator lines; never returns empty parts, at most four.</summary>

@@ -174,17 +174,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
             time_zone = config.TimeZone,
             schedule = ScheduleFacts(now),
             confirmed_upcoming_deadlines = relevant,
-            known_group_members = r.Members.Where(m => m.Active).Select(m => new
-            {
-                list_number = m.ListNumber, full_name = m.FullName, short_name = m.ShortName,
-                role = m.UserId == config.OwnerId ? "developer" : m.Role == "head" ? "head (староста)" : "member",
-                // The only things that identify a Telegram account; display names are NOT usernames.
-                telegram_username = string.IsNullOrWhiteSpace(m.Username) ? null : "@" + m.Username,
-                telegram_link = string.IsNullOrWhiteSpace(m.Username) ? null : "https://t.me/" + m.Username,
-                telegram_id = m.UserId,
-                mention_html = m.UserId is > 0 ? $"<a href=\"tg://user?id={m.UserId}\">{System.Net.WebUtility.HtmlEncode(m.ShortName)}</a>" : null,
-                telegram_display_name_not_username = m.TelegramName
-            }),
+            known_group_members = MembersView(),
             recent_messages = messages,
             reply_ancestors = ancestors,
             focus_message = Message(focus),
@@ -229,6 +219,60 @@ public sealed class Conversation(BotConfig config, BotStore store)
             pending_deadline_draft = deadlineDraft,
             pending_registry_draft = registryDraft is null ? null : new { registryDraft.Lines, operations = registryDraft.Operations.Select(o => JsonDocument.Parse(o).RootElement.Clone()) }
         };
+    }
+
+    public object MembersView()
+    {
+        var r = config.R;
+        return r.Members.Where(m => m.Active).Select(m => new
+            {
+                list_number = m.ListNumber, full_name = m.FullName, short_name = m.ShortName,
+                role = m.UserId == config.OwnerId ? "developer" : m.Role == "head" ? "head (староста)" : "member",
+                // The only things that identify a Telegram account; display names are NOT usernames.
+                telegram_username = string.IsNullOrWhiteSpace(m.Username) ? null : "@" + m.Username,
+                telegram_link = string.IsNullOrWhiteSpace(m.Username) ? null : "https://t.me/" + m.Username,
+                telegram_id = m.UserId,
+                mention_html = m.UserId is > 0 ? $"<a href=\"tg://user?id={m.UserId}\">{System.Net.WebUtility.HtmlEncode(m.ShortName)}</a>" : null,
+                telegram_display_name_not_username = m.TelegramName
+            }).ToList();
+    }
+
+    public object DeadlineView(Deadline d) => new
+    {
+        d.Id, subject = config.R.SubjectName(d.SubjectId), d.Work, d.Date,
+        weekday = Schedule.DayNames[Schedule.Dow(DateOnly.Parse(d.Date))], d.Period, d.Start, d.End, d.Room, d.Note,
+        start_unix = config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start))).ToUnixTimeSeconds()
+    };
+
+    /// <summary>Context for messages the bot writes on its own initiative into the group chat.</summary>
+    public string AmbientContext(string kind, object? extra = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var today = DateOnly.FromDateTime(config.LocalNow(now));
+        var history = store.History(config.GroupId, config.ChatTopicId, int.MaxValue, 20).Select(raw =>
+        {
+            using var doc = JsonDocument.Parse(raw);
+            return Message(doc.RootElement, false);
+        }).ToList();
+        var active = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) >= now).ToList();
+        return Json.Write(new
+        {
+            conversation = "Воздуханство (общий чат группы)", kind, time_zone = config.TimeZone,
+            schedule = ScheduleFacts(now),
+            confirmed_upcoming_deadlines = active.Take(25).Select(DeadlineView),
+            today_deadlines = active.Where(d => d.Date == today.ToString("yyyy-MM-dd")).Select(DeadlineView),
+            tomorrow_deadlines = active.Where(d => d.Date == today.AddDays(1).ToString("yyyy-MM-dd")).Select(DeadlineView),
+            known_group_members = MembersView(),
+            recent_messages = history,
+            recent_bot_posts = RecentPosts(),
+            extra
+        });
+    }
+    public List<string> RecentPosts() => store.Get("ambient_recent") is { } s ? Json.Read<List<string>>(s) : [];
+    public void AddRecentPost(string text)
+    {
+        var list = RecentPosts(); list.Add(Limit(text, 500));
+        store.Set("ambient_recent", Json.Write(list.TakeLast(8).ToList()));
     }
 
     public static bool CallsBot(JsonElement m, long botId, string username)

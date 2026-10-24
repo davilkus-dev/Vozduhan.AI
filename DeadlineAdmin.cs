@@ -24,6 +24,8 @@ public sealed partial class BotWorker
                 await ManageDeadline(m, key, ct, plan.Deadline ?? new ParsedDeadline(Question: plan.Question)); return;
             case "registry":
                 await RegistryRequest(m, key, actor, text, plan, ct); return;
+            case "post" when actor == config.OwnerId:
+                await PostPreview(m, key, actor, plan.Idea ?? text, ct); return;
             default:
                 await ChatGuarded(m, key, true, actor, ct); return;
         }
@@ -146,7 +148,14 @@ public sealed partial class BotWorker
             {
                 var intros = command is "/deadline" or "/move" or "/cancel"
                     ? (News: draft.Action == "create" ? "Гайс, держим в голове:" : "Гайс, по сдаче новости.", Morning: "Гайс, сегодня у нас:")
-                    : await ai.Intros(draft.Action, ct);
+                    : await ai.Intros(draft.Action, new
+                    {
+                        subject = config.R.SubjectName(draft.SubjectId), work = draft.Work, date = draft.Date,
+                        weekday = draft.Date is null ? null : Schedule.DayNames[Schedule.Dow(DateOnly.Parse(draft.Date))],
+                        period = draft.Period, note = draft.Note,
+                        previous = store.AllDeadlines().FirstOrDefault(x => x.Id == draft.TargetId) is { } old
+                            ? new { old.Date, old.Period, old.Work } : null
+                    }, ct);
                 draft = draft with { Intro = intros.News, MorningIntro = intros.Morning };
             }
             store.SaveDraft(draft);
@@ -170,6 +179,11 @@ public sealed partial class BotWorker
         var actor = cb.Field("from").Number("id");
         if (!config.CanEdit(actor) || cb.Field("message").Field("chat").Number("id") != actor) return;
         var data = (cb.Text("data") ?? "").Split(':', 2);
+        if (data.Length == 2 && data[0] is "apost" or "aredo" or "ano")
+        {
+            if (actor == config.OwnerId) await PostCallback(cb, data[0], data[1], ct);
+            return;
+        }
         if (data.Length != 2 || data[0] is not ("save" or "drop" or "rok" or "rno")) return;
         var messageId = (int)cb.Field("message").Number("message_id");
         if (data[0] is "rok" or "rno")

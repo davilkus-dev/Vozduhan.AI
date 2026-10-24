@@ -354,6 +354,95 @@ static class NewFeatureTests
             Assert(s.SeenUsers().Any(u => u.Id == 777) && s.Log(sender: 777).Single().Text == "я тут новенький", "Incoming message not logged");
             count++; Console.WriteLine("PASS planner registry card, confirm once, notify, split chat, editor chat, /date, logs (mock APIs)");
 
+            // ---- The bot's own initiative ----
+            {
+                var ac = make("ambient.db");
+                ac.SummaryTopicId = 30; ac.Ambient.SpontaneousPerDay = 0;
+                using var st = new BotStore(ac);
+                var aiRequests = new List<string>();
+                string wakePlan = "{}";
+                var ambientAi = new HttpClient(new Fake(async request =>
+                {
+                    var text = await request.Content!.ReadAsStringAsync();
+                    lock (aiRequests) aiRequests.Add(text);
+                    var content = text.Contains("планируешь, когда тебе") ? wakePlan
+                        : text.Contains("ЗАДАЧА: одна-две короткие строки") ? "Понедельник, держитесь"
+                        : text.Contains("ЗАДАЧА: утреннее") ? "Доброе утро!\n||\nСегодня СиАОД"
+                        : text.Contains("ЗАДАЧА: ты сам решил") ? "SKIP"
+                        : text.Contains("ЗАДАЧА: ты проснулся") ? "СиАОД через 3 дня, <b>шевелитесь</b>"
+                        : text.Contains("ЗАДАЧА: разработчик попросил") ? "Сходка в 15:00, все к А-13"
+                        : text.Contains("вводные строки к постам о дедлайнах") ? "{\"news\":\"!!! Свежак по СиАОД\",\"morning\":\"Сегодня сдаём!\"}"
+                        : "Завтра сдаём СиАОД";
+                    return new { choices = new[] { new { message = new { content } } } };
+                })) { BaseAddress = new Uri("https://openrouter.test/") };
+                var w = new BotWorker(ac, st, new TelegramClient(tg, "t"), new OpenRouterClient(ambientAi, ac, "k"), NullLogger<BotWorker>.Instance);
+                var tick = typeof(BotWorker).GetMethod("AmbientTick", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                async Task Tick(string utc) => await (Task)tick.Invoke(w, [DateTimeOffset.Parse(utc), CancellationToken.None])!;
+                var proc = typeof(BotWorker).GetMethod("Process", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                async Task Upd(JsonElement u) => await (Task)proc.Invoke(w, [u, CancellationToken.None])!;
+
+                // 2026-11-30 (Mon) 08:01 MSK = 05:01Z: summary in «Сводка», morning drop in Воздуханство, exactly once.
+                sent.Clear();
+                await Tick("2026-11-30T05:01:00Z"); await Tick("2026-11-30T05:02:00Z");
+                var posts = sent.Where(x => x.Method == "sendMessage").ToList();
+                Assert(posts.Count(x => x.Payload.Number("message_thread_id") == 30) == 1 && posts.Single(x => x.Payload.Number("message_thread_id") == 30).Payload.Text("text")!.Contains("Понедельник, держитесь"),
+                    "Morning summary missing or duplicated");
+                Assert(posts.Count(x => x.Payload.Number("message_thread_id") == ac.ChatTopicId) == 2, "Morning drop not split into two chat messages");
+                sent.Clear();
+                await Tick("2026-12-01T08:30:00Z"); // 11:30 MSK: three and a half hours late
+                Assert(!sent.Any(x => x.Method == "sendMessage") && st.Get("ambient:morning:2026-12-01") == "skipped", "Late morning not skipped");
+
+                // A confirmed deadline gets AI wake-ups; invalid points are dropped; due ones fire into the chat.
+                var draft = Deadlines.Resolve(ac, new("create", SubjectId: "siaod", Work: "Практика №2", Date: "2026-12-07"), null, [], 1, "t", DateTimeOffset.Parse("2026-12-01T09:00:00Z"));
+                st.SaveDraft(draft); var dl = st.Confirm(1, draft.Token, DateTimeOffset.Parse("2026-12-01T09:00:00Z"));
+                wakePlan = Json.Write(new { wakeups = new object[] {
+                    new { at = "2026-12-04 19:00", reason = "за три дня" }, new { at = "2026-12-04 19:30", reason = "слишком близко" },
+                    new { at = "2026-12-05 03:00", reason = "ночью" }, new { at = "2026-12-07 16:00", reason = "за два часа" },
+                    new { at = "2026-12-08 10:00", reason = "после сдачи" }, new { at = "2026-11-01 10:00", reason = "в прошлом" } } });
+                sent.Clear();
+                await Tick("2026-12-01T09:00:00Z");
+                var wplan = st.Wakeups(dl.Id);
+                Assert(wplan.Count == 2 && wplan.All(x => x.Source == "ai") && wplan[0].Reason == "за три дня" && wplan[1].Reason == "за два часа", "Wake-up plan not validated: " + Json.Write(wplan));
+                await Tick("2026-12-04T16:01:00Z");
+                Assert(sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("message_thread_id") == ac.ChatTopicId && x.Payload.Text("text")!.Contains("<b>шевелитесь</b>")), "Wake-up did not fire");
+                Assert(st.Wakeups(dl.Id).First().Status == "fired", "Wake-up fired twice risk");
+                Assert(aiRequests.Any(r => r.Contains("за три дня") && r.Contains("time_left")), "Wake-up context lacks reason/time left");
+
+                // Moving the deadline re-plans; cancelling drops pending wake-ups.
+                var move = Deadlines.Resolve(ac, new("update", dl.Id, Date: "2026-12-14"), null, st.AllDeadlines(), 1, "m", DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
+                st.SaveDraft(move); st.Confirm(1, move.Token, DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
+                wakePlan = Json.Write(new { wakeups = new[] { new { at = "2026-12-12 12:00", reason = "новая дата" } } });
+                await Tick("2026-12-04T17:01:00Z");
+                Assert(st.Wakeups(dl.Id).Count(x => x.Status == "pending") == 1 && st.Wakeups(dl.Id).Single(x => x.Status == "pending").Reason == "новая дата", "Move did not re-plan");
+                var cancel = Deadlines.Resolve(ac, new("cancel", dl.Id), null, st.AllDeadlines(), 1, "c", DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
+                st.SaveDraft(cancel); st.Confirm(1, cancel.Token, DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
+                await Tick("2026-12-04T17:02:00Z");
+                Assert(st.Wakeups(dl.Id).All(x => x.Status != "pending"), "Cancelled deadline keeps wake-ups");
+                Assert(st.PendingDeliveries().All(x => !x.Key.StartsWith("morning:")), "Deadline-topic morning post must be replaced by the summary");
+
+                // Spontaneous drop with no reason stays silent.
+                ac.Ambient.SpontaneousPerDay = 1; ac.Ambient.SpontaneousChance = 1;
+                st.Set("ambient:plan:2026-12-02", Json.Write(new[] { "12:00" }));
+                st.Set("ambient:morning:2026-12-02", "done"); st.Set("ambient:summary:2026-12-02", "done");
+                sent.Clear(); await Tick("2026-12-02T09:05:00Z");
+                Assert(!sent.Any(x => x.Method == "sendMessage") && st.Get("ambient:spont:2026-12-02:0") == "done", "SKIP was posted");
+
+                // Owner triggers a post manually: preview card, then send.
+                sent.Clear();
+                await Upd(El(new { message = Msg(1, 0, 900, 1, "/post сходка в 15:00") }));
+                var pcard = sent.Single(x => x.Method == "sendMessage").Payload;
+                Assert(pcard.Text("text")!.Contains("Сходка в 15:00") && pcard.Field("reply_markup").ValueKind == JsonValueKind.Object, "Post preview missing");
+                Assert(aiRequests.Last().Contains("сходка в 15:00"), "Idea not passed to the model");
+                var ptoken = Json.Read<Dictionary<string, JsonElement>>(st.Get("postdraft:1")!)["token"].GetString();
+                sent.Clear();
+                await Upd(El(new { callback_query = new { id = "p", from = new { id = 1 }, data = "apost:" + ptoken, message = new { message_id = 901, chat = new { id = 1 } } } }));
+                Assert(sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("chat_id") == ac.GroupId && x.Payload.Text("text") == "Сходка в 15:00, все к А-13"), "Manual post not sent");
+                sent.Clear();
+                await Upd(El(new { message = Msg(2, 0, 902, 2, "/post спам") }));
+                Assert(!sent.Single(x => x.Method == "sendMessage").Payload.Text("text")!.Contains("Черновик"), "Head could trigger posts");
+                count++; Console.WriteLine("PASS ambient: summary+morning once, late skip, AI wake-ups validated/fired/re-planned/cancelled, SKIP, manual /post");
+            }
+
             // ---- Web admin over a real local HttpListener ----
             var port = 18000 + Random.Shared.Next(1000);
             c.Web = new WebSettings { Enabled = true, Listen = $"http://127.0.0.1:{port}/", PublicUrl = $"http://127.0.0.1:{port}", AllowedNetworks = ["127.0.0.0/8"] };
@@ -395,6 +484,8 @@ static class NewFeatureTests
                 Assert(stale.StatusCode == HttpStatusCode.Conflict, "Stale web save accepted");
                 var week = JsonDocument.Parse(await browser.GetStringAsync("api/week?date=2026-11-30")).RootElement;
                 Assert(week.Field("days").GetArrayLength() == 7, "Week view broken");
+                var planResp = await browser.GetAsync("api/plan");
+                Assert(planResp.IsSuccessStatusCode && JsonDocument.Parse(await planResp.Content.ReadAsStringAsync()).RootElement.Field("days").GetArrayLength() == 7, "Plan API broken: " + await planResp.Content.ReadAsStringAsync());
                 var chats = JsonDocument.Parse(await browser.GetStringAsync("api/chats")).RootElement;
                 Assert(chats.Field("chats").GetArrayLength() > 0, "Chat list empty");
                 var dl = await browser.PostAsync("api/deadline", new StringContent(Json.Write(new { action = "create", subjectId = "siaod", work = "Практика №3", date = "2026-12-07" }), Encoding.UTF8, "application/json"));

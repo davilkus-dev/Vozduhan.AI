@@ -50,7 +50,8 @@ public sealed partial class BotWorker : BackgroundService
             Supervise("worker-3", () => ProcessLoop(0, ct), ct),
             Supervise("moderation", () => ProcessLoop(1, ct), ct),
             Supervise("callbacks", () => ProcessLoop(2, ct), ct),
-            Supervise("publisher", () => PublishLoop(ct), ct));
+            Supervise("publisher", () => PublishLoop(ct), ct),
+            Supervise("ambient", () => AmbientLoop(ct), ct));
     }
 
     private async Task Supervise(string name, Func<Task> run, CancellationToken ct)
@@ -189,7 +190,7 @@ public sealed partial class BotWorker : BackgroundService
     }
 
     private static readonly string[] PublicCommands = ["/today", "/tomorrow", "/week", "/date", "/next", "/deadlines", "/subjects", "/roster", "/help", "/start"];
-    private static readonly string[] ManagementCommands = ["/web", "/undo", "/discard", "/where", "/deadline", "/edit", "/move", "/cancel"];
+    private static readonly string[] ManagementCommands = ["/web", "/post", "/undo", "/discard", "/where", "/deadline", "/edit", "/move", "/cancel"];
     private static readonly string[] DeadlineCommands = ["/deadline", "/edit", "/move", "/cancel"];
 
     private async Task Process(JsonElement update, CancellationToken ct)
@@ -253,6 +254,8 @@ public sealed partial class BotWorker : BackgroundService
                 await Respond(m, responseKey, Info(command, words, editor, actor == config.OwnerId), ct, html: true); return;
             case "/web" when editor:
                 await Respond(m, responseKey, WebLink(actor), ct); return;
+            case "/post" when actor == config.OwnerId:
+                await PostPreview(m, responseKey, actor, text.Length > 5 ? text[5..].Trim() : null, ct); return;
             case "/undo" when editor:
                 await Undo(m, responseKey, actor, ct); return;
             case "/discard" when editor:
@@ -279,7 +282,7 @@ public sealed partial class BotWorker : BackgroundService
             "💬 А ещё можно просто спросить: «где матан?», «что завтра?». В Воздуханстве — через @упоминание или ответом на моё сообщение, в личке — как угодно.";
         if (editor) help += "\n\n🛠 <b>Для редакторов</b>\nПиши обычным текстом — пойму, болтовня это, дедлайн или изменение расписания/списка, и покажу карточку перед сохранением.\n" +
             "<i>«31-го в субботу матан лекция 6-й парой дистанционно», «Иванова отчислили»</i>\n" +
-            "/web — веб-админка (через VPN)\n/undo — откатить последнее изменение\n" +
+            "/web — веб-админка (через VPN)\n/undo — откатить последнее изменение\n/post [идея] — я напишу в Воздуханство (только разработчик)\n" +
             "<code>/deadline id | работа | YYYY-MM-DD | пара [| кабинет]</code> — дедлайн без ИИ\n/edit ID текст · /move ID дата [пара] · /cancel ID\n/discard — убрать черновики · /where — IDs";
         return help;
     }
@@ -386,25 +389,7 @@ public sealed partial class BotWorker : BackgroundService
             store.SavePost(answerKey, 0, answer);
         }
         var parts = config.SplitReplies ? OpenRouterClient.Parts(answer) : [answer.Replace("\n" + OpenRouterClient.Split + "\n", "\n")];
-        int? first = null;
-        for (var i = 0; i < parts.Count; i++)
-        {
-            var partKey = key + ":part:" + i;
-            if (store.Post(partKey) is { } done) { first ??= done.MessageId; continue; }
-            var thought = i == 0 ? (DateTimeOffset.UtcNow - started).TotalMilliseconds : 0;
-            await HumanPause(chat, topic, parts[i], thought, ct);
-            JsonElement sent;
-            var html = TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(parts[i]));
-            try { sent = await telegram.Send(chat, topic, html, ct, reply: i == 0 ? id : null, html: true); }
-            catch (TelegramError e) when (e.Code == 400 && e.Description.Contains("parse", StringComparison.OrdinalIgnoreCase))
-            {
-                log.LogWarning("Telegram rejected HTML, sending plain text: {Error}", Failure(e));
-                sent = await telegram.Send(chat, topic, TelegramHtml.Plain(html), ct, reply: i == 0 ? id : null);
-            }
-            store.SavePost(partKey, (int)sent.Number("message_id"), "");
-            store.Remember(sent.Field("chat").Number("id"), sent.TopicId(), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
-            first ??= (int)sent.Number("message_id");
-        }
+        var first = await SendParts(chat, topic, parts, id, (DateTimeOffset.UtcNow - started).TotalMilliseconds, ct, i => key + ":part:" + i);
         store.SavePost(key, first ?? 0, "");
         store.ForgetPost(answerKey);
         for (var i = 0; i < parts.Count; i++) store.ForgetPost(key + ":part:" + i);

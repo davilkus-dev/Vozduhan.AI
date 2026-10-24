@@ -9,6 +9,8 @@ public sealed record LogRow(long Id, long Time, long Chat, string ChatType, int 
 public sealed record ChatSummary(long Chat, string ChatType, int Topic, long Count, long Last, string Title);
 public sealed record SeenUser(long Id, string Username, string Name, long FirstSeen, long LastSeen, long LastChat, long Count);
 public sealed record AiRow(long Id, long Time, string Kind, string Tag, string Model, string System, string Request, string Response, long Ms, string? Error);
+/// <summary>A moment when the bot wakes up to push the group about a deadline. source: ai / manual.</summary>
+public sealed record Wakeup(long Id, int Deadline, long Due, string Reason, string Source, string Status, long Created);
 public sealed class RegistryConflict(string message) : InvalidOperationException(message);
 
 public sealed partial class BotStore
@@ -186,7 +188,7 @@ public sealed partial class BotStore
                     title = "Личка: " + (m?.FullName ?? (users.TryGetValue(x.Chat, out var u) ? (u.Name + (u.Username.Length > 0 ? " @" + u.Username : "")) : x.Chat.ToString()));
                 }
                 else if (x.Chat == Config.GroupId)
-                    title = x.Topic == Config.ChatTopicId ? "Воздуханство" : x.Topic == Config.DeadlinesTopicId ? "Дедлайны" : $"Группа, тема {x.Topic}";
+                    title = x.Topic == Config.ChatTopicId ? "Воздуханство" : x.Topic == Config.DeadlinesTopicId ? "Дедлайны" : x.Topic == Config.SummaryTopicId ? "Сводка" : $"Группа, тема {x.Topic}";
                 else title = $"Чужой чат {x.Chat}, тема {x.Topic}";
                 return new ChatSummary(x.Chat, x.Type, x.Topic, x.Count, x.Last, title);
             }).ToList();
@@ -210,6 +212,37 @@ public sealed partial class BotStore
             """, r => new AiRow(r.GetInt64(0), r.GetInt64(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6),
                 r.GetString(7), r.GetInt64(8), r.IsDBNull(9) ? null : r.GetString(9)),
             ("tag", tag), ("id", id), ("b", beforeId), ("n", Math.Clamp(limit, 1, 200)));
+    }
+
+    // ---------- Deadline wake-ups ----------
+
+    public long AddWakeup(int deadline, long due, string reason, string source, long actor = 0)
+    {
+        lock (gate)
+        {
+            Exec("INSERT INTO wakeups(deadline,due,reason,source,status,created,actor) VALUES($d,$due,$r,$s,'pending',$c,$a)",
+                ("d", deadline), ("due", due), ("r", reason), ("s", source), ("c", DateTimeOffset.UtcNow.ToUnixTimeSeconds()), ("a", actor));
+            return Convert.ToInt64(Scalar("SELECT last_insert_rowid()"));
+        }
+    }
+    public List<Wakeup> Wakeups(int? deadline = null)
+    {
+        lock (gate) return Query("SELECT id,deadline,due,reason,source,status,created FROM wakeups WHERE ($d IS NULL OR deadline=$d) AND status<>'deleted' ORDER BY due",
+            r => new Wakeup(r.GetInt64(0), r.GetInt32(1), r.GetInt64(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetInt64(6)), ("d", deadline));
+    }
+    public List<Wakeup> DueWakeups(long now)
+    {
+        lock (gate) return Query("SELECT id,deadline,due,reason,source,status,created FROM wakeups WHERE status='pending' AND due<=$n ORDER BY due",
+            r => new Wakeup(r.GetInt64(0), r.GetInt32(1), r.GetInt64(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetInt64(6)), ("n", now));
+    }
+    /// <summary>Atomically moves a pending wake-up to a final state; false when somebody else already did.</summary>
+    public bool SetWakeup(long id, string status, string from = "pending")
+    {
+        lock (gate) return Exec("UPDATE wakeups SET status=$s WHERE id=$id AND status=$f", ("s", status), ("id", id), ("f", from)) == 1;
+    }
+    public void DropPendingWakeups(int deadline, string? source = null)
+    {
+        lock (gate) Exec("UPDATE wakeups SET status='deleted' WHERE deadline=$d AND status='pending' AND ($s IS NULL OR source=$s)", ("d", deadline), ("s", source));
     }
 
     // ---------- Web admin sessions ----------

@@ -55,6 +55,9 @@ public sealed partial class BotStore : IDisposable
                 first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, last_chat INTEGER NOT NULL, count INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS web_tokens(hash TEXT PRIMARY KEY, actor INTEGER NOT NULL, kind TEXT NOT NULL,
                 expires INTEGER NOT NULL, created INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS wakeups(id INTEGER PRIMARY KEY AUTOINCREMENT, deadline INTEGER NOT NULL, due INTEGER NOT NULL,
+                reason TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL, actor INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS wakeups_due ON wakeups(status,due);
             PRAGMA user_version=2;
             """);
         if (!tool)
@@ -246,6 +249,8 @@ public sealed partial class BotStore : IDisposable
     }
     private void RebuildMorning(string date, DateTimeOffset now)
     {
+        // With a summary topic the morning summary lists the day's submissions; no separate post in the deadlines topic.
+        if (Config.SummaryTopicId > 0) { Exec("UPDATE deliveries SET state=2 WHERE key=$k AND state=0", ("k", "morning:" + date)); return; }
         var items = AllDeadlines().Where(d => d.Status == "active" && d.Date == date).OrderBy(d => d.Start).ThenBy(d => d.Id).ToArray();
         var key = "morning:" + date;
         var hadDelivery = Scalar("SELECT key FROM deliveries WHERE key=$k", ("k", key)) is not null;
@@ -284,6 +289,11 @@ public sealed partial class BotStore : IDisposable
                 r => new Delivery(r.GetString(0), r.GetInt64(1), r.GetInt32(2), r.GetString(3), r.GetInt64(4), r.GetInt64(5), r.GetInt32(6)),
                 ("now", now.ToUnixTimeSeconds()));
         }
+    }
+    public List<Delivery> PendingDeliveries()
+    {
+        lock (gate) return Query("SELECT key,chat,topic,text,due,expires,attempts FROM deliveries WHERE state=0 ORDER BY due LIMIT 100",
+            r => new Delivery(r.GetString(0), r.GetInt64(1), r.GetInt32(2), r.GetString(3), r.GetInt64(4), r.GetInt64(5), r.GetInt32(6)));
     }
     public bool CurrentDelivery(Delivery d)
     {

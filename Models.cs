@@ -81,6 +81,24 @@ public sealed record ScheduleChange(string Date, string Type)
     public string? Note { get; init; }
 }
 
+/// <summary>The bot's own initiative: morning message, random drops during the day, evening reminders.</summary>
+public sealed class AmbientSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Morning summary in the summary topic: day schedule and deadlines.</summary>
+    public string SummaryTime { get; set; } = "07:55";
+    /// <summary>Daily morning message in the chat topic (Воздуханство).</summary>
+    public string MorningTime { get; set; } = "08:00";
+    /// <summary>Up to this many spontaneous drops per day, each happens with SpontaneousChance.</summary>
+    public int SpontaneousPerDay { get; set; } = 2;
+    public double SpontaneousChance { get; set; } = 0.5;
+    public string ActiveFrom { get; set; } = "10:00";
+    public string ActiveTo { get; set; } = "21:30";
+    /// <summary>Reminder about tomorrow's submissions in the deadlines topic.</summary>
+    public bool EveReminders { get; set; } = true;
+    public string EveReminderTime { get; set; } = "20:00";
+}
+
 public sealed class WebSettings
 {
     public bool Enabled { get; set; } = true;
@@ -247,6 +265,8 @@ public sealed class BotConfig
     public long GroupId { get; set; }
     public int ChatTopicId { get; set; }
     public int DeadlinesTopicId { get; set; }
+    /// <summary>"Сводка": morning summary and reminders. 0 = reminders go to the deadlines topic.</summary>
+    public int SummaryTopicId { get; set; }
     public int[] OtherAiTopicIds { get; set; } = [];
     public string DataPath { get; set; } = "data/vozduhan.db";
     public string TimeZone { get; set; } = "Europe/Moscow";
@@ -264,6 +284,7 @@ public sealed class BotConfig
     public string GroupName { get; set; } = "ИКБО-66-25";
     public string University { get; set; } = "РТУ МИРЭА";
     public WebSettings Web { get; set; } = new();
+    public AmbientSettings Ambient { get; set; } = new();
     /// <summary>Chance of an instant 👀/👍/👌 reaction before a chat answer.</summary>
     public double ReactionChance { get; set; } = 0.7;
     public string[] Reactions { get; set; } = ["👀", "👍", "👌"];
@@ -345,6 +366,12 @@ public sealed class BotConfig
             Web.AllowedNetworks.Length == 0 || Web.AllowedNetworks.Any(n => !Cidr.TryParse(n, out _))))
             throw new InvalidDataException("web.listen must look like http://*:8080/, allowedNetworks must be CIDRs");
         if (OtherAiTopicIds.Contains(ChatTopicId)) throw new InvalidDataException("Chat topic cannot be moderated");
+        if (SummaryTopicId < 0 || (SummaryTopicId > 0 && (SummaryTopicId == ChatTopicId || SummaryTopicId == DeadlinesTopicId)))
+            throw new InvalidDataException("summaryTopicId must be a separate topic (or 0)");
+        if (new[] { Ambient.SummaryTime, Ambient.MorningTime, Ambient.ActiveFrom, Ambient.ActiveTo, Ambient.EveReminderTime }.Any(t => !TimeOnly.TryParseExact(t, "HH:mm", out _)) ||
+            Ambient.SpontaneousPerDay is < 0 or > 10 || Ambient.SpontaneousChance is < 0 or > 1 ||
+            TimeOnly.Parse(Ambient.ActiveTo) <= TimeOnly.Parse(Ambient.ActiveFrom))
+            throw new InvalidDataException("ambient: times HH:mm, activeFrom < activeTo, spontaneousPerDay 0..10, chance 0..1");
         Seed().Validate(OwnerId);
     }
 }
@@ -409,7 +436,7 @@ public static class Deadlines
         var subject = r.Subject(subjectId);
         if (subject is null) missing.Add("Какой предмет? Он должен быть в реестре предметов.");
         var work = (p.Work ?? previous?.Work ?? target?.Work)?.Trim();
-        if (string.IsNullOrWhiteSpace(work) || Regex.IsMatch(work, @"^(?:сдача\s+)?(?:практик\w*|лабораторн\w*(?:\s+работ\w*)?|контрольн\w*(?:\s+работ\w*)?)$", RegexOptions.IgnoreCase))
+        if (string.IsNullOrWhiteSpace(work) || Regex.IsMatch(work, @"^(?:сдача\s+)?(?:практик\w*|лабораторн\w*(?:\s+работ\w*)?)$", RegexOptions.IgnoreCase))
             missing.Add("Что именно сдаём? Укажи номер или название конкретной работы.");
         if (work?.Length > 300) missing.Add("Сократи описание работы до 300 символов.");
         var date = p.Date ?? previous?.Date ?? target?.Date;

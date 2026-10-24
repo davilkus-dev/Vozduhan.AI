@@ -85,10 +85,10 @@ public sealed class TelegramClient(HttpClient http, string token)
             reply_parameters = reply.HasValue ? new { message_id = reply.Value, allow_sending_without_reply = true } : null,
             link_preview_options = new { is_disabled = true }
         }, ct);
-    public async Task Edit(long chat, int id, string text, CancellationToken ct, object? keyboard = null)
+    public async Task Edit(long chat, int id, string text, CancellationToken ct, object? keyboard = null, bool html = false)
     {
         try { await Call("editMessageText", new { chat_id = chat, message_id = id, text, reply_markup = keyboard,
-            link_preview_options = new { is_disabled = true } }, ct); }
+            parse_mode = html ? "HTML" : null, link_preview_options = new { is_disabled = true } }, ct); }
         catch (TelegramError e) when (e.Code == 400 && e.Description.Contains("message is not modified", StringComparison.OrdinalIgnoreCase)) { }
     }
     public Task<JsonElement> Delete(long chat, int id, CancellationToken ct) => Call("deleteMessage", new { chat_id = chat, message_id = id }, ct);

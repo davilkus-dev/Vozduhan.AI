@@ -201,6 +201,78 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); }
                 return;
             }
+            case "/api/plan" when !post:
+            {
+                var a = config.Ambient;
+                var today = DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow));
+                var deadlines = store.AllDeadlines();
+                string Status(string key) => store.Get(key) switch { "done" => "done", "skipped" => "skipped", _ => "planned" };
+                await Send(response, 200, new
+                {
+                    ok = true, ambient = a,
+                    days = Enumerable.Range(0, 7).Select(i =>
+                    {
+                        var d = today.AddDays(i);
+                        var ds = d.ToString("yyyy-MM-dd");
+                        var tomorrow = deadlines.Where(x => x.Status == "active" && x.Date == d.AddDays(1).ToString("yyyy-MM-dd")).ToList();
+                        var spont = i == 0 ? worker.SpontaneousPlan(d) : store.Get($"ambient:plan:{ds}") is { } p ? Json.Read<List<string>>(p) : null;
+                        return new
+                        {
+                            date = ds, weekday = Schedule.DayNames[Schedule.Dow(d)],
+                            summary = config.SummaryTopicId > 0 ? new { time = a.SummaryTime, status = Status($"ambient:summary:{ds}") } : null,
+                            morning = new { time = a.MorningTime, status = Status($"ambient:morning:{ds}") },
+                            spontaneous = spont?.Select((t, n) => new { time = t, status = Status($"ambient:spont:{ds}:{n}") }),
+                            eve = tomorrow.Count == 0 || !a.EveReminders ? null : new { time = a.EveReminderTime, status = Status($"ambient:eve:{ds}"),
+                                about = tomorrow.Select(x => config.R.SubjectName(x.SubjectId) + " — " + x.Work) }
+                        };
+                    }),
+                    wakeups = store.Wakeups().Where(w => owner || w.Deadline != 0).Where(w => w.Status == "pending" || w.Due > DateTimeOffset.UtcNow.AddDays(-14).ToUnixTimeSeconds()).Select(w =>
+                    {
+                        var d = deadlines.FirstOrDefault(x => x.Id == w.Deadline);
+                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status,
+                            deadlineTitle = d is null ? null : $"#{d.Id} {config.R.SubjectName(d.SubjectId)} — {d.Work} ({d.Date}, {d.Period} пара)" };
+                    }),
+                    deliveries = store.PendingDeliveries().Select(x => new { x.Key, x.Due, x.Text,
+                        topic = x.TopicId == config.DeadlinesTopicId ? "Дедлайны" : x.TopicId == config.SummaryTopicId ? "Сводка" : x.TopicId == config.ChatTopicId ? "Воздуханство" : "тема " + x.TopicId })
+                });
+                return;
+            }
+            case "/api/wakeup" when post:
+            {
+                var deadline = body.Field("deadline").ValueKind == JsonValueKind.Number ? body.Field("deadline").GetInt32() : 0;
+                if (deadline == 0 && !owner) { await Send(response, 403, new { ok = false, error = "Свободные отложенные посты — только для разработчика" }); return; }
+                if (!DateTime.TryParse(body.Text("at"), out var at)) { await Send(response, 400, new { ok = false, error = "Неверное время" }); return; }
+                var utc = config.Utc(at);
+                if (utc <= DateTimeOffset.UtcNow) { await Send(response, 400, new { ok = false, error = "Время уже прошло" }); return; }
+                var reason = Conversation.Limit(body.Text("reason") ?? "", 1000);
+                if (deadline == 0 && reason.Length == 0) { await Send(response, 400, new { ok = false, error = "О чём написать?" }); return; }
+                await Send(response, 200, new { ok = true, id = store.AddWakeup(deadline, utc.ToUnixTimeSeconds(), reason.Length == 0 ? "ручное напоминание" : reason, deadline == 0 ? "post" : "manual", actor) });
+                return;
+            }
+            case "/api/wakeup/delete" when post:
+                await Send(response, 200, new { ok = store.SetWakeup(body.Field("id").GetInt64(), "deleted") });
+                return;
+            case "/api/wakeup/replan" when post:
+            {
+                var d = store.AllDeadlines().FirstOrDefault(x => x.Id == body.Field("deadline").GetInt32() && x.Status == "active");
+                if (d is null) { await Send(response, 404, new { ok = false, error = "Нет активного дедлайна" }); return; }
+                await Send(response, 200, new { ok = true, count = await worker.PlanWakeups(d, DateTimeOffset.UtcNow, ct) });
+                return;
+            }
+            case "/api/post-now" when post && owner:
+            {
+                if (body.Field("send").ValueKind == JsonValueKind.True)
+                {
+                    var text = body.Text("text");
+                    if (string.IsNullOrWhiteSpace(text)) { await Send(response, 400, new { ok = false, error = "Пустой текст" }); return; }
+                    await worker.PostAmbient("manual", null, ct, text);
+                    await Send(response, 200, new { ok = true });
+                    return;
+                }
+                var generated = await worker.GenerateAmbient("manual", new { idea = body.Text("idea"), requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm") }, ct);
+                await Send(response, generated is null ? 502 : 200, new { ok = generated is not null, text = generated, error = generated is null ? "Нейронка не ответила" : null });
+                return;
+            }
             case "/api/chats" when !post:
                 await Send(response, 200, new { ok = true, chats = store.LogChats().Where(c => owner || c.Chat != config.OwnerId) });
                 return;

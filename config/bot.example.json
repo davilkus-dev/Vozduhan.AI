@@ -3,6 +3,7 @@
   "groupId": 0,
   "chatTopicId": 0,
   "deadlinesTopicId": 0,
+  "summaryTopicId": 0,
   "otherAiTopicIds": [],
   "dataPath": "data/vozduhan.db",
   "timeZone": "Europe/Moscow",
@@ -36,6 +37,17 @@
       "127.0.0.0/8"
     ],
     "sessionDays": 7
+  },
+  "ambient": {
+    "enabled": true,
+    "summaryTime": "07:55",
+    "morningTime": "08:00",
+    "spontaneousPerDay": 2,
+    "spontaneousChance": 0.5,
+    "activeFrom": "10:00",
+    "activeTo": "21:30",
+    "eveReminders": true,
+    "eveReminderTime": "20:00"
   },
   "registryVersion": 1,
   "weekOneMonday": "2026-08-31",
