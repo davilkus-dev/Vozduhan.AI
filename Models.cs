@@ -18,8 +18,8 @@ public static class Json
         ?? throw new InvalidDataException("Empty JSON value");
 }
 
-public sealed record Member(long UserId, string FullName, string ShortName, string Username = "",
-    int ListNumber = 0, string Role = "member", bool Active = true);
+public sealed record Member(long? UserId, string FullName, string ShortName, string Username = "",
+    int ListNumber = 0, string Role = "member", bool Active = true, string? TelegramName = null, string? Email = null);
 public sealed record Subject(string Id, string Name, string Room, string[] Aliases);
 public sealed record Period(int Number, string Start, string End);
 public sealed record Lesson(string SubjectId, int DayOfWeek, int Period, string Weeks = "all",
@@ -55,9 +55,9 @@ public sealed class BotConfig
     public DateTime LocalNow(DateTimeOffset utc) => TimeZoneInfo.ConvertTime(utc, Zone).DateTime;
     public DateTimeOffset Utc(DateTime local) => new(TimeZoneInfo.ConvertTimeToUtc(
         DateTime.SpecifyKind(local, DateTimeKind.Unspecified), Zone));
-    public Member? FindMember(long id) => Members.FirstOrDefault(m => m.UserId == id && m.Active);
-    public bool AllowedUser(long id) => id == OwnerId || FindMember(id) is not null;
-    public bool CanEdit(long id) => id == OwnerId || FindMember(id)?.Role == "head";
+    public Member? FindMember(long id) => id > 0 ? Members.FirstOrDefault(m => m.UserId == id && m.Active) : null;
+    public bool AllowedUser(long id) => id > 0 && (id == OwnerId || FindMember(id) is not null);
+    public bool CanEdit(long id) => id > 0 && (id == OwnerId || FindMember(id)?.Role == "head");
     public bool AiTopic(int id) => id == DeadlinesTopicId || OtherAiTopicIds.Contains(id);
 
     public void Validate()
@@ -69,11 +69,12 @@ public sealed class BotConfig
             MaxPins is < 0 or > 10 || ContextMessages is < 1 or > 50 || HistoryDays is < 1 or > 365 ||
             AiTimeoutSeconds is < 10 or > 180 || MaxOutputTokens is < 1024 or > 16384 || MaxDailyChatRequestsPerUser is < 1 or > 1000)
             throw new InvalidDataException("Invalid time or limits in bot config");
-        if (Members.Any(m => m.UserId <= 0 || string.IsNullOrWhiteSpace(m.FullName) || string.IsNullOrWhiteSpace(m.ShortName) ||
-                             m.Role is not ("member" or "head")) ||
-            Members.Select(m => m.UserId).Distinct().Count() != Members.Length ||
+        var boundIds = Members.Where(m => m.UserId.HasValue).Select(m => m.UserId!.Value).ToArray();
+        if (Members.Any(m => m.UserId is <= 0 || string.IsNullOrWhiteSpace(m.FullName) || string.IsNullOrWhiteSpace(m.ShortName) ||
+                             m.Role is not ("member" or "head") || (m.Role == "head" && m.UserId is null)) ||
+            boundIds.Distinct().Count() != boundIds.Length ||
             Members.Count(m => m.Active && m.Role == "head") > 1)
-            throw new InvalidDataException("Members require unique positive user IDs, names and at most one active head");
+            throw new InvalidDataException("Bound members require unique positive IDs; an unbound member uses null; the head must be bound");
         if (!Members.Any(m => m.UserId == OwnerId && m.Active)) throw new InvalidDataException("Owner must also have an active roster entry with real names");
         var numbers = Members.Where(m => m.Active && m.ListNumber > 0).Select(m => m.ListNumber).ToArray();
         if (numbers.Distinct().Count() != numbers.Length) throw new InvalidDataException("Duplicate roster numbers");

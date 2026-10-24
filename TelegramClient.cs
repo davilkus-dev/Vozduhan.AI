@@ -10,6 +10,11 @@ public static class Fields
     public static long Number(this JsonElement e, string key) => e.Field(key).TryNumber();
     public static long TryNumber(this JsonElement e) => e.ValueKind == JsonValueKind.Number && e.TryGetInt64(out var n) ? n : 0;
     public static bool Flag(this JsonElement e, string key) => e.Field(key).ValueKind == JsonValueKind.True;
+    public static int TopicId(this JsonElement e)
+    {
+        var id = (int)e.Number("message_thread_id");
+        return id > 0 ? id : e.Field("chat").Text("type") is "group" or "supergroup" ? 1 : 0;
+    }
     public static string Body(this JsonElement e) => e.Text("text") ?? e.Text("caption") ??
         (e.Field("photo").ValueKind == JsonValueKind.Array ? "[фото]" :
         e.Field("sticker").ValueKind == JsonValueKind.Object ? "[стикер]" :
@@ -31,7 +36,7 @@ public sealed class TelegramClient(HttpClient http, string token)
 {
     public async Task<JsonElement> Call(string method, object data, CancellationToken ct)
     {
-        using var response = await http.PostAsJsonAsync($"bot{token}/{method}", data, Json.Options, ct);
+        using var response = await http.PostAsJsonAsync($"./bot{token}/{method}", data, Json.Options, ct);
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var root = document.RootElement;
         if (!root.Flag("ok")) throw new TelegramError(method, (int)root.Number("error_code"), root.Text("description") ?? "Unknown API error",
@@ -41,7 +46,7 @@ public sealed class TelegramClient(HttpClient http, string token)
     public Task<JsonElement> Send(long chat, int topic, string text, CancellationToken ct, object? keyboard = null, int? reply = null) =>
         Call("sendMessage", new
         {
-            chat_id = chat, message_thread_id = topic > 0 ? (int?)topic : null, text,
+            chat_id = chat, message_thread_id = topic > 1 ? (int?)topic : null, text,
             reply_markup = keyboard,
             reply_parameters = reply.HasValue ? new { message_id = reply.Value, allow_sending_without_reply = true } : null,
             link_preview_options = new { is_disabled = true }

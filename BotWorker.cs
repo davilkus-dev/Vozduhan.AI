@@ -54,7 +54,7 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
                         allowed = config.CanEdit(actor) && cb.Field("message").Field("chat").Number("id") == actor;
                     else
                     {
-                        var chat = m.Field("chat"); var topic = (int)m.Number("message_thread_id");
+                        var chat = m.Field("chat"); var topic = m.TopicId();
                         if (chat.Number("id") == config.GroupId && config.AiTopic(topic) && HasContent(m))
                         { allowed = true; priority = 1; }
                         else if (!m.Field("from").Flag("is_bot") && config.AllowedUser(actor))
@@ -113,7 +113,7 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
         if (edited) m = update.Field("edited_message");
         var chat = m.Field("chat").Number("id");
         var actor = m.Field("from").Number("id");
-        var topic = (int)m.Number("message_thread_id");
+        var topic = m.TopicId();
         var id = (int)m.Number("message_id");
         if (chat == config.GroupId && config.AiTopic(topic))
         {
@@ -175,7 +175,7 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
     private async Task Chat(JsonElement m, string key, bool isPrivate, CancellationToken ct)
     {
         var chat = m.Field("chat").Number("id"); var id = (int)m.Number("message_id");
-        var topic = (int)m.Number("message_thread_id"); var loadingKey = "loading:" + key;
+        var topic = m.TopicId(); var loadingKey = "loading:" + key;
         var old = store.Post(loadingKey);
         if (old is not null)
         {
@@ -201,10 +201,10 @@ public sealed partial class BotWorker(BotConfig config, BotStore store, Telegram
     }
     private async Task Respond(JsonElement to, string key, string text, CancellationToken ct, object? keyboard = null)
     {
-        var sent = await telegram.Send(to.Field("chat").Number("id"), (int)to.Number("message_thread_id"), text, ct,
+        var sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), text, ct,
             keyboard, (int)to.Number("message_id"));
         store.SavePost(key, (int)sent.Number("message_id"), "");
-        store.Remember(sent.Field("chat").Number("id"), (int)sent.Number("message_thread_id"), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
+        store.Remember(sent.Field("chat").Number("id"), sent.TopicId(), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
     }
     private async Task NotifyOwner(string text, CancellationToken ct)
     {

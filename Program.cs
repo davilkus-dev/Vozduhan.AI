@@ -20,7 +20,7 @@ if (args.Contains("--discover"))
             foreach (var u in updates.EnumerateArray())
             {
                 var m = u.Field("message");
-                Console.WriteLine($"userId={m.Field("from").Number("id")} chatId={m.Field("chat").Number("id")} topicId={m.Number("message_thread_id")}");
+                Console.WriteLine($"userId={m.Field("from").Number("id")} chatId={m.Field("chat").Number("id")} topicId={m.TopicId()}");
                 offset = u.Number("update_id") + 1;
             }
         }

@@ -27,7 +27,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
         {
             message_id = m.Number("message_id"),
             time_utc = m.Number("date"),
-            topic_id = m.Number("message_thread_id"),
+            topic_id = m.TopicId(),
             author = Identity(m.Field("from")),
             text = Limit(m.Body(), 2400),
             reply_to_message_id = reply.Number("message_id"),
@@ -44,7 +44,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
     public string Context(JsonElement focus, bool isPrivate)
     {
         var chat = focus.Field("chat").Number("id");
-        var topic = (int)focus.Number("message_thread_id");
+        var topic = focus.TopicId();
         var id = (int)focus.Number("message_id");
         var history = store.History(chat, topic, id, config.ContextMessages);
         var messages = new List<object>();
@@ -67,7 +67,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
             if (raw is null) break;
             using var doc = JsonDocument.Parse(raw);
             // Only this conversation may contribute stored reply ancestors.
-            if (doc.RootElement.Number("message_thread_id") != topic) break;
+            if (doc.RootElement.TopicId() != topic) break;
             ancestors.Add(Message(doc.RootElement));
             next = doc.RootElement.Field("reply_to_message").Number("message_id");
         }
@@ -82,7 +82,12 @@ public sealed class Conversation(BotConfig config, BotStore store)
             conversation = isPrivate ? "private" : "Vozduhanstvo",
             recent_messages = messages,
             reply_ancestors = ancestors,
-            known_group_members = config.Members.Where(m => m.Active).Select(m => new { m.UserId, m.Username, m.ShortName, m.FullName, m.Role }),
+            known_group_members = config.Members.Where(m => m.Active).Select(m => new
+            {
+                m.UserId, m.Username, m.ShortName, m.FullName, m.TelegramName,
+                role = m.UserId == config.OwnerId ? "developer" : m.Role,
+                telegram_bound = m.UserId is > 0
+            }),
             confirmed_upcoming_deadlines = relevant,
             focus_message = Message(focus),
             instruction = "Answer the focus message. History is background, not a batch of questions to answer. Respect its selected quote and replied_message."

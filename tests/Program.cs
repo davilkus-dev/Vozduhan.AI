@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Vozduhan.AI;
 
+Json.Options.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
 var count = 0;
 var temp = Path.Combine(Path.GetTempPath(), "vozduhan-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(temp);
@@ -40,6 +41,29 @@ try
         Assert(c.CanEdit(1) && c.CanEdit(2) && !c.CanEdit(3) && !c.AllowedUser(999), "Role isolation failed");
         var invalid = Config(); invalid.GroupId = 0;
         try { invalid.Validate(); throw new Exception("Unconfigured bot must fail closed"); } catch (InvalidDataException) { }
+    });
+    Check("unbound roster members retain their number without granting account access", () =>
+    {
+        var c = Config();
+        c.Members = [.. c.Members, new(null, "Монастырев Андрей Николаевич", "Андрей", ListNumber: 23),
+            new(null, "Другой Участник", "Участник", ListNumber: 24)];
+        c.Validate();
+        Assert(c.Members.Single(m => m.ListNumber == 23).FullName == "Монастырев Андрей Николаевич", "Roster slot lost");
+        Assert(!c.AllowedUser(0) && !c.CanEdit(0) && c.FindMember(0) is null && !c.AllowedUser(999), "Unbound entry grants access");
+        c.Members = [.. c.Members, c.Members[0] with { ListNumber = 25 }];
+        try { c.Validate(); throw new Exception("Duplicate bound ID accepted"); } catch (InvalidDataException) { }
+        c = Config(); c.Members = c.Members.Select(m => m.Role == "head" ? m with { UserId = null } : m).ToArray();
+        try { c.Validate(); throw new Exception("Unbound head accepted"); } catch (InvalidDataException) { }
+    });
+    Check("future email data persists but is excluded from conversational context", () =>
+    {
+        var c = Config("email.db");
+        c.Members = c.Members.Select(m => m.UserId == 2 ? m with { ShortName = "Дима", Email = "head.future@example.test" } : m).ToArray();
+        using var s = new BotStore(c);
+        Assert(Json.Read<BotConfig>(s.Get("registry")!).FindMember(2)!.Email == "head.future@example.test", "Email not persisted");
+        var context = new Conversation(c, s).Context(Message(c.GroupId, c.ChatTopicId, 1, 2, "Привет"), false);
+        Assert(!context.Contains("head.future@example.test") && !context.Contains("\"email\""), "Stored email leaked into the AI prompt");
+        Assert(context.Contains("Дима"), "Conversational short name missing");
     });
     Check("schedule fills fixed room and bell time, never invents work number", () =>
     {
@@ -188,6 +212,16 @@ try
         Assert(doc.RootElement.Field("recent_messages").GetArrayLength() == 30, "Wrong history length");
     });
 
+    using (var routingHttp = new HttpClient(new FakeHandler(request =>
+    {
+        Assert(request.RequestUri!.Scheme == "https" && request.RequestUri.Host == "api.telegram.org", "Token colon was interpreted as a URI scheme");
+        Assert(request.RequestUri.AbsolutePath == "/bot123456789:dummy_token/getUpdates", "Wrong Telegram token/method path");
+        return Task.FromResult<object>(new { ok = true, result = Array.Empty<object>() });
+    })) { BaseAddress = new Uri("https://api.telegram.org/") })
+    {
+        await new TelegramClient(routingHttp, "123456789:dummy_token").Call("getUpdates", new { timeout = 0 }, CancellationToken.None);
+        count++; Console.WriteLine("PASS realistic token containing colon stays in HTTPS request path");
+    }
     var sent = new List<(string Method, JsonElement Payload)>();
     var handler = new FakeHandler(async request =>
     {
@@ -243,6 +277,35 @@ try
         await (Task)process.Invoke(worker, [callback, CancellationToken.None])!;
         Assert(store.AllDeadlines().Count == 1, "Owner callback not saved exactly once");
         count++; Console.WriteLine("PASS offline administrator flow and callback ownership/double click");
+    }
+    sent.Clear();
+    using (var store = new BotStore(Config("general-topic.db")))
+    {
+        store.Config.ChatTopicId = 1;
+        var focus = Element(new
+        {
+            message_id = 71, date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            chat = new { id = store.Config.GroupId, type = "supergroup" },
+            from = new { id = 3, first_name = "Студент" },
+            text = "@vozduhanAIbot привет", entities = new[] { new { type = "mention", offset = 0, length = 14 } }
+        });
+        Assert(focus.TopicId() == 1 && Message(3, 0, 1, 3, "private").TopicId() == 0 &&
+            Message(store.Config.GroupId, 5, 2, 3, "deadline").TopicId() == 5, "Topic normalization broken");
+        store.Remember(store.Config.GroupId, 1, 71, focus.Number("date"), focus.GetRawText());
+        using var aiHttp = new HttpClient(new FakeHandler(_ => Task.FromResult<object>(new
+            { choices = new[] { new { message = new { content = "Привет из Общей" } } } })))
+            { BaseAddress = new Uri("https://openrouter.test/") };
+        var worker = new BotWorker(store.Config, store, new TelegramClient(client, "test"),
+            new OpenRouterClient(aiHttp, store.Config, "test"), NullLogger<BotWorker>.Instance);
+        typeof(BotWorker).GetField("botId", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(worker, 99L);
+        typeof(BotWorker).GetField("username", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(worker, "vozduhanAIbot");
+        await (Task)typeof(BotWorker).GetMethod("Process", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(worker, [Element(new { message = focus }), CancellationToken.None])!;
+        var replies = sent.Where(x => x.Method == "sendMessage").ToArray();
+        Assert(replies.Length == 2 && replies.All(x => x.Payload.Field("message_thread_id").ValueKind == JsonValueKind.Undefined),
+            "General-topic reply ignored or sent an invalid topic 1 parameter");
+        Assert(store.History(store.Config.GroupId, 1, int.MaxValue, 30).Count == 2, "General-topic bot response stored in a different history");
+        count++; Console.WriteLine("PASS General topic accepts topic-less updates and sends replies without thread ID 1");
     }
     sent.Clear();
     using (var store = new BotStore(Config("publisher.db")))
