@@ -447,17 +447,20 @@ VIEWS.deadlines=async el=>{
   const r=await api("deadlines");
   const row=d=>`<tr class="${d.past||d.status!=="active"?"off":""}"><td class="faint">#${d.id}</td><td><b>${fmtDate(d.date)}</b> <span class="muted">${SD[dow(d.date)]}</span></td><td>${d.period} · ${d.start}</td><td>${esc(d.subject)}</td><td>${esc(d.work)}${d.note?`<div class="faint small">${esc(d.note)}</div>`:""}</td><td>${esc(d.room)}</td>
     <td>${d.status==="active"?(d.past?'<span class="chip">прошёл</span>':'<span class="st added">активен</span>'):'<span class="st cancelled">отменён</span>'}</td>
-    <td>${d.status==="active"&&!d.past?`<div class="row" style="flex-wrap:nowrap"><button class="b" data-mv="${d.id}">Перенести</button><button class="b d" data-cn="${d.id}">Отменить</button></div>`:""}</td></tr>`;
+    <td>${d.status==="active"&&!d.past?`<div class="row" style="flex-wrap:nowrap"><button class="b" data-rg="${d.id}" title="Бот заново напишет живой текст поста">✨ Текст</button><button class="b" data-mv="${d.id}">Перенести</button><button class="b d" data-cn="${d.id}">Отменить</button></div>`:""}</td></tr>`;
   $("#dl").innerHTML=`<table><thead><tr><th>ID</th><th>Дата</th><th>Пара</th><th>Предмет</th><th>Работа</th><th>Кабинет</th><th>Статус</th><th></th></tr></thead><tbody>${r.deadlines.map(row).join("")||'<tr><td colspan="8" class="empty">Пока нет</td></tr>'}</tbody></table>`;
   const send=async(body,title)=>{const pre=await api("deadline",{...body,dry:true});
     if(!pre.ok)return info("Не хватает данных",`${pre.preview?`<pre>${esc(pre.preview)}</pre>`:""}<p>${esc(pre.error)}</p>`);
     const i=await menu(title,[{t:"Сохранить и опубликовать",cls:"p"}],`<pre>${esc(pre.preview)}</pre>`);if(i!==0)return;
     const s=await api("deadline",body);if(s.ok){toast("Сохранено");render()}else info("Ошибка",`<p>${esc(s.error)}</p>`)};
-  $("#addD").onclick=async()=>{const v=await form("Новый дедлайн",[{k:"subjectId",label:"Предмет",type:"select",options:subjOptions()},{k:"work",label:"Работа",ph:"Практика №11"},{k:"date",label:"Дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"room",label:"Кабинет",ph:"из расписания"},{k:"note",label:"Публичное примечание"}],{date:S.me.today});
+  $("#addD").onclick=async()=>{const v=await form("Новый дедлайн",[{k:"subjectId",label:"Предмет",type:"select",options:subjOptions()},{k:"work",label:"Работа",ph:"Практика №11"},{k:"date",label:"Дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"room",label:"Кабинет",ph:"из расписания"},{k:"note",label:"Комментарий для бота",ph:"контекст для текста поста, дословно не публикуется"}],{date:S.me.today});
     if(!v)return;send({action:"create",...v,period:v.period?+v.period:null},"Проверь карточку")};
-  el.querySelectorAll("[data-mv]").forEach(b=>b.onclick=async()=>{const v=await form("Перенос #"+b.dataset.mv,[{k:"date",label:"Новая дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"note",label:"Публичное примечание"}]);
+  el.querySelectorAll("[data-mv]").forEach(b=>b.onclick=async()=>{const v=await form("Перенос #"+b.dataset.mv,[{k:"date",label:"Новая дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"note",label:"Комментарий для бота",ph:"кто перенёс, почему"}]);
     if(!v)return;send({action:"update",targetId:+b.dataset.mv,date:v.date,period:v.period?+v.period:null,note:v.note},"Перенос")});
-  el.querySelectorAll("[data-cn]").forEach(b=>b.onclick=()=>send({action:"cancel",targetId:+b.dataset.cn},"Отмена сдачи"))};
+  el.querySelectorAll("[data-cn]").forEach(b=>b.onclick=()=>send({action:"cancel",targetId:+b.dataset.cn},"Отмена сдачи"));
+  el.querySelectorAll("[data-rg]").forEach(b=>b.onclick=async()=>{const v=await form("Переписать текст поста #"+b.dataset.rg,[{k:"note",label:"Комментарий для бота",type:"textarea",rows:3,ph:"последний шанс, Арапов злой — бот перескажет своими словами"}],
+      {note:(r.deadlines.find(x=>x.id===+b.dataset.rg)||{}).note||""});if(!v)return;b.disabled=true;b.textContent="Пишу…";
+    const x=await api("deadline/regen",{id:+b.dataset.rg,note:v.note});if(x.ok){info("Новый текст",`<pre>${esc(x.intro)}</pre><p class="muted small">Карточка в «Дедлайнах» обновится в течение минуты (без нового уведомления).</p>`);render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)})};
 
 // ---------- log ----------
 VIEWS.log=async el=>{

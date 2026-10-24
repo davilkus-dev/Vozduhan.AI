@@ -146,25 +146,20 @@ public sealed partial class BotWorker
                 Conversation.Limit((previous is null ? "" : previous.Source + "\n") + text, 4000), DateTimeOffset.UtcNow);
             if (draft.Missing.Length == 0)
             {
-                var intros = command is "/deadline" or "/move" or "/cancel"
-                    ? (News: draft.Action == "create" ? "Гайс, держим в голове:" : "Гайс, по сдаче новости.", Morning: "Гайс, сегодня у нас:")
-                    : await ai.Intros(draft.Action, new
-                    {
-                        subject = config.R.SubjectName(draft.SubjectId), work = draft.Work, date = draft.Date,
-                        weekday = draft.Date is null ? null : Schedule.DayNames[Schedule.Dow(DateOnly.Parse(draft.Date))],
-                        period = draft.Period, note = draft.Note,
-                        previous = store.AllDeadlines().FirstOrDefault(x => x.Id == draft.TargetId) is { } old
-                            ? new { old.Date, old.Period, old.Work } : null
-                    }, ct);
-                draft = draft with { Intro = intros.News, MorningIntro = intros.Morning };
+                draft = draft with { Intro = await DeadlineIntro(draft, ct), MorningIntro = "Сегодня сдаём:" };
             }
             store.SaveDraft(draft);
-            var preview = Deadlines.Preview(config, draft);
-            if (!string.IsNullOrWhiteSpace(parsed.Question) && draft.Missing.Length > 0) preview += "\n" + Conversation.Limit(parsed.Question, 300);
+            // Ready draft: show exactly what will appear in «Дедлайны». Incomplete one: the plain checklist of what is missing.
+            var preview = draft.Missing.Length == 0
+                ? Deadlines.DraftCard(config, draft) +
+                  (string.IsNullOrWhiteSpace(draft.Note) ? "" : $"\n\n<i>Комментарий для бота (в пост дословно не попадёт): {System.Net.WebUtility.HtmlEncode(draft.Note)}</i>") +
+                  "\n\nПубликую только после подтверждения. Можно поправить сообщением."
+                : System.Net.WebUtility.HtmlEncode(Deadlines.Preview(config, draft));
+            if (!string.IsNullOrWhiteSpace(parsed.Question) && draft.Missing.Length > 0) preview += "\n" + System.Net.WebUtility.HtmlEncode(Conversation.Limit(parsed.Question, 300));
             var keyboard = draft.Missing.Length == 0
                 ? Buttons("save:" + draft.Token, "drop:" + draft.Token, draft.Action == "cancel" ? "Подтвердить отмену" : "Сохранить и опубликовать")
                 : null;
-            await Respond(m, responseKey, preview, ct, keyboard);
+            await Respond(m, responseKey, preview, ct, keyboard, html: true);
         }
         catch (TelegramError) { throw; }
         catch (InvalidOperationException e) { await Respond(m, responseKey, e.Message, ct); }

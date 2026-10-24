@@ -490,12 +490,47 @@ public static class Deadlines
     public static string Facts(BotConfig c, Deadline d) =>
         $"#{d.Id} · {c.R.SubjectName(d.SubjectId)} — {d.Work}\n" +
         $"{DateOnly.Parse(d.Date):dd.MM.yyyy} · {d.Period}-я пара · {d.Start}–{d.End}\nКабинет: {d.Room}";
-    public static string Card(BotConfig c, Deadline d) => $"{(d.Status == "cancelled" ? "❌ Сдача отменена" : "📌 Дедлайн")}\n{(string.IsNullOrWhiteSpace(d.Intro) ? "Гайс, держим в голове:" : d.Intro)}\n\n{Facts(c, d)}" +
-        (string.IsNullOrWhiteSpace(d.Note) ? "" : "\n\nКомментарий редактора: " + d.Note);
+
+    static string H(string? s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+    /// <summary>The technical block of a deadline post, built by the program (never by the model).</summary>
+    public static string FactsHtml(BotConfig c, Deadline d, bool struck = false)
+    {
+        var day = DateOnly.Parse(d.Date);
+        var slot = Schedule.Day(c.R, day).FirstOrDefault(s => s.SubjectId == d.SubjectId && s.Period == d.Period && s.Status != "cancelled");
+        var title = $"<b>{H(c.R.SubjectName(d.SubjectId))}</b> — {H(d.Work)}";
+        var place = new[] { $"🚪 <code>{H(d.Room)}</code>", string.IsNullOrWhiteSpace(slot?.Teacher) ? "" : "👤 " + H(slot!.Teacher),
+            string.IsNullOrWhiteSpace(slot?.Campus) ? "" : "📍 " + H(slot!.Campus) }.Where(x => x.Length > 0);
+        return "<blockquote>" + (struck ? $"<s>{title}</s>" : title) +
+            $"\n📅 <b>{Schedule.DayShort[Schedule.Dow(day)].ToLowerInvariant()}, {day:dd.MM}</b> · {d.Period} пара · {d.Start}–{d.End}" +
+            "\n" + string.Join(" · ", place) + "</blockquote>";
+    }
+    /// <summary>Model-written lead, sanitised. The editor's note is never printed: it only feeds the model.</summary>
+    public static string Lead(string? intro, string fallback) =>
+        TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(OpenRouterClient.Join(string.IsNullOrWhiteSpace(intro) ? fallback : intro)));
+    public static string Card(BotConfig c, Deadline d) => d.Status == "cancelled"
+        ? Lead(d.Intro, "Отбой, эту сдачу отменили.") + $"\n\n❌ <b>Сдача отменена</b> · #{d.Id}\n" + FactsHtml(c, d, true)
+        : Lead(d.Intro, "Гайс, держим в голове.") + $"\n\n📌 <b>Дедлайн</b> · #{d.Id}\n" + FactsHtml(c, d);
+    /// <summary>A not yet saved draft rendered like the future post.</summary>
+    public static string DraftCard(BotConfig c, Draft d)
+    {
+        var fake = new Deadline(d.TargetId ?? 0, 0, d.SubjectId!, d.Work!, d.Date!, d.Period!.Value, d.Start!, d.End!, d.Room!,
+            d.Action == "cancel" ? "cancelled" : "active", d.ActorId, "", d.Intro, d.MorningIntro, d.Note);
+        var head = d.Action switch { "cancel" => "Так будет отмена", "update" => "Так будет изменение", _ => "Так будет в «Дедлайнах»" };
+        return $"👀 <b>{head}:</b>\n\n" + Card(c, fake).Replace(" · #0", "");
+    }
+    public static string ChangeNews(BotConfig c, Deadline d, Deadline old)
+    {
+        var oldDay = DateOnly.Parse(old.Date);
+        var was = old.Date != d.Date || old.Period != d.Period || old.Room != d.Room
+            ? $"\n<i>Было: {Schedule.DayShort[Schedule.Dow(oldDay)].ToLowerInvariant()}, {oldDay:dd.MM}, {old.Period} пара ({old.Start}), {H(old.Room)}</i>" : "";
+        return d.Status == "cancelled"
+            ? Lead(d.Intro, "Отбой, эту сдачу отменили.") + $"\n\n❌ <b>Отмена</b> · #{d.Id}\n" + FactsHtml(c, d, true)
+            : Lead(d.Intro, "Гайс, по сдаче новости.") + $"\n\n🔄 <b>Изменение</b> · #{d.Id}\n" + FactsHtml(c, d) + was;
+    }
     public static string Preview(BotConfig c, Draft d) =>
         $"{(d.Action == "cancel" ? "Отменяем" : d.Action == "update" ? "Обновляем" : "Добавляем")} дедлайн{(d.TargetId is not null ? $" #{d.TargetId}" : "")}\n\n" +
         $"{(d.SubjectId is null ? "Предмет: ?" : c.R.SubjectName(d.SubjectId))} — {d.Work ?? "Работа: ?"}\n" +
         $"Дата: {d.Date ?? "?"}\nПара: {d.Period?.ToString() ?? "?"} · {d.Start ?? "--:--"}–{d.End ?? "--:--"}\nКабинет: {d.Room ?? "?"}\n\n" +
-        (string.IsNullOrWhiteSpace(d.Note) ? "" : "Публичное примечание: " + d.Note + "\n\n") +
+        (string.IsNullOrWhiteSpace(d.Note) ? "" : "Комментарий для бота (в пост дословно не попадёт): " + d.Note + "\n\n") +
         (d.Missing.Length > 0 ? string.Join("\n", d.Missing) : "Проверь факты. Публикую только после подтверждения.");
 }

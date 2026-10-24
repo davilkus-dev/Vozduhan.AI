@@ -173,9 +173,9 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         Дедлайн (intent=deadline) — это сдача конкретной работы: action (create/update/cancel), targetId (число или null),
         subjectId (точный ID предмета из реестра или null), work (строка или null), date (YYYY-MM-DD или null),
         period (номер пары или null), room (кабинет, только если редактор его явно назвал, иначе null),
-        note (публичное примечание или null).
-        note может честно пересказать сообщённую редактором причину или изменение от преподавателя, например «Цынгалев перенёс сдачу».
-        Не выдумывай преподавателя и причину, не переноси в note личную болтовню. Редактор увидит note перед публикацией.
+        note (закулисный комментарий для бота или null).
+        note — контекст для живого текста поста: причина, кто перенёс, подробности, настроение («Цынгалев перенёс сдачу», «последний шанс»).
+        Дословно в пост он не попадает — бот перескажет своими словами. Не выдумывай преподавателя и причину.
         «Контроша», «кр», «контрольная» — work «Контрольная работа» (номер не обязателен). «Коллок» — «Коллоквиум».
         Номер практики не выводи из даты или истории. Для «сдаём практику» без номера/названия — work=null и спроси, какую.
         Предмет определяй только по названиям и сленгу из реестра. Не выдумывай работу, кабинет, дату, пару, людей.
@@ -254,30 +254,6 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         return new(intent, deadline, ops, root.Text("question"), root.Text("idea"));
     }
 
-    /// <summary>Lead lines for deadline posts. They may mention the supplied facts; the exact facts block is appended by the program.</summary>
-    public async Task<(string News, string Morning)> Intros(string action, object facts, CancellationToken ct)
-    {
-        try
-        {
-            using var shortTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            shortTimeout.CancelAfter(TimeSpan.FromSeconds(15));
-            var result = await Complete(ToneRules + "\n\n" + """
-                Ты пишешь вводные строки к постам о дедлайнах в теме «Дедлайны» неформальной студенческой группы.
-                Верни JSON {"news":"...","morning":"..."}.
-                news — заголовок-новость к действию action: create — новая сдача, update — изменение/перенос (сравни facts с previous),
-                cancel — отмена. Примеры тона: «!!! Арапов перенёс сдачу по философии на пятницу», «Свежак: по сиаоду назначили 2-ю практику, 31-го»,
-                «Отбой тревоги: сдачу по джаве отменили». Каждый раз по-новому, без нотаций и обязательного позитива.
-                morning — короткая строка для утреннего поста в день сдачи («Гайс, сегодня дедлайн по джаве. Дописались?»).
-                Используй только переданные факты (предмет, работа, дата, преподаватель из note). Не придумывай время, кабинет, причины.
-                Не пиши, что кто-то сдал или завалил. Каждая строка до 160 символов, без markdown и HTML. Точный блок фактов программа добавит ниже.
-                """, Json.Write(new { action, facts }), true, shortTimeout.Token, "intro");
-            using var doc = JsonDocument.Parse(result);
-            return (Conversation.Limit(Json.Unescape(doc.RootElement.Text("news") ?? "Гайс, по сдаче новости."), 160),
-                Conversation.Limit(Json.Unescape(doc.RootElement.Text("morning") ?? "Гайс, сегодня у нас:"), 160));
-        }
-        catch (Exception) when (!ct.IsCancellationRequested) { return ("Гайс, по сдаче новости.", "Гайс, сегодня у нас:"); }
-    }
-
     public const string Skip = "SKIP";
     /// <summary>The bot's own messages: morning, spontaneous drop, manual request, deadline wake-up, evening reminder lead.</summary>
     public Task<string> Ambient(string kind, string adminContext, string context, bool split, CancellationToken ct)
@@ -309,6 +285,14 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
                 time_left — сколько осталось). Коротко пни группу по делу: что сдаём, когда, сколько осталось. Без мотивационных речей.
                 Чем ближе дедлайн — тем жёстче стёб, но без нагнетания из ничего. Факты (предмет, работа, дата, время, кабинет) бери только из wakeup.deadline.
                 Не повторяй recent_bot_posts.
+                """,
+            "deadline" => """
+                ЗАДАЧА: живой текст поста в теме «Дедлайны» (до 500 символов) — верхняя часть, от тебя. Ниже программа сама выведет
+                карточку: предмет, работу, дату, пару, время, кабинет, препода. Не перечисляй их списком, но можно упоминать естественно.
+                deadline_post.action: create — новая сдача, update — изменение (сравни с previous: перенос, другая пара/работа), cancel — отмена.
+                backstage_note — закулисный комментарий редактора: используй как контекст и перескажи своим языком, не цитируй дословно.
+                time_left — сколько осталось. Пиши в своём характере, как в утренних постах: каждый раз по-новому, без канцелярита,
+                без «Гайс, держим в голове». Можно «!!!», капс на главном, тег человека по заметкам, если к месту. Без разделителей ||.
                 """,
             "summary" => """
                 ЗАДАЧА: утреннее сообщение группе в теме «Сводка» от тебя самого — живое, каждый день по-новому (до 500 символов).

@@ -191,8 +191,8 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 var parsed = Json.Read<ParsedDeadline>(body.GetRawText());
                 var draft = Deadlines.Resolve(config, parsed, null, store.AllDeadlines(), actor, "веб-админка", DateTimeOffset.UtcNow);
                 if (draft.Missing.Length > 0) { await Send(response, 400, new { ok = false, error = string.Join("\n", draft.Missing), preview = Deadlines.Preview(config, draft) }); return; }
-                draft = draft with { Intro = draft.Action == "create" ? "Гайс, держим в голове:" : "Гайс, по сдаче новости.", MorningIntro = "Гайс, сегодня у нас:" };
                 if (body.Field("dry").ValueKind == JsonValueKind.True) { await Send(response, 200, new { ok = true, preview = Deadlines.Preview(config, draft) }); return; }
+                draft = draft with { Intro = await worker.DeadlineIntro(draft, ct), MorningIntro = "Сегодня сдаём:" };
                 try
                 {
                     var saved = store.ConfirmDirect(actor, draft, DateTimeOffset.UtcNow);
@@ -336,6 +336,17 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 }
                 var generated = await worker.GenerateAmbient("manual", new { idea = body.Text("idea"), requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm") }, ct);
                 await Send(response, generated is null ? 502 : 200, new { ok = generated is not null, text = generated, error = generated is null ? "Нейронка не ответила" : null });
+                return;
+            }
+            case "/api/deadline/regen" when post:
+            {
+                var d = store.AllDeadlines().FirstOrDefault(x => x.Id == body.Field("id").GetInt32());
+                if (d is null) { await Send(response, 404, new { ok = false, error = "Нет такого дедлайна" }); return; }
+                var draft = new Draft("", actor, d.Id, d.Version, d.Status == "cancelled" ? "cancel" : "create", d.SubjectId, d.Work, d.Date, d.Period,
+                    d.Start, d.End, d.Room, "", "", "", [], body.Text("note") ?? d.Note);
+                var intro = await worker.DeadlineIntro(draft, ct);
+                store.SetDeadlineIntro(d.Id, intro);
+                await Send(response, 200, new { ok = true, intro });
                 return;
             }
             case "/api/chats" when !post:

@@ -478,6 +478,39 @@ static class NewFeatureTests
                 count++; Console.WriteLine("PASS ambient: summary+morning once, late skip, AI wake-ups validated/fired/re-planned/cancelled, SKIP, manual /post, warm-up, cancel");
             }
 
+            // ---- A cancelled deadline whose card was deleted by people: one notification, not two ----
+            {
+                var pc = make("cancel-deleted.db");
+                using var ps = new BotStore(pc);
+                var calls = new List<(string Method, string Text)>();
+                var tgDel = new HttpClient(new Fake(async request =>
+                {
+                    var method = request.RequestUri!.Segments[^1];
+                    var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync()).RootElement;
+                    lock (calls) calls.Add((method, body.Text("text") ?? ""));
+                    if (method == "editMessageText") return new { ok = false, error_code = 400, description = "Bad Request: message to edit not found" };
+                    if (method == "sendMessage") return new { ok = true, result = new { message_id = 7000 + calls.Count, date = 1, chat = new { id = pc.GroupId, type = "supergroup" },
+                        message_thread_id = body.Number("message_thread_id"), text = body.Text("text") } };
+                    return new { ok = true, result = (object)true };
+                })) { BaseAddress = new Uri("https://telegram.test/") };
+                var pw = new BotWorker(pc, ps, new TelegramClient(tgDel, "t"), new OpenRouterClient(aiHttp, pc, null), NullLogger<BotWorker>.Instance);
+                var publish = typeof(BotWorker).GetMethod("Publish", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var realNow = DateTimeOffset.UtcNow;
+                var day = DateOnly.FromDateTime(pc.LocalNow(realNow)).AddDays(5).ToString("yyyy-MM-dd");
+                var dd = Deadlines.Resolve(pc, new("create", SubjectId: "siaod", Work: "Практика №9", Date: day, Period: 6, Room: "А412"), null, [], 1, "t", realNow);
+                ps.SaveDraft(dd with { Intro = "Свежак" }); var saved = ps.Confirm(1, dd.Token, realNow);
+                await (Task)publish.Invoke(pw, [CancellationToken.None])!;
+                Assert(calls.Count(x => x.Method == "sendMessage") == 1 && calls[0].Text.StartsWith("Свежак") && calls[0].Text.Contains("<blockquote>"), "Card not published as HTML");
+                calls.Clear();
+                var cd = Deadlines.Resolve(pc, new("cancel", saved.Id), null, ps.AllDeadlines(), 1, "c", realNow);
+                ps.SaveDraft(cd with { Intro = "Отбой" }); ps.Confirm(1, cd.Token, realNow);
+                ps.Set("post_probe:deadline:" + saved.Id, "0");
+                await (Task)publish.Invoke(pw, [CancellationToken.None])!;
+                var sends = calls.Where(x => x.Method == "sendMessage").ToList();
+                Assert(sends.Count == 1 && sends[0].Text.Contains("❌ <b>Отмена</b>"), "Cancel produced duplicates: " + string.Join(" | ", sends.Select(x => x.Text)));
+                count++; Console.WriteLine("PASS cancelled deadline with a deleted card: card not resurrected, one news post");
+            }
+
             // ---- Web admin over a real local HttpListener ----
             var port = 18000 + Random.Shared.Next(1000);
             c.Web = new WebSettings { Enabled = true, Listen = $"http://127.0.0.1:{port}/", PublicUrl = $"http://127.0.0.1:{port}", AllowedNetworks = ["127.0.0.0/8"] };

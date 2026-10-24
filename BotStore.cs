@@ -184,6 +184,15 @@ public sealed partial class BotStore : IDisposable
     {
         lock (gate) return Query("SELECT payload FROM deadlines ORDER BY date,id", r => Json.Read<Deadline>(r.GetString(0)));
     }
+    /// <summary>Replaces only the model-written lead of a deadline; the publisher then edits the card in place.</summary>
+    public void SetDeadlineIntro(int id, string intro)
+    {
+        lock (gate)
+        {
+            var d = AllDeadlines().FirstOrDefault(x => x.Id == id) ?? throw new InvalidOperationException("Нет такого дедлайна.");
+            Exec("UPDATE deadlines SET payload=$p WHERE id=$id", ("p", Json.Write(d with { Intro = intro })), ("id", id));
+        }
+    }
     public Draft? Draft(long actor, string? token = null)
     {
         lock (gate)
@@ -238,10 +247,7 @@ public sealed partial class BotStore : IDisposable
             if (old is not null)
             {
                 Exec("UPDATE deliveries SET state=2 WHERE key LIKE $key AND state=0", ("key", $"change:{id}:%"));
-                var text = (string.IsNullOrWhiteSpace(d.Intro) ? "Гайс, по сдаче новости." : d.Intro) + "\n\n" +
-                    (d.Status == "cancelled" ? "❌ Отмена\n" : "🔄 Изменение\n") + Deadlines.Facts(Config, d) +
-                    (string.IsNullOrWhiteSpace(d.Note) ? "" : "\nКомментарий редактора: " + d.Note) +
-                    $"\n\nРаньше: {old.Date}, {old.Period}-я пара, {old.Start}–{old.End}, {old.Room}.";
+                var text = Deadlines.ChangeNews(Config, d, old);
                 PutDelivery($"change:{id}:{d.Version}", Config.DeadlinesTopicId, text, now.ToUnixTimeSeconds(), now.AddDays(1).ToUnixTimeSeconds());
             }
             if (token is not null) Discard(actor, token);
@@ -266,9 +272,9 @@ public sealed partial class BotStore : IDisposable
         }
         var intro = items.FirstOrDefault()?.MorningIntro;
         if (string.IsNullOrWhiteSpace(intro)) intro = "Гайс, сегодня у нас:";
-        var text = $"📅 {DateOnly.Parse(date):dd.MM.yyyy}\n{intro}\n\n" +
+        var text = $"📅 <b>{DateOnly.Parse(date):dd.MM.yyyy}</b>\n{Deadlines.Lead(intro, "Сегодня сдаём:")}\n\n" +
             (items.Length == 0 ? "Все сдачи из этого поста отменены или перенесены. Смотрите обновлённые карточки." :
-                string.Join("\n\n", items.Select(d => Deadlines.Facts(Config, d))));
+                string.Join("\n", items.Select(d => Deadlines.FactsHtml(Config, d))));
         var day = DateOnly.Parse(date);
         var due = Config.Utc(day.ToDateTime(TimeOnly.Parse(Config.MorningTime))).ToUnixTimeSeconds();
         var expires = Config.Utc(day.AddDays(1).ToDateTime(TimeOnly.MinValue)).ToUnixTimeSeconds();

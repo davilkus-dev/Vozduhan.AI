@@ -143,7 +143,7 @@ public sealed partial class BotWorker
         var due = DueOn(tomorrow);
         if (due.Count == 0) return null;
         var head = TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(OpenRouterClient.Join(lead ?? "⏰ Завтра сдаём:")));
-        return Conversation.Limit(head, 600) + "\n\n" + string.Join("\n\n", due.Select(d => System.Net.WebUtility.HtmlEncode(Deadlines.Facts(config, d))));
+        return Conversation.Limit(head, 600) + "\n\n" + string.Join("\n", due.Select(d => Deadlines.FactsHtml(config, d)));
     }
 
     /// <summary>Morning post in «Сводка»: lively lead, the day's schedule and the submissions of the next days (exact facts).</summary>
@@ -187,6 +187,34 @@ public sealed partial class BotWorker
         var left = config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start))) - at;
         var timeLeft = left.TotalHours < 1 ? $"{Math.Max(0, (int)left.TotalMinutes)} мин" : left.TotalHours < 48 ? $"{(int)left.TotalHours} ч" : $"{(int)left.TotalDays} дн";
         return new { for_time = config.LocalNow(at).ToString("yyyy-MM-dd HH:mm"), wakeup = new { deadline = conversation.DeadlineView(d), reason = w.Reason, time_left = timeLeft } };
+    }
+
+    /// <summary>
+    /// The lively lead of a deadline post (create / update / cancel), written in the bot's voice with full context.
+    /// The editor's note is backstage context for the model, never printed by itself.
+    /// </summary>
+    internal async Task<string> DeadlineIntro(Draft d, CancellationToken ct)
+    {
+        var old = store.AllDeadlines().FirstOrDefault(x => x.Id == d.TargetId);
+        var start = d.Date is null || d.Start is null ? (DateTimeOffset?)null : config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start)));
+        var left = start - DateTimeOffset.UtcNow;
+        var text = await GenerateAmbient("deadline", new
+        {
+            deadline_post = new
+            {
+                action = d.Action, subject = config.R.SubjectName(d.SubjectId), work = d.Work, date = d.Date,
+                weekday = d.Date is null ? null : Schedule.DayNames[Schedule.Dow(DateOnly.Parse(d.Date))], period = d.Period, start = d.Start, room = d.Room,
+                time_left = left is null ? null : left.Value.TotalHours < 48 ? $"{Math.Max(0, (int)left.Value.TotalHours)} ч" : $"{(int)left.Value.TotalDays} дн",
+                backstage_note = d.Note,
+                previous = old is null ? null : new { old.Date, old.Period, old.Start, old.Room, old.Work }
+            }
+        }, ct);
+        return Conversation.Limit(OpenRouterClient.Join(text ?? (d.Action switch
+        {
+            "cancel" => "Отбой, эту сдачу отменили.",
+            "update" => "Гайс, по сдаче новости.",
+            _ => "Гайс, держим в голове."
+        })), 700);
     }
 
     // ---------- Warm-up: prepare a planned post in advance, review and edit it ----------

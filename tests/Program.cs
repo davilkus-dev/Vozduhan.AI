@@ -173,16 +173,18 @@ try
         using var restored = new BotStore(backup);
         Assert(restored.AllDeadlines().Count == 1, "Backup is missing committed state");
     });
-    Check("editor's public change note is reviewed and preserved without leaking the full DM", () =>
+    Check("editor note is backstage only: shown on confirmation, never printed in posts", () =>
     {
         using var s = new BotStore(Config("notes.db"));
         var d = Save(s, Make(s, "Практика №11"));
         var edit = Deadlines.Resolve(s.Config, new("update", d.Id, Work: "Практика №12", Note: "Цынгалев сообщил об изменении сдачи."),
             null, s.AllDeadlines(), 2, "PRIVATE EDITOR SMALL TALK", now);
-        Assert(Deadlines.Preview(s.Config, edit).Contains("Публичное примечание"), "Public note missing from confirmation");
+        Assert(Deadlines.Preview(s.Config, edit).Contains("Комментарий для бота"), "Editor note missing from confirmation");
         var changed = Save(s, edit);
-        Assert(Deadlines.Card(s.Config, changed).Contains("Цынгалев") && !Deadlines.Card(s.Config, changed).Contains("PRIVATE EDITOR"), "Card leaks source DM or loses note");
-        Assert(s.Due(now).Single(x => x.Key.StartsWith("change:")).Text.Contains("Цынгалев"), "Change news lost the editor's public note");
+        // The note only feeds the model's lead; the program never prints it into the post.
+        Assert(!Deadlines.Card(s.Config, changed).Contains("Цынгалев") && !Deadlines.Card(s.Config, changed).Contains("PRIVATE EDITOR"), "Card prints the editor note or the DM");
+        var news = s.Due(now).Single(x => x.Key.StartsWith("change:")).Text;
+        Assert(!news.Contains("Цынгалев") && news.Contains("<blockquote>") && news.Contains("🔄"), "Change news format wrong: " + news);
     });
     Check("mentions use entities and replies identify the bot", () =>
     {
@@ -329,7 +331,8 @@ try
         count++; Console.WriteLine("PASS worker authorization, moderation, real response path and replay idempotence (mock APIs)");
         sent.Clear();
         await Process(Message(1, 0, 6, 1, "/deadline siaod | Практика №99 | 2026-11-30 | 6"));
-        Assert(aiCalls == 1 && store.Draft(1) is { Missing.Length: 0 }, "Offline editor invoked OpenRouter or lost the draft");
+        // /deadline needs no AI for the facts; the lively lead is written by the model (with a fallback when it is down).
+        Assert(store.Draft(1) is { Missing.Length: 0, Intro: "Тестовый ответ" }, "Command draft lost or lead not generated");
         var token = store.Draft(1)!.Token;
         var callback = Element(new { callback_query = new { id = "fake_cb", from = new { id = 3 }, data = "save:" + token,
             message = new { message_id = 88, chat = new { id = 3 } } } });

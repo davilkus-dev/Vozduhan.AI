@@ -31,7 +31,8 @@ public sealed partial class BotWorker
         foreach (var d in all.Where(d => (d.Status == "active" && Deadlines.Ends(config, d) >= now) ||
                      (store.Post("deadline:" + d.Id) is { } p && p.Text != Deadlines.Card(config, d))))
         {
-            try { await UpsertPost("deadline:" + d.Id, config.DeadlinesTopicId, Deadlines.Card(config, d), ct); }
+            // A cancelled card is only edited in place; if people deleted it, it is not re-posted (the change news is enough).
+            try { await UpsertPost("deadline:" + d.Id, config.DeadlinesTopicId, Deadlines.Card(config, d), ct, recreate: d.Status == "active"); }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
                 log.LogWarning("Deadline {Id} failed: {Error}", d.Id, Failure(e));
@@ -78,7 +79,7 @@ public sealed partial class BotWorker
             }
         }
     }
-    private async Task UpsertPost(string key, int topic, string text, CancellationToken ct)
+    private async Task UpsertPost(string key, int topic, string text, CancellationToken ct, bool recreate = true)
     {
         var p = store.Post(key);
         var probeKey = "post_probe:" + key;
@@ -88,12 +89,13 @@ public sealed partial class BotWorker
         {
             try
             {
-                await telegram.Edit(config.GroupId, p.MessageId, text, ct);
+                await telegram.Edit(config.GroupId, p.MessageId, text, ct, html: true);
                 store.SavePost(key, p.MessageId, text); store.Set(probeKey, currentTime.ToString()); return;
             }
-            catch (TelegramError e) when (e.MissingMessage) { store.ForgetPost(key); }
+            catch (TelegramError e) when (e.MissingMessage) { store.ForgetPost(key); if (!recreate) return; }
         }
-        var sent = await telegram.Send(config.GroupId, topic, text, ct);
+        else if (!recreate) return;
+        var sent = await telegram.Send(config.GroupId, topic, text, ct, html: true);
         store.SavePost(key, (int)sent.Number("message_id"), text);
         store.Set(probeKey, currentTime.ToString());
         store.Remember(config.GroupId, topic, (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
