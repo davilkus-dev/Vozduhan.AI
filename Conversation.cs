@@ -246,9 +246,9 @@ public sealed class Conversation(BotConfig config, BotStore store)
     };
 
     /// <summary>Context for messages the bot writes on its own initiative into the group chat.</summary>
-    public string AmbientContext(string kind, object? extra = null)
+    public string AmbientContext(string kind, object? extra = null, DateTimeOffset? at = null)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = at ?? DateTimeOffset.UtcNow;
         var today = DateOnly.FromDateTime(config.LocalNow(now));
         var history = store.History(config.GroupId, config.ChatTopicId, int.MaxValue, 20).Select(raw =>
         {

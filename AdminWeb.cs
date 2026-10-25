@@ -13,7 +13,7 @@ namespace Vozduhan.AI;
 /// </summary>
 public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker, ILogger<AdminWeb> log) : BackgroundService
 {
-    private const string Cookie = "vz_session";
+    private const string Cookie = "vz_session", ViewCookie = "vz_view";
     private readonly Cidr[] allowed = config.Web.AllowedNetworks.Select(n => Cidr.TryParse(n, out var c) ? c : null).OfType<Cidr>().ToArray();
     private static readonly Lazy<string> Page = new(() =>
     {
@@ -86,6 +86,10 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             }
             var me = store.WebToken(request.Cookies[Cookie]?.Value, "session");
             if (me is not null && !config.CanEdit(me.Value)) me = null; // the head may have been replaced
+            // The owner may look at the admin exactly as the head sees it; only downgrades, never upgrades.
+            var head = config.R.Members.FirstOrDefault(m => m.Role == "head" && m.Active && m.UserId is not null)?.UserId;
+            var preview = me == config.OwnerId && request.Cookies[ViewCookie]?.Value == "head" && head is not null;
+            if (preview) me = head;
             if (path == "/" && request.HttpMethod == "GET")
             {
                 if (me is null) await Html(response, 200, LoginPage("Открой ссылку, которую пришлёт бот на команду /web в личке."));
@@ -98,7 +102,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             if (!path.StartsWith("/api/")) { await Text(response, 404, "Not found"); return; }
             if (me is null) { await Send(response, 401, new { ok = false, error = "Сессия истекла. Получи новую ссылку: /web в личке бота." }); return; }
             if (request.HttpMethod == "POST" && request.Headers["X-Vozduhan"] != "1") { await Send(response, 403, new { ok = false, error = "CSRF" }); return; }
-            await Api(path, request, response, me.Value, ct);
+            await Api(path, request, response, me.Value, preview, ct);
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
@@ -107,7 +111,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         }
     }
 
-    private async Task Api(string path, HttpListenerRequest request, HttpListenerResponse response, long actor, CancellationToken ct)
+    private async Task Api(string path, HttpListenerRequest request, HttpListenerResponse response, long actor, bool preview, CancellationToken ct)
     {
         var q = request.QueryString;
         var post = request.HttpMethod == "POST";
@@ -121,13 +125,15 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         }
         long? L(string k) => long.TryParse(q[k], out var v) ? v : null;
         var owner = actor == config.OwnerId;
+        if (preview && post && path is not ("/api/view" or "/api/logout") && q["dry"] != "1" && body.Field("dry").ValueKind != JsonValueKind.True)
+        { await Send(response, 403, new { ok = false, error = "Просмотр как староста: изменения отключены. Вернись в режим разработчика." }); return; }
         bool Visible(long chat) => owner || chat == config.GroupId || chat == actor;
         switch (path)
         {
             case "/api/me" when !post:
                 await Send(response, 200, new
                 {
-                    ok = true, actor, owner = actor == config.OwnerId, name = config.FindMember(actor)?.FullName ?? "Разработчик",
+                    ok = true, actor, owner = actor == config.OwnerId, asHead = preview, realOwner = owner || preview, name = config.FindMember(actor)?.FullName ?? "Разработчик",
                     group = config.GroupName, groupId = config.GroupId, chatTopic = config.ChatTopicId, deadlinesTopic = config.DeadlinesTopicId,
                     today = DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow)).ToString("yyyy-MM-dd")
                 });
@@ -137,6 +143,15 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 response.Headers.Add("Set-Cookie", $"{Cookie}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
                 await Send(response, 200, new { ok = true });
                 return;
+            case "/api/view" when post && (owner || preview):
+            {
+                var asHead = body.Text("as") == "head";
+                if (asHead && !config.R.Members.Any(m => m.Role == "head" && m.Active && m.UserId is not null))
+                { await Send(response, 400, new { ok = false, error = "В списке группы нет старосты с Telegram ID." }); return; }
+                response.Headers.Add("Set-Cookie", asHead ? $"{ViewCookie}=head; Path=/; HttpOnly; SameSite=Lax" : $"{ViewCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+                await Send(response, 200, new { ok = true, asHead });
+                return;
+            }
             case "/api/registry" when !post:
                 await Send(response, 200, new
                 {
@@ -228,8 +243,9 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 var deadlines = store.AllDeadlines();
                 string Status(string key) => store.Get(key) switch { "done" => "done", "skipped" => "skipped", "cancelled" => "cancelled", _ => "planned" };
                 // Prepared ("warmed") texts are owner-only: they may contain roasts from people notes.
+                var basis = worker.Basis();
                 object? P(string key) => !owner || worker.Prepared(key) is not { } p ? null
-                    : new { p.Text, p.Source, p.At, preview = worker.Preview(key, p.Text) };
+                    : new { p.Text, p.Source, p.At, preview = worker.Preview(key, p.Text), stale = p.Basis != basis };
                 await Send(response, 200, new
                 {
                     ok = true, ambient = a,
@@ -252,7 +268,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                     wakeups = store.Wakeups().Where(w => owner || w.Deadline != 0).Where(w => w.Status == "pending" || w.Due > DateTimeOffset.UtcNow.AddDays(-14).ToUnixTimeSeconds()).Select(w =>
                     {
                         var d = deadlines.FirstOrDefault(x => x.Id == w.Deadline);
-                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status, key = "wake:" + w.Id, prep = P("wake:" + w.Id),
+                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status, w.Note, w.Attempts, key = "wake:" + w.Id, prep = P("wake:" + w.Id),
                             deadlineTitle = d is null ? null : $"#{d.Id} {config.R.SubjectName(d.SubjectId)} — {d.Work} ({d.Date}, {d.Period} пара)" };
                     }),
                     deliveries = store.PendingDeliveries().Select(x => new { x.Key, x.Due, x.Text,

@@ -454,7 +454,7 @@ static class NewFeatureTests
             Assert(guarded.Count == 1 && guarded[0].Contains("не достучался") && !guarded.Any(t => System.Text.RegularExpressions.Regex.IsMatch(t, @"[　-鿿]")), "CJK reached Telegram: " + string.Join(" | ", guarded));
             sent.Clear();
             var postAmbient = typeof(BotWorker).GetMethod("PostAmbient", BindingFlags.Instance | BindingFlags.NonPublic)!;
-            var posted = await (Task<string?>)postAmbient.Invoke(worker, ["spontaneous", null, CancellationToken.None, null, c.ChatTopicId, null])!;
+            var posted = await (Task<string?>)postAmbient.Invoke(worker, ["spontaneous", null, CancellationToken.None, null, c.ChatTopicId, null, false])!;
             Assert(posted is null && !sent.Any(x => x.Method == "sendMessage"), "Rejected ambient post was sent");
             var full = string.Concat(Enumerable.Range(1, 200).Select(i => $"Пункт {i}: сдаём работу вовремя. ")).Trim()[..OpenRouterClient.TextMax];
             foreach (var (answer, id) in new[] { (full, 22), (full[..^1], 23) })
@@ -527,6 +527,8 @@ static class NewFeatureTests
                 var w = new BotWorker(ac, st, new TelegramClient(tg, "t"), new OpenRouterClient(ambientAi, ac, "k"), NullLogger<BotWorker>.Instance);
                 var tick = typeof(BotWorker).GetMethod("AmbientTick", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 async Task Tick(string utc) => await (Task)tick.Invoke(w, [DateTimeOffset.Parse(utc), CancellationToken.None])!;
+                var planTick = typeof(BotWorker).GetMethod("PlanTick", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                async Task Plan(string utc) => await (Task)planTick.Invoke(w, [DateTimeOffset.Parse(utc), CancellationToken.None])!;
                 var proc = typeof(BotWorker).GetMethod("Process", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 async Task Upd(JsonElement u) => await (Task)proc.Invoke(w, [u, CancellationToken.None])!;
 
@@ -549,7 +551,7 @@ static class NewFeatureTests
                     new { at = "2026-12-05 03:00", reason = "ночью" }, new { at = "2026-12-07 16:00", reason = "за два часа" },
                     new { at = "2026-12-08 10:00", reason = "после сдачи" }, new { at = "2026-11-01 10:00", reason = "в прошлом" } } });
                 sent.Clear();
-                await Tick("2026-12-01T09:00:00Z");
+                await Plan("2026-12-01T09:00:00Z");
                 var wplan = st.Wakeups(dl.Id);
                 Assert(wplan.Count == 2 && wplan.All(x => x.Source == "ai") && wplan[0].Reason == "за три дня" && wplan[1].Reason == "за два часа", "Wake-up plan not validated: " + Json.Write(wplan));
                 await Tick("2026-12-04T16:01:00Z");
@@ -562,11 +564,11 @@ static class NewFeatureTests
                 var move = Deadlines.Resolve(ac, new("update", dl.Id, Date: "2026-12-14"), null, st.AllDeadlines(), 1, "m", DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
                 st.SaveDraft(move); st.Confirm(1, move.Token, DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
                 wakePlan = Json.Write(new { wakeups = new[] { new { at = "2026-12-12 12:00", reason = "новая дата" } } });
-                await Tick("2026-12-04T17:01:00Z");
+                await Plan("2026-12-04T17:01:00Z");
                 Assert(st.Wakeups(dl.Id).Count(x => x.Status == "pending") == 1 && st.Wakeups(dl.Id).Single(x => x.Status == "pending").Reason == "новая дата", "Move did not re-plan");
                 var cancel = Deadlines.Resolve(ac, new("cancel", dl.Id), null, st.AllDeadlines(), 1, "c", DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
                 st.SaveDraft(cancel); st.Confirm(1, cancel.Token, DateTimeOffset.Parse("2026-12-04T17:00:00Z"));
-                await Tick("2026-12-04T17:02:00Z");
+                await Plan("2026-12-04T17:02:00Z");
                 Assert(st.Wakeups(dl.Id).All(x => x.Status != "pending"), "Cancelled deadline keeps wake-ups");
                 Assert(st.PendingDeliveries().All(x => !x.Key.StartsWith("morning:")), "Deadline-topic morning post must be replaced by the summary");
 

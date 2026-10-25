@@ -10,7 +10,7 @@ public sealed record ChatSummary(long Chat, string ChatType, int Topic, long Cou
 public sealed record SeenUser(long Id, string Username, string Name, long FirstSeen, long LastSeen, long LastChat, long Count);
 public sealed record AiRow(long Id, long Time, string Kind, string Tag, string Model, string System, string Request, string Response, long Ms, string? Error);
 /// <summary>A moment when the bot wakes up to push the group about a deadline. source: ai / manual.</summary>
-public sealed record Wakeup(long Id, int Deadline, long Due, string Reason, string Source, string Status, long Created);
+public sealed record Wakeup(long Id, int Deadline, long Due, string Reason, string Source, string Status, long Created, int Attempts = 0, string? Note = null, long NextTry = 0);
 public sealed class RegistryConflict(string message) : InvalidOperationException(message);
 
 public sealed partial class BotStore
@@ -230,24 +230,43 @@ public sealed partial class BotStore
             return Convert.ToInt64(Scalar("SELECT last_insert_rowid()"));
         }
     }
+    private const string WakeupColumns = "id,deadline,due,reason,source,status,created,attempts,note,next_try";
+    private static Wakeup ReadWakeup(Microsoft.Data.Sqlite.SqliteDataReader r) => new(r.GetInt64(0), r.GetInt32(1), r.GetInt64(2), r.GetString(3), r.GetString(4),
+        r.GetString(5), r.GetInt64(6), r.GetInt32(7), r.IsDBNull(8) ? null : r.GetString(8), r.GetInt64(9));
     public List<Wakeup> Wakeups(int? deadline = null)
     {
-        lock (gate) return Query("SELECT id,deadline,due,reason,source,status,created FROM wakeups WHERE ($d IS NULL OR deadline=$d) AND status<>'deleted' ORDER BY due",
-            r => new Wakeup(r.GetInt64(0), r.GetInt32(1), r.GetInt64(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetInt64(6)), ("d", deadline));
+        lock (gate) return Query($"SELECT {WakeupColumns} FROM wakeups WHERE ($d IS NULL OR deadline=$d) AND status<>'deleted' ORDER BY due", ReadWakeup, ("d", deadline));
     }
     public List<Wakeup> DueWakeups(long now)
     {
-        lock (gate) return Query("SELECT id,deadline,due,reason,source,status,created FROM wakeups WHERE status='pending' AND due<=$n ORDER BY due",
-            r => new Wakeup(r.GetInt64(0), r.GetInt32(1), r.GetInt64(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetInt64(6)), ("n", now));
+        lock (gate) return Query($"SELECT {WakeupColumns} FROM wakeups WHERE status='pending' AND due<=$n AND next_try<=$n ORDER BY due", ReadWakeup, ("n", now));
     }
-    /// <summary>Atomically moves a pending wake-up to a final state; false when somebody else already did.</summary>
-    public bool SetWakeup(long id, string status, string from = "pending")
+    /// <summary>Atomically moves a wake-up from one state to another; false when somebody else already did.</summary>
+    public bool SetWakeup(long id, string status, string from = "pending", string? note = null)
     {
-        lock (gate) return Exec("UPDATE wakeups SET status=$s WHERE id=$id AND status=$f", ("s", status), ("id", id), ("f", from)) == 1;
+        lock (gate) return Exec("UPDATE wakeups SET status=$s, note=COALESCE($note,note) WHERE id=$id AND status=$f", ("s", status), ("id", id), ("f", from), ("note", note)) == 1;
+    }
+    /// <summary>A failed send goes back to pending with a later retry time.</summary>
+    public void RetryWakeup(long id, int attempts, long nextTry, string note)
+    {
+        lock (gate) Exec("UPDATE wakeups SET status='pending', attempts=$a, next_try=$n, note=$note WHERE id=$id AND status='sending'", ("id", id), ("a", attempts), ("n", nextTry), ("note", note));
     }
     public void DropPendingWakeups(int deadline, string? source = null)
     {
         lock (gate) Exec("UPDATE wakeups SET status='deleted' WHERE deadline=$d AND status='pending' AND ($s IS NULL OR source=$s)", ("d", deadline), ("s", source));
+    }
+    /// <summary>Swaps the automatic plan of a deadline in one transaction; manual reminders and posts are never touched.</summary>
+    public void ReplaceWakeups(int deadline, IReadOnlyList<(long Due, string Reason)> points, string source)
+    {
+        lock (gate)
+        {
+            using var tx = db.BeginTransaction();
+            Exec("UPDATE wakeups SET status='deleted' WHERE deadline=$d AND status='pending' AND source IN ('ai','default')", ("d", deadline));
+            foreach (var (due, reason) in points)
+                Exec("INSERT INTO wakeups(deadline,due,reason,source,status,created,actor) VALUES($d,$due,$r,$s,'pending',$c,0)",
+                    ("d", deadline), ("due", due), ("r", reason), ("s", source), ("c", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+            tx.Commit();
+        }
     }
 
     // ---------- Web admin sessions ----------

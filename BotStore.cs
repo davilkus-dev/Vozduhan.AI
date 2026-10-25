@@ -60,6 +60,9 @@ public sealed partial class BotStore : IDisposable
             CREATE INDEX IF NOT EXISTS wakeups_due ON wakeups(status,due);
             PRAGMA user_version=2;
             """);
+        AddColumn("wakeups", "attempts", "INTEGER NOT NULL DEFAULT 0");
+        AddColumn("wakeups", "note", "TEXT NULL");
+        AddColumn("wakeups", "next_try", "INTEGER NOT NULL DEFAULT 0");
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");
@@ -83,6 +86,10 @@ public sealed partial class BotStore : IDisposable
         if (Get("ai_settings") is { } ai) Config.ApplyAi(Json.Read<AiSettings>(ai));
     }
 
+    private void AddColumn(string table, string column, string definition)
+    {
+        if (!Query($"PRAGMA table_info({table})", r => r.GetString(1)).Contains(column)) Exec($"ALTER TABLE {table} ADD COLUMN {column} {definition}");
+    }
     private SqliteCommand Command(string sql, params (string Key, object? Value)[] args)
     {
         var cmd = db.CreateCommand();

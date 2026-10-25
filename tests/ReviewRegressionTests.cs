@@ -79,9 +79,12 @@ static class ReviewRegressionTests
         var id = store.AddWakeup(0, now.ToUnixTimeSeconds(), "manual", "post");
         worker.SavePrep("wake:" + id, "first\n||\nsecond", "manual");
         c.SummaryTopicId = 0;
-        try { await Call(worker, "AmbientTick", now, CancellationToken.None); throw new Exception("Expected send failure"); } catch (HttpRequestException) { }
-        Assert(store.Wakeups().Single(w => w.Id == id).Status == "pending" && worker.Prepared("wake:" + id) is not null, "Failed wakeup lost");
         await Call(worker, "AmbientTick", now, CancellationToken.None);
+        var failed = store.Wakeups().Single(w => w.Id == id);
+        Assert(failed.Status == "pending" && failed.Attempts == 1 && failed.NextTry > now.ToUnixTimeSeconds() && failed.Note is { Length: > 0 } && worker.Prepared("wake:" + id) is not null, "Failed wakeup lost");
+        await Call(worker, "AmbientTick", now, CancellationToken.None);
+        Assert(sent.Count == 1, "Retried before next_try");
+        await Call(worker, "AmbientTick", now.AddMinutes(3), CancellationToken.None);
         Assert(sent.Count == 2 && store.Wakeups().Single(w => w.Id == id).Status == "fired", "Retry duplicated a sent part");
         var job = "review-job";
         try { await Call(worker, "Job", job, date, "08:00", date.ToDateTime(new TimeOnly(8, 1)), (Func<string, Task>)(_ => throw new HttpRequestException())); } catch (HttpRequestException) { }

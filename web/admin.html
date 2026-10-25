@@ -131,7 +131,7 @@ ul.lines li{margin:3px 0}
   <aside>
     <div class="brand"><div class="logo">V</div><div><b>Vozduhan.AI</b><small id="grp">админка</small></div></div>
     <nav id="nav"></nav>
-    <div class="me"><div class="av" id="av">?</div><div class="t"><div id="who"></div><small id="ver"></small></div><button class="b ic" id="logout" title="Выйти">↩</button></div>
+    <div class="me"><div class="av" id="av">?</div><div class="t"><div id="who"></div><small id="ver"></small></div><button class="b ic" id="view" style="display:none"></button><button class="b ic" id="logout" title="Выйти">↩</button></div>
   </aside>
   <main id="main"></main>
 </div>
@@ -196,7 +196,9 @@ async function load(){
   const [me,reg]=await Promise.all([api("me"),api("registry")]);
   S.me=me;S.version=reg.version;S.reg=reg.registry;S.draft=clone(reg.registry);S.history=reg.history;S.weekDate=S.weekDate||me.today;
   $("#who").textContent=me.name;$("#av").textContent=(me.name||"?")[0];$("#grp").textContent=me.group+" · админка";
-  $("#ver").textContent=`${me.owner?"разработчик":"староста"} · v${S.version}`;$("#ver").title="версия реестра "+S.version;render()}
+  $("#ver").textContent=`${me.asHead?"староста · просмотр":me.owner?"разработчик":"староста"} · v${S.version}`;
+  const v=$("#view");v.style.display=me.realOwner?"":"none";v.textContent=me.asHead?"🛠":"👁";v.title=me.asHead?"Вернуться в режим разработчика":"Посмотреть админку глазами старосты (только просмотр)";
+  v.onclick=async()=>{const x=await api("view",{as:me.asHead?"owner":"head"});if(x.ok)location.reload();else info("Не получилось",`<p>${esc(x.error)}</p>`)};$("#ver").title="версия реестра "+S.version;render()}
 async function save(){
   const dry=await api("registry?dry=1",{baseVersion:S.version,registry:S.draft});
   if(!dry.ok)return info("Так не сохранится",`<p>${esc(dry.error)}</p>`);
@@ -309,8 +311,9 @@ VIEWS.changes=el=>{
 
 
 // ---------- plan: wake-ups, morning, drops, prepared posts ----------
-const ST={cancelled:'<span class="st cancelled">отменено</span>',planned:'<span class="st changed">ждёт</span>',pending:'<span class="st changed">ждёт</span>',done:'<span class="st added">отправлено</span>',fired:'<span class="st added">сработал</span>',skipped:'<span class="chip">пропущено</span>'};
-const SRC={ai:"🤖 ИИ",manual:"✋ вручную",post:"📝 пост"};
+const ST={cancelled:'<span class="st cancelled">отменено</span>',planned:'<span class="st changed">ждёт</span>',pending:'<span class="st changed">ожидает</span>',sending:'<span class="st changed">отправляется</span>',done:'<span class="st added">отправлено</span>',fired:'<span class="st added">отправлено</span>',
+  silent:'<span class="chip">промолчал</span>',obsolete:'<span class="chip">неактуален</span>',skipped:'<span class="chip">пропущен</span>',failed:'<span class="st cancelled">ошибка</span>'};
+const SRC={ai:"🤖 ИИ",default:"🛟 запасной",manual:"✋ вручную",post:"📝 пост"};
 const dt=ts=>new Date(ts*1000).toLocaleString("ru-RU",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 VIEWS.plan=async el=>{
   const viewId=renderId;
@@ -332,7 +335,7 @@ VIEWS.plan=async el=>{
   /*END*/
   const r=await api("plan");if(viewId!==renderId)return;const a=r.ambient;
   // One planned post: status, warm-up buttons (owner) and the exact preview once it is prepared.
-  const item=(label,it)=>`<div class="pi"><div class="row"><span>${label}</span>${ST[it.status]||""}${it.prep?`<span class="chip">${it.prep.source==="manual"?"✍️ вручную":"🔥 прогрет"}</span>`:""}`+
+  const item=(label,it)=>`<div class="pi"><div class="row"><span>${label}</span>${ST[it.status]||""}${it.prep?`<span class="chip">${it.prep.source==="manual"?"✍️ вручную":"🔥 прогрет"}</span>`:""}${it.prep?.stale?'<span class="chip" style="color:var(--warn)">⚠ факты изменились — перегенерируй или проверь</span>':""}`+
     /*OWNER*/(it.status==="planned"||it.status==="pending"?`<button class="b pb" data-warm="${it.key}" title="Сгенерировать заранее">🔥</button><button class="b pb" data-edit="${it.key}" title="Написать/поправить вручную">✏️</button>${it.prep?`<button class="b pb" data-clear="${it.key}" title="Сбросить текст — сгенерирует в момент отправки">↺</button>`:""}${it.key.startsWith("ambient:")?`<button class="b pb d" data-cancel="${it.key}" title="Отменить это сообщение">🚫</button>`:""}`:"")+
     (it.status==="cancelled"?`<button class="b pb" data-restore="${it.key}" title="Вернуть">↩</button>`:"")+/*END*/
     `</div>${it.prep?`<details class="pv"><summary>что напишет</summary><div class="tgv">${it.prep.preview||""}</div></details>`:""}</div>`;
@@ -345,7 +348,7 @@ VIEWS.plan=async el=>{
   const groups={};for(const w of r.wakeups)(groups[w.deadline]??=[]).push(w);
   const wk=Object.entries(groups).sort((x,y)=>Math.min(...x[1].map(w=>w.due))-Math.min(...y[1].map(w=>w.due))).map(([id,ws])=>`<div class="card"><div class="row" style="justify-content:space-between"><h3 style="margin:0">${id==="0"?"📝 Отложенные посты":"⏰ "+esc(ws[0].deadlineTitle||"дедлайн #"+id)}</h3>
     ${id!=="0"?`<div class="row"><button class="b" data-add="${id}">＋ Напоминание</button><button class="b" data-re="${id}">🤖 Перепланировать</button></div>`:""}</div>
-    <table><tbody>${ws.map(w=>`<tr class="${w.status==="pending"?"":"off"}"><td style="white-space:nowrap">${dt(w.due)}</td><td>${SRC[w.source]||esc(w.source)}</td><td>${esc(w.reason)}${item("",w)}</td><td>${w.status==="pending"?`<button class="b ic d" data-del="${w.id}" title="Удалить будильник">🗑</button>`:""}</td></tr>`).join("")}</tbody></table></div>`).join("");
+    <table><tbody>${ws.map(w=>`<tr class="${w.status==="pending"?"":"off"}"><td style="white-space:nowrap">${dt(w.due)}</td><td>${SRC[w.source]||esc(w.source)}</td><td>${esc(w.reason)}${w.note?`<div class="faint small">${esc(w.note)}</div>`:""}${w.attempts>0?`<div class="faint small">попыток: ${w.attempts}</div>`:""}${item("",w)}</td><td>${w.status==="pending"?`<button class="b ic d" data-del="${w.id}" title="Удалить будильник">🗑</button>`:""}</td></tr>`).join("")}</tbody></table></div>`).join("");
   const settings=""/*OWNER*/+`<details class="card"><summary style="cursor:pointer"><b>⚙️ Настройки инициативы</b> <span class="muted small">— сохраняются в базе и действуют сразу</span></summary>
     <div class="f"><label>Инициатива бота</label><input type="checkbox" id="a_en" ${a.enabled?"checked":""}>
     <label>Утро в «Сводку»</label><input type="time" id="a_sum" value="${a.summaryTime}">

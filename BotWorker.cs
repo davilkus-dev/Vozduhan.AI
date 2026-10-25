@@ -52,7 +52,8 @@ public sealed partial class BotWorker : BackgroundService
             Supervise("moderation", () => ProcessLoop(1, ct), ct),
             Supervise("callbacks", () => ProcessLoop(2, ct), ct),
             Supervise("publisher", () => PublishLoop(ct), ct),
-            Supervise("ambient", () => AmbientLoop(ct), ct));
+            Supervise("ambient", () => AmbientLoop(ct), ct),
+            Supervise("wakeplan", () => PlanLoop(ct), ct));
     }
 
     private async Task Supervise(string name, Func<Task> run, CancellationToken ct)
