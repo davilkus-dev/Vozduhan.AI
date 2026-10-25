@@ -156,17 +156,17 @@ public sealed partial class BotStore
         lock (gate) return Query("SELECT id,username,name,first_seen,last_seen,last_chat,count FROM seen_users ORDER BY last_seen DESC LIMIT $n",
             r => new SeenUser(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetInt64(3), r.GetInt64(4), r.GetInt64(5), r.GetInt64(6)), ("n", limit));
     }
-    public List<LogRow> Log(long? chat = null, int? topic = null, long? sender = null, string? q = null, long? beforeId = null, int limit = 100, long? excludeChat = null)
+    public List<LogRow> Log(long? chat = null, int? topic = null, long? sender = null, string? q = null, long? beforeId = null, int limit = 100, long? viewer = null)
     {
         lock (gate) return Query("""
             SELECT l.id,l.time,l.chat,l.chat_type,l.topic,l.message,l.sender,l.direction,l.text,u.username,u.name
             FROM chat_log l LEFT JOIN seen_users u ON u.id=l.sender
             WHERE ($c IS NULL OR l.chat=$c) AND ($tp IS NULL OR l.topic=$tp) AND ($s IS NULL OR l.sender=$s)
-              AND ($q IS NULL OR l.text LIKE '%' || $q || '%') AND ($b IS NULL OR l.id<$b) AND ($x IS NULL OR l.chat<>$x)
+              AND ($q IS NULL OR l.text LIKE '%' || $q || '%') AND ($b IS NULL OR l.id<$b) AND ($v IS NULL OR (l.chat IN ($v,$g) AND l.direction NOT IN ('out-edit','delete')))
             ORDER BY l.id DESC LIMIT $n
             """, r => new LogRow(r.GetInt64(0), r.GetInt64(1), r.GetInt64(2), r.GetString(3), r.GetInt32(4), r.GetInt32(5), r.GetInt64(6),
                 r.GetString(7), r.GetString(8), r.IsDBNull(9) ? null : r.GetString(9), r.IsDBNull(10) ? null : r.GetString(10)),
-            ("c", chat), ("tp", topic), ("s", sender), ("q", string.IsNullOrWhiteSpace(q) ? null : q), ("b", beforeId), ("n", Math.Clamp(limit, 1, 500)), ("x", excludeChat));
+            ("c", chat), ("tp", topic), ("s", sender), ("q", string.IsNullOrWhiteSpace(q) ? null : q), ("b", beforeId), ("n", Math.Clamp(limit, 1, 500)), ("v", viewer), ("g", Config.GroupId));
     }
     public (long Chat, int Message, string Direction, string Text, string Raw)? LogEntry(long id)
     {

@@ -121,6 +121,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         }
         long? L(string k) => long.TryParse(q[k], out var v) ? v : null;
         var owner = actor == config.OwnerId;
+        bool Visible(long chat) => owner || chat == config.GroupId || chat == actor;
         switch (path)
         {
             case "/api/me" when !post:
@@ -444,16 +445,19 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 return;
             }
             case "/api/chats" when !post:
-                await Send(response, 200, new { ok = true, chats = store.LogChats().Where(c => owner || c.Chat != config.OwnerId) });
+                await Send(response, 200, new { ok = true, chats = store.LogChats().Where(c => Visible(c.Chat)) });
                 return;
             case "/api/log" when !post:
-                if (!owner && L("chat") == config.OwnerId) { await Send(response, 403, new { ok = false, error = "Личка разработчика скрыта" }); return; }
-                await Send(response, 200, new { ok = true, rows = store.Log(L("chat"), (int?)L("topic"), L("sender"), q["q"], L("before"), (int)(L("limit") ?? 150), owner ? null : config.OwnerId) });
+                if (L("chat") is { } chat && !Visible(chat)) { await Send(response, 403, new { ok = false, error = "Чужая личка скрыта" }); return; }
+                await Send(response, 200, new { ok = true, rows = store.Log(L("chat"), (int?)L("topic"), L("sender"), q["q"], L("before"), (int)(L("limit") ?? 150), owner ? null : actor) });
+                return;
+            case "/api/raw" when !post && !owner:
+                await Send(response, 403, new { ok = false, error = "Исходный JSON — только для разработчика" });
                 return;
             case "/api/raw" when !post:
             {
                 var row = store.LogRow(L("id") ?? 0);
-                if (row is null || (!owner && row.Value.Chat == config.OwnerId)) { await Send(response, 404, new { ok = false, error = "Нет такой записи" }); return; }
+                if (row is null) { await Send(response, 404, new { ok = false, error = "Нет такой записи" }); return; }
                 await Send(response, 200, new { ok = true, raw = row.Value.Raw });
                 return;
             }
@@ -466,10 +470,12 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             case "/api/seen" when !post:
             {
                 var bound = config.R.Members.Where(m => m.UserId is not null).ToDictionary(m => m.UserId!.Value, m => m.FullName);
+                var seen = store.SeenUsers();
                 await Send(response, 200, new
                 {
                     ok = true,
-                    users = store.SeenUsers().Select(u => new { u.Id, u.Username, u.Name, u.FirstSeen, u.LastSeen, u.LastChat, u.Count, member = bound.GetValueOrDefault(u.Id) })
+                    users = owner ? seen.Select(u => (object)new { u.Id, u.Username, u.Name, u.FirstSeen, u.LastSeen, u.LastChat, u.Count, member = bound.GetValueOrDefault(u.Id) })
+                        : seen.Where(u => !bound.ContainsKey(u.Id)).Select(u => (object)new { u.Id, u.Username, u.Name })
                 });
                 return;
             }

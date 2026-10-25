@@ -470,7 +470,7 @@ VIEWS.deadlines=async el=>{
 // ---------- log ----------
 VIEWS.log=async el=>{
   const viewId=renderId;
-  el.innerHTML=page("Журнал сообщений","Всё, что бот получил и отправил: личка, Воздуханство, темы. Нажми на сообщение — увидишь исходный JSON"+(/*OWNER*/OWNER()?" и запросы к ИИ.":/*END*/"."))+
+  el.innerHTML=page("Журнал сообщений","Всё, что бот получил и отправил: личка, Воздуханство, темы."+(/*OWNER*/OWNER()?" Нажми на сообщение — увидишь исходный JSON и запросы к ИИ.":/*END*/""))+
   `<div class="log"><div class="card chats" id="cl"><div class="empty">Загрузка…</div></div><div class="card"><div class="row" style="margin-bottom:10px;flex-wrap:nowrap"><input id="lq" placeholder="Поиск по тексту${S.chat?" в этом чате":" по всем чатам"}" style="flex:1"><button class="b" id="lgo">Найти</button></div><div class="msgs" id="ml"><div class="empty">Выбери чат слева или ищи по всем</div></div><button class="b" id="more" style="margin-top:8px;display:none">Показать раньше</button></div></div>`;
   const r=await api("chats");if(viewId!==renderId)return;
   $("#cl").innerHTML=r.chats.map((c,i)=>`<div class="c ${S.chat&&S.chat.chat===c.chat&&S.chat.topic===c.topic?"on":""}" data-i="${i}"><div>${esc(c.title)}</div><div class="faint small">${c.count} сообщ. · ${time(c.last)}</div></div>`).join("")||'<div class="empty">Пусто</div>';
@@ -481,7 +481,7 @@ VIEWS.log=async el=>{
     $("#more").style.display=(res.rows||[]).length>=150?"":"none";
     $("#ml").innerHTML=rows.slice().reverse().map(m=>`<div class="m ${m.direction}" data-id="${m.id}" data-chat="${m.chat}" data-msg="${m.message}"><div class="h">${["in","edit","callback"].includes(m.direction)?esc(m.name||"")+(m.username?" @"+esc(m.username):"")+" · "+m.sender:"бот"} · ${time(m.time)}${m.direction==="edit"?" · правка":""}${m.direction==="out-edit"?" · правка поста":""}${!S.chat?" · чат "+esc(String(m.chat)):""}</div>${esc(m.text)}</div>`).join("")||'<div class="empty">Нет сообщений</div>';
     if(reset)$("#ml").scrollTop=$("#ml").scrollHeight;
-    $("#ml").querySelectorAll(".m").forEach(x=>x.onclick=async()=>{const raw=await api("raw?id="+x.dataset.id);
+    if(OWNER())$("#ml").querySelectorAll(".m").forEach(x=>x.onclick=async()=>{const raw=await api("raw?id="+x.dataset.id);
       const ai=/*OWNER*/OWNER()?await api("ai?tag="+encodeURIComponent(`chat:${x.dataset.chat}:${x.dataset.msg}`)):/*END*/{rows:[]};
       let pretty=raw.raw||"{}";try{pretty=JSON.stringify(JSON.parse(pretty),null,2)}catch{}
       /*OWNER*/const msg=await api("message?id="+x.dataset.id);/*END*/
@@ -530,7 +530,7 @@ VIEWS.ai=async el=>{
 VIEWS.seen=async el=>{
   const viewId=renderId;el.innerHTML=page("Люди в Telegram","Все, кто писал боту или в группу. Если человек есть в списке без Telegram ID — привяжи, и бот начнёт ему отвечать.")+`<div class="card tw" id="su"><div class="empty">Загрузка…</div></div>`;
   const r=await api("seen");if(viewId!==renderId)return;
-  $("#su").innerHTML=`<table><thead><tr><th>Telegram ID</th><th>Имя</th><th>Username</th><th>Последний раз</th><th>Сообщ.</th><th>В списке</th><th></th></tr></thead><tbody>${r.users.map(u=>`<tr><td class="faint">${u.id}</td><td>${esc(u.name)}</td><td>${u.username?"@"+esc(u.username):""}</td><td>${time(u.lastSeen)}</td><td>${u.count}</td><td>${u.member?esc(u.member):'<span class="faint">—</span>'}</td><td>${u.member?"":`<button class="b" data-b="${u.id}" data-u="${esc(u.username)}">Привязать</button>`}</td></tr>`).join("")||'<tr><td colspan="7" class="empty">Пока никого</td></tr>'}</tbody></table>`;
+  $("#su").innerHTML=`<table><thead><tr><th>Telegram ID</th><th>Имя</th><th>Username</th>${OWNER()?"<th>Последний раз</th><th>Сообщ.</th><th>В списке</th>":""}<th></th></tr></thead><tbody>${r.users.map(u=>`<tr><td class="faint">${u.id}</td><td>${esc(u.name)}</td><td>${u.username?"@"+esc(u.username):""}</td>${OWNER()?`<td>${time(u.lastSeen)}</td><td>${u.count}</td><td>${u.member?esc(u.member):'<span class="faint">—</span>'}</td>`:""}<td>${u.member?"":`<button class="b" data-b="${u.id}" data-u="${esc(u.username)}">Привязать</button>`}</td></tr>`).join("")||'<tr><td colspan="7" class="empty">Пока никого</td></tr>'}</tbody></table>`;
   $("#su").querySelectorAll("[data-b]").forEach(b=>b.onclick=async()=>{const free=S.draft.members.map((m,i)=>({m,i})).filter(x=>x.m.userId==null);
     if(!free.length)return info("Некого привязывать","<p>У всех записей уже есть Telegram ID. Добавь человека во вкладке «Группа».</p>");
     const v=await form("Привязать ID "+b.dataset.b,[{k:"i",label:"К записи",type:"select",options:free.map(x=>[x.i,`${x.m.listNumber||"•"} ${x.m.fullName}`])}]);

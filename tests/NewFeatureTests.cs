@@ -595,6 +595,46 @@ static class NewFeatureTests
                 Assert(planResp.IsSuccessStatusCode && JsonDocument.Parse(await planResp.Content.ReadAsStringAsync()).RootElement.Field("days").GetArrayLength() == 7, "Plan API broken: " + await planResp.Content.ReadAsStringAsync());
                 var chats = JsonDocument.Parse(await browser.GetStringAsync("api/chats")).RootElement;
                 Assert(chats.Field("chats").GetArrayLength() > 0, "Chat list empty");
+                var t0 = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                s.LogMessage(t0, c.GroupId, "supergroup", c.ChatTopicId, 9101, 3, "in", "ГРУППА-ВИДНО", "{}");
+                s.LogMessage(t0, 2, "private", 0, 9102, 2, "in", "ЛИЧКА-СТАРОСТЫ", "{}");
+                s.LogMessage(t0, 3, "private", 0, 9103, 3, "in", "ЛИЧКА-СТУДЕНТА тайна", "{\"secret\":\"тайна\"}");
+                s.LogMessage(t0, 1, "private", 0, 9104, 1, "in", "ЛИЧКА-РАЗРАБА тайна", "{}");
+                s.LogMessage(t0, c.GroupId, "supergroup", 0, 9105, 99, "out-edit", "ПРАВКА-РАЗРАБА", "{}");
+                s.LogMessage(t0, c.GroupId, "supergroup", 0, 9106, 99, "delete", "[удалено ботом]", "{}");
+                var foreignRow = s.Log(chat: 3).First().Id;
+                s.SeenUser(El(new { id = 777, first_name = "Чужой", username = "stranger" }), 777);
+                s.SeenUser(El(new { id = 3, first_name = "Студент", username = "student" }), 3);
+                Assert((await browser.GetAsync("api/log?chat=3")).StatusCode == HttpStatusCode.Forbidden && (await browser.GetAsync("api/log?chat=1")).StatusCode == HttpStatusCode.Forbidden, "Head opened someone else's DM");
+                foreach (var query in new[] { "", "sender=3", "sender=1", "q=" + Uri.EscapeDataString("тайна"), "q=" + Uri.EscapeDataString("ПРАВКА") })
+                {
+                    var rows = JsonDocument.Parse(await browser.GetStringAsync("api/log?" + query)).RootElement.Field("rows");
+                    Assert(rows.EnumerateArray().All(x => x.Field("chat").GetInt64() == 2 || x.Field("chat").GetInt64() == c.GroupId) && !rows.GetRawText().Contains("тайна") &&
+                        !rows.EnumerateArray().Any(x => x.Text("direction") is "out-edit" or "delete"), $"Head log leaks for '{query}': " + rows.GetRawText());
+                }
+                var headLog = await browser.GetStringAsync("api/log");
+                Assert(headLog.Contains("ГРУППА-ВИДНО") && headLog.Contains("ЛИЧКА-СТАРОСТЫ") && (await browser.GetStringAsync("api/log?sender=3")).Contains("ГРУППА-ВИДНО") &&
+                    (await browser.GetStringAsync("api/log?chat=2")).Contains("ЛИЧКА-СТАРОСТЫ") && (await browser.GetStringAsync($"api/log?chat={c.GroupId}&topic={c.ChatTopicId}")).Contains("ГРУППА-ВИДНО"), "Head lost the group log or her DM");
+                var headChats = JsonDocument.Parse(await browser.GetStringAsync("api/chats")).RootElement.Field("chats").EnumerateArray().Select(x => x.Field("chat").GetInt64()).ToList();
+                Assert(headChats.Contains(2) && headChats.Contains(c.GroupId) && headChats.All(x => x == 2 || x == c.GroupId), "Head chat list: " + string.Join(",", headChats));
+                Assert((await browser.GetAsync("api/raw?id=" + foreignRow)).StatusCode == HttpStatusCode.Forbidden && (await browser.GetAsync("api/raw?id=" + s.Log(chat: 2).First().Id)).StatusCode == HttpStatusCode.Forbidden, "Raw open to the head");
+                var seenHead = JsonDocument.Parse(await browser.GetStringAsync("api/seen")).RootElement.Field("users").EnumerateArray().ToList();
+                Assert(seenHead.Any(u => u.Field("id").GetInt64() == 777) && seenHead.All(u => u.Field("id").GetInt64() is not (1 or 2 or 3) &&
+                    u.EnumerateObject().Select(p => p.Name).Order().SequenceEqual(new[] { "id", "name", "username" })), "Seen leaks to the head: " + string.Join(" ", seenHead));
+                using (var ownerHandler = new HttpClientHandler { UseCookies = true, CookieContainer = new CookieContainer(), UseProxy = false })
+                using (var owner = new HttpClient(ownerHandler) { BaseAddress = new Uri($"http://127.0.0.1:{port}/") })
+                {
+                    await owner.PostAsync("login", new FormUrlEncodedContent(new Dictionary<string, string> { ["t"] = s.CreateWebToken(1, "login", TimeSpan.FromMinutes(5)) }));
+                    var all = await owner.GetStringAsync("api/log");
+                    Assert(all.Contains("ЛИЧКА-СТУДЕНТА") && all.Contains("ЛИЧКА-РАЗРАБА") && all.Contains("ПРАВКА-РАЗРАБА") && all.Contains("удалено ботом") &&
+                        (await owner.GetStringAsync("api/log?chat=3")).Contains("ЛИЧКА-СТУДЕНТА") && (await owner.GetStringAsync("api/log?sender=1")).Contains("ЛИЧКА-РАЗРАБА"), "Owner lost log rows");
+                    Assert((await owner.GetStringAsync("api/raw?id=" + foreignRow)).Contains("тайна"), "Owner lost raw");
+                    var ownerChats = JsonDocument.Parse(await owner.GetStringAsync("api/chats")).RootElement.Field("chats").EnumerateArray().Select(x => x.Field("chat").GetInt64()).ToList();
+                    Assert(ownerChats.Contains(1) && ownerChats.Contains(3), "Owner chat list shrank");
+                    var seenOwner = JsonDocument.Parse(await owner.GetStringAsync("api/seen")).RootElement.Field("users").EnumerateArray().ToList();
+                    Assert(seenOwner.Any(u => u.Field("id").GetInt64() == 3 && u.Field("count").ValueKind == JsonValueKind.Number && u.Text("member") is not null), "Owner seen view shrank");
+                }
+                count++; Console.WriteLine("PASS web admin FIX-1: head sees only the group and her DM, no raw, no owner edits, seen without details; owner sees all");
                 var dl = await browser.PostAsync("api/deadline", new StringContent(Json.Write(new { action = "create", subjectId = "siaod", work = "Практика №3", date = "2026-12-07" }), Encoding.UTF8, "application/json"));
                 Assert(dl.IsSuccessStatusCode && s.AllDeadlines().Any(d => d.Work == "Практика №3" && d.Room == "А412"), "Web deadline failed");
                 var savedDeadline = s.AllDeadlines().Single(d => d.Work == "Практика №3");
