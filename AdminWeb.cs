@@ -278,7 +278,9 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                     case "save":
                         var text = body.Text("text")?.Trim();
                         if (string.IsNullOrEmpty(text)) { await Send(response, 400, new { ok = false, error = "Пустой текст. Чтобы бот промолчал, напиши SKIP." }); return; }
-                        worker.SavePrep(key, Conversation.Limit(text, 3900), "manual");
+                        var max = key.StartsWith("ambient:summary:") || key.StartsWith("ambient:eve:") ? OpenRouterClient.LeadMax : OpenRouterClient.TextMax;
+                        if (text.Length > max) { await Send(response, 400, new { ok = false, error = $"Слишком длинно: {text.Length} символов, можно не больше {max}." }); return; }
+                        worker.SavePrep(key, text, "manual");
                         await Send(response, 200, new { ok = true, preview = worker.Preview(key, text) });
                         return;
                     case "cancel" when key.StartsWith("ambient:"):
@@ -360,7 +362,9 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                     await Send(response, 200, new { ok = true });
                     return;
                 }
-                var generated = await worker.GenerateAmbient("manual", new { idea = body.Text("idea"), requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm") }, ct);
+                string? generated;
+                try { generated = await worker.GenerateAmbient("manual", new { idea = body.Text("idea"), requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm") }, ct, strict: true); }
+                catch (AiTextRejectedException e) { await Send(response, 400, new { ok = false, error = BotWorker.Rejected(e) + " Нажми ещё раз" }); return; }
                 await Send(response, generated is null ? 502 : 200, new { ok = generated is not null, text = generated, error = generated is null ? "Нейронка не ответила" : null });
                 return;
             }

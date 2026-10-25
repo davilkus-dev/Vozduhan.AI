@@ -264,6 +264,78 @@ static class NewFeatureTests
             Assert(AiSettings.ValidModel("deepseek/deepseek-v4.1-flash") && !AiSettings.ValidModel("rm -rf"), "Model id validation");
         });
 
+        Check("text cut by the output limit is never returned: budget up to the ceiling, then an error", () =>
+        {
+            var bodies = new List<string>();
+            using var http = new HttpClient(new Fake(async request =>
+            {
+                bodies.Add(await request.Content!.ReadAsStringAsync());
+                return new { choices = new[] { new { message = new { content = "Гайс, сегодня мы все" }, finish_reason = "length" } } };
+            })) { BaseAddress = new Uri("https://openrouter.test/") };
+            try { new OpenRouterClient(http, make("cut.db"), "k").Complete("s", "u", false, CancellationToken.None, "chat").GetAwaiter().GetResult(); throw new Exception("Cut text returned"); }
+            catch (InvalidDataException e) { Assert(e.Message.Contains("cut off"), e.Message); }
+            Assert(bodies.Count == 3 && bodies[0].Contains("\"max_tokens\":4096") && bodies[1].Contains("\"max_tokens\":8192") && bodies[2].Contains("\"max_tokens\":16384"), "Budget not raised to the ceiling");
+        });
+
+        Check("TextGuard.Check: CJK, garbled, language, repeats, length", () =>
+        {
+            var cases = new (string Text, string Source, string? Reason)[]
+            {
+                ("Гайс, завтра контроша по СиАОДу 😄 @leva_di, не проспи. <b>А412</b>, вторая пара.", "", null),
+                ("Сегодня пары 你好世界 до вечера", "", "cjk"),
+                ("Сегодня пары 你好世界 до вечера", "{\"text\":\"скажи 你好世界\"}", null),
+                ("Тут сломалось � слово", "", "garbled"),
+                ("Сломанный эмодзи \uD83D тут", "", "garbled"),
+                ("Буква \\u0414 не разобрана", "", "garbled"),
+                ("<think>план</think> Привет", "", "garbled"),
+                ("Звонок\u0007 тут", "", "garbled"),
+                ("Hello guys, tomorrow we have a test in the morning, do not forget", "", "not_russian"),
+                ("ok bro", "", null),
+                ("Сдаём практику завтра. Сдаём практику завтра. Сдаём практику завтра.", "", "repeat"),
+                ("   ", "", "empty"),
+                (new string('а', 101), "", "too_long"),
+                ("Семья \U0001F468‍\U0001F469‍\U0001F467 в сборе", "", null),
+            };
+            foreach (var (text, source, reason) in cases)
+                Assert(TextGuard.Check(text, source, 100) == reason, $"Check «{text}» = {TextGuard.Check(text, source, 100) ?? "ok"}, expected {reason ?? "ok"}");
+        });
+
+        Check("TextGuard.Fit: paragraph, then sentence, then word; never an ellipsis", () =>
+        {
+            var para = TextGuard.Fit("Первый абзац про пары и сдачи.\n\nВторой абзац, который уже не влезает в лимит.", 50);
+            var sentence = TextGuard.Fit("Первое предложение тут. Второе предложение тоже есть. Третье не влезет", 60);
+            var source = "оченьдлинноеслово " + string.Join(" ", Enumerable.Repeat("слово", 20));
+            var word = TextGuard.Fit(source, 50);
+            Assert(para == "Первый абзац про пары и сдачи." && sentence == "Первое предложение тут. Второе предложение тоже есть.", $"Fit: «{para}» / «{sentence}»");
+            Assert(word.Length <= 50 && source.StartsWith(word) && source[word.Length] == ' ' && !word.EndsWith(' '), "Word fit: " + word);
+            Assert(new[] { para, sentence, word }.All(x => !x.EndsWith('…')) && TextGuard.Fit("коротко", 50) == "коротко", "Fit added an ellipsis or changed a short text");
+        });
+
+        Check("CompleteText: one regeneration with a note, then an error or Fit; exact-limit text intact", () =>
+        {
+            var answers = new Queue<string>(); var bodies = new List<string>();
+            using var http = new HttpClient(new Fake(async request =>
+            {
+                bodies.Add(await request.Content!.ReadAsStringAsync());
+                return new { choices = new[] { new { message = new { content = answers.Dequeue() }, finish_reason = "stop" } } };
+            })) { BaseAddress = new Uri("https://openrouter.test/") };
+            var client = new OpenRouterClient(http, make("guard.db"), "k");
+            string Text(params string[] a)
+            {
+                bodies.Clear(); answers.Clear(); foreach (var x in a) answers.Enqueue(x);
+                return client.CompleteText("s", "{\"focus_message\":\"привет\"}", CancellationToken.None, "chat", "t", 100).GetAwaiter().GetResult();
+            }
+            Assert(Text("Привет 你好", "Привет, бро") == "Привет, бро" && bodies.Count == 2 && !bodies[0].Contains("отклонён") &&
+                bodies[1].Contains("Прошлый ответ отклонён: иероглифы в тексте") && bodies[1].Contains("не длиннее 100 символов"), "Retry wrong: " + string.Join("\n", bodies));
+            try { Text("你好", "再见"); throw new Exception("CJK accepted twice"); }
+            catch (AiTextRejectedException e) { Assert(e.Reason == "cjk" && bodies.Count == 2, "Wrong rejection: " + e.Reason); }
+            var longText = string.Join(" ", Enumerable.Range(1, 10).Select(i => $"Фраза номер {i} про пары и сдачи."));
+            var fit = Text(longText, longText);
+            Assert(fit == TextGuard.Fit(longText, 100) && fit.Length <= 100 && bodies.Count == 2, "Too long not fitted: " + fit);
+            var exact = "Ровно в лимит: " + new string('ы', 85);
+            Assert(exact.Length == 100 && Text(exact) == exact && Text(exact[..99]) == exact[..99] && bodies.Count == 1, "Text at the limit changed");
+        });
+
         Check("sent messages: entities become editable HTML", () =>
         {
             var msg = El(new { text = "Бро, А-13 тут", entities = new object[] { new { type = "bold", offset = 0, length = 3 }, new { type = "code", offset = 5, length = 4 },
@@ -368,6 +440,31 @@ static class NewFeatureTests
             Assert(replies.Length == 3 && replies[0].Payload.Field("reply_parameters").ValueKind == JsonValueKind.Object &&
                 replies.Skip(1).All(x => x.Payload.Field("reply_parameters").ValueKind == JsonValueKind.Undefined), "Split reply wrong");
             Assert(replies.Select(x => x.Payload.Text("text")).SequenceEqual(["Бро, сегодня философия", "И дедлайн…", "Соболезную"]), "Split text wrong");
+
+            // FIX-2: rejected twice -> fallback in chat, silence for ambient; a text at the limit goes out whole.
+            var goodAnswer = chatAnswer;
+            JsonElement Ask(int id) => El(new { message = El(new
+            {
+                message_id = id, date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), chat = new { id = c.GroupId, type = "supergroup" }, message_thread_id = c.ChatTopicId,
+                from = new { id = 3, first_name = "Студент" }, text = "@vozduhanAIbot что завтра?", entities = new[] { new { type = "mention", offset = 0, length = 14 } }
+            }) });
+            sent.Clear(); chatAnswer = "Бро, 今天 философия";
+            await Run(Ask(21));
+            var guarded = sent.Where(x => x.Method == "sendMessage").Select(x => x.Payload.Text("text")!).ToList();
+            Assert(guarded.Count == 1 && guarded[0].Contains("не достучался") && !guarded.Any(t => System.Text.RegularExpressions.Regex.IsMatch(t, @"[　-鿿]")), "CJK reached Telegram: " + string.Join(" | ", guarded));
+            sent.Clear();
+            var postAmbient = typeof(BotWorker).GetMethod("PostAmbient", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var posted = await (Task<string?>)postAmbient.Invoke(worker, ["spontaneous", null, CancellationToken.None, null, c.ChatTopicId, null])!;
+            Assert(posted is null && !sent.Any(x => x.Method == "sendMessage"), "Rejected ambient post was sent");
+            var full = string.Concat(Enumerable.Range(1, 200).Select(i => $"Пункт {i}: сдаём работу вовремя. ")).Trim()[..OpenRouterClient.TextMax];
+            foreach (var (answer, id) in new[] { (full, 22), (full[..^1], 23) })
+            {
+                sent.Clear(); chatAnswer = answer;
+                await Run(Ask(id));
+                var delivered = sent.Where(x => x.Method == "sendMessage").Select(x => x.Payload.Text("text")!).ToList();
+                Assert(string.Concat(delivered).Replace(" ", "") == answer.Replace(" ", "") && !delivered.Any(x => x.EndsWith('…')), $"Text of {answer.Length} chars not delivered whole");
+            }
+            chatAnswer = goodAnswer;
 
             // Editor small talk goes to chat after the planner.
             sent.Clear();
@@ -633,6 +730,15 @@ static class NewFeatureTests
                     Assert(ownerChats.Contains(1) && ownerChats.Contains(3), "Owner chat list shrank");
                     var seenOwner = JsonDocument.Parse(await owner.GetStringAsync("api/seen")).RootElement.Field("users").EnumerateArray().ToList();
                     Assert(seenOwner.Any(u => u.Field("id").GetInt64() == 3 && u.Field("count").ValueKind == JsonValueKind.Number && u.Text("member") is not null), "Owner seen view shrank");
+                    owner.DefaultRequestHeaders.Add("X-Vozduhan", "1");
+                    var savedAnswer = chatAnswer; chatAnswer = "Гайс, 集合 в 15:00";
+                    var rejected = await owner.PostAsync("api/post-now", new StringContent(Json.Write(new { idea = "сходка" }), Encoding.UTF8, "application/json"));
+                    var rejectedBody = await rejected.Content.ReadAsStringAsync();
+                    chatAnswer = savedAnswer;
+                    Assert(rejected.StatusCode == HttpStatusCode.BadRequest && rejectedBody.Contains("Текст не прошёл проверку: иероглифы в тексте. Нажми ещё раз"), "Strict manual generation: " + rejectedBody);
+                    var prepKey = $"ambient:morning:{DateOnly.FromDateTime(c.LocalNow(DateTimeOffset.UtcNow)).AddDays(1):yyyy-MM-dd}";
+                    var tooLong = await owner.PostAsync("api/prep", new StringContent(Json.Write(new { key = prepKey, action = "save", text = new string('ж', OpenRouterClient.TextMax + 1) }), Encoding.UTF8, "application/json"));
+                    Assert(tooLong.StatusCode == HttpStatusCode.BadRequest && (await tooLong.Content.ReadAsStringAsync()).Contains((OpenRouterClient.TextMax + 1).ToString()) && worker.Prepared(prepKey) is null, "Long manual text cut or saved");
                 }
                 count++; Console.WriteLine("PASS web admin FIX-1: head sees only the group and her DM, no raw, no owner edits, seen without details; owner sees all");
                 var dl = await browser.PostAsync("api/deadline", new StringContent(Json.Write(new { action = "create", subjectId = "siaod", work = "Практика №3", date = "2026-12-07" }), Encoding.UTF8, "application/json"));

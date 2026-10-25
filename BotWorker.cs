@@ -23,6 +23,7 @@ public sealed partial class BotWorker : BackgroundService
         this.config = config; this.store = store; this.telegram = telegram; this.ai = ai; this.log = log;
         conversation = new(config, store);
         telegram.Observer = LogOutgoing;
+        ai.Log ??= log;
         ai.Trace ??= t => store.AiLog(t.Kind, t.Tag, t.Model, t.System, t.Request, t.Response, t.Ms, t.Error);
     }
 
@@ -389,7 +390,6 @@ public sealed partial class BotWorker : BackgroundService
                 answer = "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны и /today от этого не пропали.";
             }
             finally { typing.Cancel(); await indicator; }
-            answer = Conversation.Limit(Json.Unescape(answer), 3900);
             store.SavePost(answerKey, 0, answer);
         }
         var parts = config.SplitReplies ? OpenRouterClient.Parts(answer) : [answer.Replace("\n" + OpenRouterClient.Split + "\n", "\n")];

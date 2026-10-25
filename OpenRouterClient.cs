@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace Vozduhan.AI;
 
@@ -59,11 +60,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
                 var cut = finish is "length" or "max_tokens" || string.IsNullOrEmpty(content) || (json && !ValidJson(content));
                 if (!cut) { result = content!; break; }
                 if (budget >= config.MaxOutputTokensCeiling || attempts >= 3)
-                {
-                    // Out of budget: a cut chat text is still better than nothing; broken JSON or nothing is an error.
-                    if (!json && !string.IsNullOrEmpty(content)) { result = content; break; }
                     throw new InvalidDataException(string.IsNullOrEmpty(content) ? "OpenRouter returned no visible content" : "OpenRouter output was cut off");
-                }
                 budget = Math.Min(config.MaxOutputTokensCeiling, budget * 2);
             }
             if (result.Contains("<think>", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Unexpected reasoning in visible content");
@@ -78,6 +75,24 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
                     system, user, result ?? "", clock.ElapsedMilliseconds, failure is null ? null : failure.GetType().Name + ": " + failure.Message));
             }
             catch { /* logging must never break a reply */ }
+        }
+    }
+
+    public ILogger? Log { get; set; }
+    public const int TextMax = 3900, LeadMax = 700;
+
+    /// <summary>A text for people: normalized and checked by code; one regeneration on rejection, then Fit for length or an error.</summary>
+    public async Task<string> CompleteText(string system, string user, CancellationToken ct, string kind, string tag, int maxChars, string? modelOverride = null)
+    {
+        var prompt = user;
+        for (var attempt = 1; ; attempt++)
+        {
+            var text = TextGuard.Normalize(await Complete(system, prompt, false, ct, kind, tag, modelOverride));
+            var reason = TextGuard.Check(text, user, maxChars);
+            if (reason is null) return text;
+            Log?.LogWarning("AI text rejected: {Kind} {Tag}, {Reason}, attempt {Attempt}: {Head}", kind, tag, reason, attempt, text[..Math.Min(80, text.Length)]);
+            if (attempt >= 2) return reason == "too_long" ? TextGuard.Fit(text, maxChars) : throw new AiTextRejectedException(reason);
+            prompt = user + $"\n\nПрошлый ответ отклонён: {TextGuard.Explain(reason)}. Отвечай только по-русски, без иероглифов, не длиннее {maxChars} символов.";
         }
     }
     private static bool ValidJson(string text)
@@ -186,7 +201,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         """;
 
     public Task<string> Chat(string adminContext, string context, string tag, bool split, CancellationToken ct) =>
-        Complete(ChatRules(config, split) + adminContext, context, false, ct, "chat", tag);
+        CompleteText(ChatRules(config, split) + adminContext, context, ct, "chat", tag, TextMax);
 
     private const string DeadlineRules = """
         Дедлайн (intent=deadline) — это сдача конкретной работы: action (create/update/cancel), targetId (число или null),
@@ -331,7 +346,8 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             Если обращаешься к конкретному человеку или хочешь его дёрнуть — обязательно тегни: пиши его telegram_username (например @R3searchh),
             а если юзернейма нет — вставь его mention_html. Просто имя без тега человек не увидит.
             """;
-        return Complete(ChatRules(config, split) + adminContext + "\n\n" + task + tags, context, false, ct, "ambient-" + kind);
+        return CompleteText(ChatRules(config, split) + adminContext + "\n\n" + task + tags, context, ct, "ambient-" + kind, "",
+            kind is "deadline" or "eve" or "summary" ? LeadMax : TextMax);
     }
 
     public sealed record WakeupPlan(DateTime At, string Reason);

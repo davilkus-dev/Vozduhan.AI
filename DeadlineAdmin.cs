@@ -54,7 +54,7 @@ public sealed partial class BotWorker
             Conversation.Limit((previous is null ? "" : previous.Source + "\n") + text, 4000));
         store.SaveRegistryDraft(draft);
         var preview = "🛠 Изменения реестра:\n" + string.Join("\n", lines) +
-            (plan.Question is null ? "" : "\n\n" + Conversation.Limit(plan.Question, 300)) + "\n\nПрименить? Можно ответить уточнением — карточка пересоберётся.";
+            (plan.Question is null ? "" : "\n\n" + TextGuard.Fit(plan.Question, 300)) + "\n\nПрименить? Можно ответить уточнением — карточка пересоберётся.";
         await Respond(m, key, Conversation.Limit(preview, 3900), ct, Buttons("rok:" + draft.Token, "rno:" + draft.Token, "Применить"));
     }
 
@@ -160,7 +160,7 @@ public sealed partial class BotWorker
                   (string.IsNullOrWhiteSpace(draft.Note) ? "" : $"\n\n<i>Комментарий для бота (в пост дословно не попадёт): {System.Net.WebUtility.HtmlEncode(draft.Note)}</i>") +
                   "\n\nПубликую только после подтверждения. Можно поправить сообщением."
                 : System.Net.WebUtility.HtmlEncode(Deadlines.Preview(config, draft));
-            if (!string.IsNullOrWhiteSpace(parsed.Question) && draft.Missing.Length > 0) preview += "\n" + System.Net.WebUtility.HtmlEncode(Conversation.Limit(parsed.Question, 300));
+            if (!string.IsNullOrWhiteSpace(parsed.Question) && draft.Missing.Length > 0) preview += "\n" + System.Net.WebUtility.HtmlEncode(TextGuard.Fit(parsed.Question, 300));
             var keyboard = draft.Missing.Length == 0
                 ? Buttons("save:" + draft.Token, "drop:" + draft.Token, draft.Action == "cancel" ? "Подтвердить отмену" : "Сохранить и опубликовать")
                 : null;

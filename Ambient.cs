@@ -98,12 +98,16 @@ public sealed partial class BotWorker
         }
         finally { ambientGate.Release(); }
     }
-    internal async Task<string?> GenerateAmbient(string kind, object? extra, CancellationToken ct, bool split = false)
+    internal async Task<string?> GenerateAmbient(string kind, object? extra, CancellationToken ct, bool split = false, bool strict = false)
     {
         string text;
         try { text = await ai.Ambient(kind, conversation.AdminContext(false), conversation.AmbientContext(kind, extra), split, ct); }
+        catch (AiTextRejectedException e) when (!strict && !ct.IsCancellationRequested)
+        {
+            log.LogWarning("Ambient {Kind} text rejected ({Reason}), staying silent", kind, e.Reason);
+            return null;
+        }
         catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Ambient {Kind} generation failed: {Error}", kind, Failure(e)); throw; }
-        text = Conversation.Limit(Json.Unescape(text).Trim(), 3900);
         return text.StartsWith(OpenRouterClient.Skip, StringComparison.OrdinalIgnoreCase) || text.Length == 0 ? null : text;
     }
 
@@ -176,7 +180,7 @@ public sealed partial class BotWorker
     internal string ComposeSummary(DateOnly today, string? lead)
     {
         var sb = new System.Text.StringBuilder();
-        if (lead is not null) sb.Append(TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(Conversation.Limit(OpenRouterClient.Join(lead), 700)))).Append("\n\n");
+        if (lead is not null) sb.Append(TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(TextGuard.Fit(OpenRouterClient.Join(lead), OpenRouterClient.LeadMax)))).Append("\n\n");
         sb.Append(ScheduleHtml.Day(config.R, today, DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow)) == today ? "Сегодня" : null));
         var soon = store.AllDeadlines().Where(d => d.Status == "active" && Deadlines.Ends(config, d) > DateTimeOffset.UtcNow &&
             DateOnly.Parse(d.Date) >= today && DateOnly.Parse(d.Date) <= today.AddDays(3)).OrderBy(d => d.Date).ThenBy(d => d.Start).ToList();
@@ -228,12 +232,12 @@ public sealed partial class BotWorker
                 previous = old is null ? null : new { old.Date, old.Period, old.Start, old.Room, old.Work }
             }
         }, ct);
-        return Conversation.Limit(OpenRouterClient.Join(text ?? (d.Action switch
+        return OpenRouterClient.Join(text ?? (d.Action switch
         {
             "cancel" => "Отбой, эту сдачу отменили.",
             "update" => "Гайс, по сдаче новости.",
             _ => "Гайс, держим в голове."
-        })), 700);
+        }));
     }
 
     // ---------- Manual edits of anything the bot already sent ----------
@@ -378,12 +382,15 @@ public sealed partial class BotWorker
 
     private async Task PostPreview(JsonElement m, string key, long actor, string? idea, CancellationToken ct)
     {
-        var text = await GenerateAmbient("manual", new { idea, requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm") }, ct);
+        string? text;
+        try { text = await GenerateAmbient("manual", new { idea, requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm") }, ct, strict: true); }
+        catch (AiTextRejectedException e) { await Respond(m, key, Rejected(e) + " Попробуй ещё раз.", ct); return; }
         if (text is null) { await Respond(m, key, "Не получилось сгенерировать — нейронка молчит. Попробуй ещё раз.", ct); return; }
         var token = Guid.NewGuid().ToString("N")[..12];
         store.Set($"postdraft:{actor}", Json.Write(new { token, idea, text }));
         await Respond(m, key, PostCard(text), ct, PostButtons(token), html: true);
     }
+    internal static string Rejected(AiTextRejectedException e) => $"Текст не прошёл проверку: {TextGuard.Explain(e.Reason)}.";
     private static string PostCard(string text) =>
         "📝 <b>Черновик</b> — куда отправить?\n\n" + TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(OpenRouterClient.Join(text)));
     private static object PostButtons(string token) => new
@@ -411,7 +418,9 @@ public sealed partial class BotWorker
                 return;
             case "aredo":
                 await SafeCallback(cb.Text("id")!, "Пишу заново…", ct);
-                var text = await GenerateAmbient("manual", new { idea, requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm"), previous_variant = doc.RootElement.Text("text") }, ct);
+                string? text;
+                try { text = await GenerateAmbient("manual", new { idea, requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm"), previous_variant = doc.RootElement.Text("text") }, ct, strict: true); }
+                catch (AiTextRejectedException e) { await telegram.Send(actor, 0, Rejected(e) + " Попробуй ещё раз.", ct); return; }
                 if (text is null) { await telegram.Send(actor, 0, "Нейронка молчит, попробуй ещё раз.", ct); return; }
                 var next = Guid.NewGuid().ToString("N")[..12];
                 store.Set($"postdraft:{actor}", Json.Write(new { token = next, idea, text }));
