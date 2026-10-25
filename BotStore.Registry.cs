@@ -274,6 +274,26 @@ public sealed partial class BotStore
             return actor;
         }
     }
+    /// <summary>Login link check without using it up (the GET shows a confirmation page; only the POST logs in).</summary>
+    public (long? Actor, string State) PeekLogin(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw) || raw.Length > 100) return (null, "missing");
+        lock (gate)
+        {
+            var hash = Hash(raw);
+            var row = Query("SELECT actor,expires FROM web_tokens WHERE hash=$h AND kind='login'", r => (Actor: r.GetInt64(0), Expires: r.GetInt64(1)), ("h", hash)).FirstOrDefault();
+            if (row.Actor != 0) return row.Expires > DateTimeOffset.UtcNow.ToUnixTimeSeconds() ? (row.Actor, "ok") : (null, "expired");
+            return (null, Get("login_used:" + hash) ?? "unknown");
+        }
+    }
+    /// <summary>Uses a login link once and remembers who used it, so a "used" link can be explained.</summary>
+    public long? ConsumeLogin(string? raw, string ip, string agent)
+    {
+        var actor = WebToken(raw, "login");
+        if (actor is not null)
+            Set("login_used:" + Hash(raw!), Json.Write(new { at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ip, agent = Conversation.Limit(agent, 120) }));
+        return actor;
+    }
     public void DeleteWebToken(string? raw)
     {
         if (raw is null) return;

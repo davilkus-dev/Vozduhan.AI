@@ -39,9 +39,9 @@ if (args.Contains("--web-link"))
 {
     // Works while the service is running and even when Telegram is unreachable.
     using var tool = new BotStore(config, tool: true);
-    var token = tool.CreateWebToken(config.OwnerId, "login", TimeSpan.FromMinutes(10));
+    var token = tool.CreateWebToken(config.OwnerId, "login", TimeSpan.FromMinutes(30));
     Console.WriteLine($"{config.Web.PublicUrl.TrimEnd('/')}/login?t={token}");
-    Console.WriteLine("One-time link for the owner, valid for 10 minutes.");
+    Console.WriteLine("One-time link for the owner, valid for 30 minutes (open it, then press «Войти»).");
     return;
 }
 if (string.IsNullOrWhiteSpace(telegramToken)) throw new InvalidOperationException("TELEGRAM_BOT_TOKEN is missing");

@@ -560,9 +560,13 @@ static class NewFeatureTests
                 Assert((await browser.GetAsync("api/registry")).StatusCode == HttpStatusCode.Unauthorized, "API open without session");
                 Assert((await browser.GetStringAsync("")).Contains("/web"), "Login page missing");
                 var link = s.CreateWebToken(2, "login", TimeSpan.FromMinutes(5));
-                var home = await browser.GetStringAsync("login?t=" + link);
-                Assert(!home.Contains("недействительна"), "Login failed");
-                Assert((await browser.GetAsync("login?t=" + link)).StatusCode == HttpStatusCode.Unauthorized, "Login link reusable");
+                // A link previewer fetching the URL (twice) must not burn it.
+                Assert((await browser.GetStringAsync("login?t=" + link)).Contains("Войти") && (await browser.GetStringAsync("login?t=" + link)).Contains("Войти"), "Login confirm page missing");
+                Assert((await browser.GetAsync("api/registry")).StatusCode == HttpStatusCode.Unauthorized, "GET alone logged in");
+                var home = await (await browser.PostAsync("login", new FormUrlEncodedContent(new Dictionary<string, string> { ["t"] = link }))).Content.ReadAsStringAsync();
+                Assert(!home.Contains("Ссылка"), "Login failed: " + home[..Math.Min(300, home.Length)]);
+                var again = await browser.GetAsync("login?t=" + link);
+                Assert(again.StatusCode == HttpStatusCode.Unauthorized && (await again.Content.ReadAsStringAsync()).Contains("уже использована"), "Used link not explained");
                 // Owner secrets exist before the head opens the admin.
                 s.CommitRegistry(1, "test", null, cur => RegistryOps.ApplyAll(cur, [Op(new { op = "subject_upsert", id = "java", adminComment = "СЕКРЕТ-КОММЕНТ", addAliases = new[] { "СЕКРЕТ-СЛЕНГ" } }),
                     Op(new { op = "member_update", member = new { userId = 3 }, adminNote = "СЕКРЕТ-ЗАМЕТКА" }), Op(new { op = "knowledge_set", text = "СЕКРЕТ-ЗНАНИЯ" })], c.OwnerId, true));

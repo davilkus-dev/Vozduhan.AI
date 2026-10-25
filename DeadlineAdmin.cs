@@ -79,8 +79,8 @@ public sealed partial class BotWorker
     private string WebLink(long actor)
     {
         if (!config.Web.Enabled) return "Веб-админка выключена в серверном конфиге (web.enabled).";
-        var token = store.CreateWebToken(actor, "login", TimeSpan.FromMinutes(10));
-        return $"{config.Web.PublicUrl.TrimEnd('/')}/login?t={token}\n\nСсылка одноразовая, действует 10 минут. Открывай на устройстве, подключённом к VPN.";
+        var token = store.CreateWebToken(actor, "login", TimeSpan.FromMinutes(30));
+        return $"{config.Web.PublicUrl.TrimEnd('/')}/login?t={token}\n\nСсылка одноразовая, действует 30 минут: открой и нажми «Войти». Открывай на устройстве, подключённом к VPN.";
     }
 
     /// <summary>The other editor learns about every registry change made by the owner or the head.</summary>

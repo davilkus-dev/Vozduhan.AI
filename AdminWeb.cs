@@ -59,10 +59,27 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             var path = request.Url?.AbsolutePath ?? "/";
             if (path == "/login" && request.HttpMethod == "GET")
             {
-                var actor = store.WebToken(request.QueryString["t"], "login");
-                if (actor is null || !config.CanEdit(actor.Value)) { await Html(response, 401, LoginPage("Ссылка недействительна или уже использована. Получи новую командой /web в личке бота.")); return; }
+                // Link previewers, antivirus scanners and browser prefetch only GET: they must not burn the one-time link.
+                var t = request.QueryString["t"];
+                var (actor, state) = store.PeekLogin(t);
+                if (actor is null || !config.CanEdit(actor.Value)) { await Html(response, 401, LoginPage(LoginProblem(state))); return; }
+                var name = actor == config.OwnerId ? "разработчик" : config.FindMember(actor.Value)?.FullName ?? "староста";
+                await Html(response, 200, LoginPage($"Вход как: {name}.", $"""
+                    <form method="post" action="/login" style="margin-top:16px"><input type="hidden" name="t" value="{WebUtility.HtmlEncode(t)}">
+                    <button style="font:inherit;padding:10px 18px;border-radius:10px;border:0;background:#6f95ff;color:#0b0e14;font-weight:700;cursor:pointer">Войти в админку</button></form>
+                    """));
+                return;
+            }
+            if (path == "/login" && request.HttpMethod == "POST")
+            {
+                using var reader = new StreamReader(request.InputStream, Encoding.UTF8);
+                var form = System.Web.HttpUtility.ParseQueryString(await reader.ReadToEndAsync(ct));
+                var t = form["t"];
+                var state = store.PeekLogin(t).State;
+                var actor = store.ConsumeLogin(t, request.RemoteEndPoint?.Address.ToString() ?? "?", request.UserAgent ?? "");
+                if (actor is null || !config.CanEdit(actor.Value)) { await Html(response, 401, LoginPage(LoginProblem(state))); return; }
                 var session = store.CreateWebToken(actor.Value, "session", TimeSpan.FromDays(config.Web.SessionDays));
-                response.Headers.Add("Set-Cookie", $"{Cookie}={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age={config.Web.SessionDays * 86400}");
+                response.Headers.Add("Set-Cookie", $"{Cookie}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age={config.Web.SessionDays * 86400}");
                 response.Redirect("/");
                 response.Close();
                 return;
@@ -477,13 +494,25 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); }
     }
 
-    private static string LoginPage(string message) => $$"""
+    private string LoginProblem(string state)
+    {
+        if (state == "expired") return "Ссылка истекла (живёт 30 минут). Получи новую командой /web в личке бота.";
+        if (state.StartsWith('{'))
+        {
+            var used = JsonDocument.Parse(state).RootElement;
+            var at = config.LocalNow(DateTimeOffset.FromUnixTimeSeconds(used.Number("at"))).ToString("dd.MM HH:mm");
+            return $"Ссылка уже использована {at} с адреса {used.Text("ip")} ({used.Text("agent")}). Если это был не ты — получи новую через /web.";
+        }
+        return "Такой ссылки нет в базе бота. Получи новую командой /web. Если повторится — проверь, что на порту админки работает именно текущий бот (README → «Админка не пускает»).";
+    }
+
+    private static string LoginPage(string message, string extra = "") => $$"""
         <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
         <title>Vozduhan.AI — вход</title><style>
         body{font:16px system-ui,sans-serif;background:#0f1115;color:#e8e8ea;display:grid;place-items:center;min-height:100vh;margin:0;padding:16px}
         .card{max-width:420px;background:#181b22;border:1px solid #2a2f3a;border-radius:14px;padding:28px}
         h1{font-size:20px;margin:0 0 12px}p{color:#a9adb8;line-height:1.5;margin:0}code{color:#7cc4ff}
-        </style></head><body><div class="card"><h1>Vozduhan.AI · админка</h1><p>{{WebUtility.HtmlEncode(message)}}</p>
+        </style></head><body><div class="card"><h1>Vozduhan.AI · админка</h1><p>{{WebUtility.HtmlEncode(message)}}</p>{{extra}}
         <p style="margin-top:12px">Если Telegram недоступен: на сервере <code>--web-link</code>.</p></div></body></html>
         """;
 
