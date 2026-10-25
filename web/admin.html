@@ -449,6 +449,31 @@ VIEWS.settings=el=>{
   $("#w1").onchange=e=>{S.draft.weekOneMonday=e.target.value;touch()};$("#te").onchange=e=>{S.draft.termEnd=e.target.value||null;touch()};$("#dc").onchange=e=>{S.draft.defaultCampus=e.target.value;touch()}};
 
 // ---------- deadlines ----------
+// Preview of a deadline post before it goes out: card, change news and the lead the editor can rewrite.
+const ISRC={ai:"написал ИИ",manual:"вручную",standard:"стандартная"};
+async function introDialog(title,load,apply,okText,note){
+  const d=$("#dlg");let st={intro:"",note,shown:null,card:"",news:null,warn:""};
+  const take=x=>{if(x.ok){st={...st,intro:x.intro,shown:x.intro,source:x.introSource,card:x.card,news:x.news,warn:x.manualEdited?"Эту карточку правили вручную — новый текст перезапишет правку.":""};return}
+    st.warn=x.error||"Ошибка";if(x.status===502){st.shown=null;st.card="";st.news=null}};
+  const first=await load(undefined,note);
+  if(!first.ok&&first.status!==502)return info(first.status===400?"Не хватает данных":"Ошибка",`${first.preview?`<pre>${esc(first.preview)}</pre>`:""}<p>${esc(first.error)}</p>`);
+  take(first);
+  const draw=()=>{d.innerHTML=`<h2>${esc(title)}</h2>${st.warn?`<p style="color:var(--warn)">${esc(st.warn)}</p>`:""}
+    <h3>Так увидят в группе</h3>${st.card?`<div class="tgv">${st.card}</div>`:'<p class="muted">Карточки пока нет: выбери стандартную фразу или напиши вводную и нажми «Показать мою правку».</p>'}
+    ${st.news?`<h3 style="margin-top:12px">Новость об изменении</h3><div class="tgv">${st.news}</div>`:""}
+    <div class="f">${note!==undefined?`<label>Комментарий для бота</label><textarea id="dn" rows="2" placeholder="контекст для ИИ, дословно не публикуется">${esc(st.note||"")}</textarea>`:""}
+    <label>Вводная фраза${st.shown!==null&&st.source?` <span class="chip">${ISRC[st.source]}</span>`:""}</label><textarea id="di" rows="4" maxlength="700">${esc(st.intro)}</textarea></div>
+    <div class="row" style="justify-content:flex-end"><button class="b" data-a="regen">Перегенерировать</button><button class="b" data-a="std">Стандартная фраза без ИИ</button><button class="b" data-a="mine">Показать мою правку</button><button class="b" data-a="no">Отмена</button><button class="b p" data-a="ok">${esc(okText)}</button></div>`;
+    d.querySelectorAll("[data-a]").forEach(b=>b.onclick=()=>act(b.dataset.a))};
+  // «Сохранить» sends exactly the previewed lead; an edited field is shown first.
+  const act=async a=>{st.intro=$("#di").value;if(note!==undefined)st.note=$("#dn").value;
+    if(a==="no")return d.close();
+    d.querySelectorAll("button").forEach(b=>b.disabled=true);
+    if(a==="ok"&&st.shown!==null&&st.intro.trim()===st.shown.trim()){const x=await apply(st.shown,st.note);if(!x)return d.close();st.warn=x.error||"Ошибка";return draw()}
+    const x=await load(a==="regen"?undefined:a==="std"?"":st.intro,st.note);take(x);
+    if(a==="ok"&&x.ok)st.warn="Вводная изменилась — проверь карточку и нажми ещё раз.";
+    draw()};
+  d.onclose=null;draw();d.showModal()}
 VIEWS.deadlines=async el=>{
   const viewId=renderId;
   el.innerHTML=page("Дедлайны","Сохранённый здесь дедлайн сразу публикуется в теме дедлайнов, как из Telegram. Кабинет и время берутся из расписания.",`<button class="b p" id="addD">＋ Дедлайн</button>`)+`<div id="dl" class="card tw"><div class="empty">Загрузка…</div></div>`;
@@ -457,18 +482,25 @@ VIEWS.deadlines=async el=>{
     <td>${d.status==="active"?(d.past?'<span class="chip">прошёл</span>':'<span class="st added">активен</span>'):'<span class="st cancelled">отменён</span>'}</td>
     <td>${d.status==="active"&&!d.past?`<div class="row" style="flex-wrap:nowrap"><button class="b" data-rg="${d.id}" title="Бот заново напишет живой текст поста">✨ Текст</button><button class="b" data-mv="${d.id}">Перенести</button><button class="b d" data-cn="${d.id}">Отменить</button></div>`:""}</td></tr>`;
   $("#dl").innerHTML=`<table><thead><tr><th>ID</th><th>Дата</th><th>Пара</th><th>Предмет</th><th>Работа</th><th>Кабинет</th><th>Статус</th><th></th></tr></thead><tbody>${r.deadlines.map(row).join("")||'<tr><td colspan="8" class="empty">Пока нет</td></tr>'}</tbody></table>`;
-  const send=async(body,title)=>{if(body.targetId)body.expectedVersion=r.deadlines.find(d=>d.id===body.targetId)?.version;const pre=await api("deadline",{...body,dry:true});
-    if(!pre.ok)return info("Не хватает данных",`${pre.preview?`<pre>${esc(pre.preview)}</pre>`:""}<p>${esc(pre.error)}</p>`);
-    const i=await menu(title,[{t:"Сохранить и опубликовать",cls:"p"}],`<pre>${esc(pre.preview)}</pre>`);if(i!==0)return;
-    const s=await api("deadline",body);if(s.ok){toast("Сохранено");render()}else info("Ошибка",`<p>${esc(s.error)}</p>`)};
+  const send=async(body,title)=>{if(body.targetId)body.expectedVersion=r.deadlines.find(d=>d.id===body.targetId)?.version;
+    const note=body.action==="cancel"?undefined:(body.note||""),withNote=n=>n===undefined?{}:{note:n||null};
+    await introDialog(title,(intro,n)=>api("deadline",{...body,...withNote(n),preview:true,...(intro===undefined?{}:{intro})}),
+      async(intro,n)=>{const s=await api("deadline",{...body,...withNote(n),intro});if(!s.ok)return s;toast("Сохранено");render();return null},"Сохранить и опубликовать",note)};
   $("#addD").onclick=async()=>{const v=await form("Новый дедлайн",[{k:"subjectId",label:"Предмет",type:"select",options:subjOptions()},{k:"work",label:"Работа",ph:"Практика №11"},{k:"date",label:"Дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"room",label:"Кабинет",ph:"из расписания"},{k:"note",label:"Комментарий для бота",ph:"контекст для текста поста, дословно не публикуется"}],{date:S.me.today});
     if(!v)return;send({action:"create",...v,period:v.period?+v.period:null},"Проверь карточку")};
   el.querySelectorAll("[data-mv]").forEach(b=>b.onclick=async()=>{const v=await form("Перенос #"+b.dataset.mv,[{k:"date",label:"Новая дата",type:"date"},{k:"period",label:"Пара",type:"select",options:periodOptions(true)},{k:"note",label:"Комментарий для бота",ph:"кто перенёс, почему"}]);
     if(!v)return;send({action:"update",targetId:+b.dataset.mv,date:v.date,period:v.period?+v.period:null,note:v.note},"Перенос")});
   el.querySelectorAll("[data-cn]").forEach(b=>b.onclick=()=>send({action:"cancel",targetId:+b.dataset.cn},"Отмена сдачи"));
-  el.querySelectorAll("[data-rg]").forEach(b=>b.onclick=async()=>{const v=await form("Переписать текст поста #"+b.dataset.rg,[{k:"note",label:"Комментарий для бота",type:"textarea",rows:3,ph:"последний шанс, Арапов злой — бот перескажет своими словами"}],
-      {note:(r.deadlines.find(x=>x.id===+b.dataset.rg)||{}).note||""});if(!v)return;b.disabled=true;b.textContent="Пишу…";
-    const x=await api("deadline/regen",{id:+b.dataset.rg,note:v.note});if(x.ok){info("Новый текст",`<pre>${esc(x.intro)}</pre><p class="muted small">Карточка в «Дедлайнах» обновится в течение минуты (без нового уведомления).</p>`);render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)})};
+  el.querySelectorAll("[data-rg]").forEach(b=>b.onclick=async()=>{const dl=r.deadlines.find(x=>x.id===+b.dataset.rg)||{};
+    const v=await form("Переписать текст поста #"+b.dataset.rg,[{k:"note",label:"Комментарий для бота",type:"textarea",rows:3,ph:"последний шанс, Арапов злой — бот перескажет своими словами"}],
+      {note:dl.note||""});if(!v)return;b.disabled=true;b.textContent="Пишу…";const base={id:dl.id,expectedVersion:dl.version};
+    await introDialog("Новый текст поста #"+dl.id,(intro,n)=>api("deadline/regen",{...base,note:n||null,...(intro===undefined?{}:{intro})}),async intro=>{
+      let x=await api("deadline/intro",{...base,intro});
+      if(x.code==="manual_edit"){$("#dlg").close();await new Promise(r=>setTimeout(r,0));
+        if(await menu("Эту карточку правили вручную. Перезаписать?",[{t:"Перезаписать",cls:"d"}])!==0)return null;
+        x=await api("deadline/intro",{...base,intro,force:true});if(!x.ok){info("Не получилось",`<p>${esc(x.error)}</p>`);return null}}
+      if(!x.ok)return x;toast(x.note);render();return null},"Применить",v.note||"");
+    b.disabled=false;b.textContent="✨ Текст"})};
 
 // ---------- log ----------
 VIEWS.log=async el=>{

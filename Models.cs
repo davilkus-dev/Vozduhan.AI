@@ -549,6 +549,13 @@ public static class Deadlines
         var head = d.Action switch { "cancel" => "Так будет отмена", "update" => "Так будет изменение", _ => "Так будет в «Дедлайнах»" };
         return $"👀 <b>{head}:</b>\n\n" + Card(c, fake).Replace(" · #0", "");
     }
+    /// <summary>Exactly what saving the draft publishes: the card and, for update/cancel, the change news.</summary>
+    public static (string Card, string? News) PostsPreview(BotConfig c, Draft d, Deadline? old)
+    {
+        var next = new Deadline(old?.Id ?? 0, (old?.Version ?? 0) + 1, d.SubjectId!, d.Work!, d.Date!, d.Period!.Value, d.Start!, d.End!, d.Room!,
+            d.Action == "cancel" ? "cancelled" : "active", d.ActorId, d.Source, d.Intro, d.MorningIntro, d.Note);
+        return old is null ? (Card(c, next).Replace(" · #0", ""), null) : (Card(c, next), ChangeNews(c, next, old));
+    }
     public static string ChangeNews(BotConfig c, Deadline d, Deadline old)
     {
         var oldDay = DateOnly.Parse(old.Date);

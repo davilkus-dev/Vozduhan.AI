@@ -262,12 +262,23 @@ public sealed partial class BotWorker
     /// The lively lead of a deadline post (create / update / cancel), written in the bot's voice with full context.
     /// The editor's note is backstage context for the model, never printed by itself.
     /// </summary>
-    internal async Task<string> DeadlineIntro(Draft d, CancellationToken ct)
+    internal async Task<string> DeadlineIntro(Draft d, CancellationToken ct) =>
+        OpenRouterClient.Join(await TryDeadlineIntro(d, ct) ?? (d.Action switch
+        {
+            "cancel" => "Отбой, эту сдачу отменили.",
+            "update" => "Гайс, по сдаче новости.",
+            _ => "Гайс, держим в голове."
+        }));
+    /// <summary>The lead written by the model, checked strictly; null when the model failed, stayed silent or the text was rejected.</summary>
+    internal async Task<string?> TryDeadlineIntro(Draft d, CancellationToken ct)
     {
         var old = store.AllDeadlines().FirstOrDefault(x => x.Id == d.TargetId);
         var start = d.Date is null || d.Start is null ? (DateTimeOffset?)null : config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start)));
         var left = start - DateTimeOffset.UtcNow;
-        var text = await GenerateAmbient("deadline", new
+        string? text;
+        try
+        {
+            text = await GenerateAmbient("deadline", new
         {
             deadline_post = new
             {
@@ -277,13 +288,10 @@ public sealed partial class BotWorker
                 backstage_note = d.Note,
                 previous = old is null ? null : new { old.Date, old.Period, old.Start, old.Room, old.Work }
             }
-        }, ct);
-        return OpenRouterClient.Join(text ?? (d.Action switch
-        {
-            "cancel" => "Отбой, эту сдачу отменили.",
-            "update" => "Гайс, по сдаче новости.",
-            _ => "Гайс, держим в голове."
-        }));
+        }, ct, strict: true);
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Deadline lead not written ({Type})", Failure(e)); return null; }
+        return text is null ? null : OpenRouterClient.Join(text);
     }
 
     // ---------- Manual edits of anything the bot already sent ----------

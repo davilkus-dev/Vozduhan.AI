@@ -199,12 +199,17 @@ public sealed partial class BotStore : IDisposable
         lock (gate) return Query("SELECT payload FROM deadlines ORDER BY date,id", r => Json.Read<Deadline>(r.GetString(0)));
     }
     /// <summary>Replaces only the model-written lead of a deadline; the publisher then edits the card in place.</summary>
-    public void SetDeadlineIntro(int id, string intro)
+    /// <summary>Replaces the published lead without a new version (wake-ups stay); the change is audited.</summary>
+    public void SetDeadlineIntro(int id, string intro, long actor, DateTimeOffset now)
     {
         lock (gate)
         {
             var d = AllDeadlines().FirstOrDefault(x => x.Id == id) ?? throw new InvalidOperationException("Нет такого дедлайна.");
+            using var tx = db.BeginTransaction();
             Exec("UPDATE deadlines SET payload=$p WHERE id=$id", ("p", Json.Write(d with { Intro = intro })), ("id", id));
+            Exec("INSERT INTO audit(time,actor,action,payload) VALUES($t,$a,'intro',$p)", ("t", now.ToUnixTimeSeconds()), ("a", actor),
+                ("p", Json.Write(new { before = d.Intro, after = intro, deadline = id })));
+            tx.Commit();
         }
     }
     public Draft? Draft(long actor, string? token = null)

@@ -125,7 +125,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         }
         long? L(string k) => long.TryParse(q[k], out var v) ? v : null;
         var owner = actor == config.OwnerId;
-        if (preview && post && path is not ("/api/view" or "/api/logout") && q["dry"] != "1" && body.Field("dry").ValueKind != JsonValueKind.True)
+        if (preview && post && path is not ("/api/view" or "/api/logout" or "/api/deadline/regen") && q["dry"] != "1" && body.Field("dry").ValueKind != JsonValueKind.True && body.Field("preview").ValueKind != JsonValueKind.True)
         { await Send(response, 403, new { ok = false, error = "Просмотр как староста: изменения отключены. Вернись в режим разработчика." }); return; }
         bool Visible(long chat) => owner || chat == config.GroupId || chat == actor;
         switch (path)
@@ -227,7 +227,19 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 { await Send(response, 409, new { ok = false, error = "Дедлайн изменился. Обнови страницу и повтори." }); return; }
                 if (draft.Missing.Length > 0) { await Send(response, 400, new { ok = false, error = string.Join("\n", draft.Missing), preview = Deadlines.Preview(config, draft) }); return; }
                 if (body.Field("dry").ValueKind == JsonValueKind.True) { await Send(response, 200, new { ok = true, preview = Deadlines.Preview(config, draft) }); return; }
-                draft = draft with { Intro = await worker.DeadlineIntro(draft, ct), MorningIntro = "Сегодня сдаём:" };
+                var given = Intro(body);
+                if (given?.Length > OpenRouterClient.LeadMax) { await Send(response, 400, new { ok = false, error = "Вводная длиннее 700 символов" }); return; }
+                if (body.Field("preview").ValueKind == JsonValueKind.True)
+                {
+                    var intro = given ?? await worker.TryDeadlineIntro(draft, ct);
+                    if (intro is null) { await Send(response, 502, new { ok = false, error = NoAi }); return; }
+                    var old = store.AllDeadlines().FirstOrDefault(x => x.Id == draft.TargetId);
+                    var (card, news) = Deadlines.PostsPreview(config, draft with { Intro = intro, MorningIntro = "Сегодня сдаём:" }, old);
+                    await Send(response, 200, new { ok = true, intro, introSource = Source(given), card = TelegramHtml.Sanitize(card), news = news is null ? null : TelegramHtml.Sanitize(news),
+                        facts = Deadlines.Preview(config, draft), manualEdited = old is not null && ManualEdited(old.Id) });
+                    return;
+                }
+                draft = draft with { Intro = given ?? await worker.DeadlineIntro(draft, ct), MorningIntro = "Сегодня сдаём:" };
                 try
                 {
                     var saved = store.ConfirmDirect(actor, draft, DateTimeOffset.UtcNow);
@@ -385,14 +397,28 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 return;
             }
             case "/api/deadline/regen" when post:
+            case "/api/deadline/intro" when post:
             {
-                var d = store.AllDeadlines().FirstOrDefault(x => x.Id == body.Field("id").GetInt32());
+                var d = store.AllDeadlines().FirstOrDefault(x => x.Id == (body.Field("id").ValueKind == JsonValueKind.Number ? body.Field("id").GetInt32() : 0));
                 if (d is null) { await Send(response, 404, new { ok = false, error = "Нет такого дедлайна" }); return; }
-                var draft = new Draft("", actor, d.Id, d.Version, d.Status == "cancelled" ? "cancel" : "create", d.SubjectId, d.Work, d.Date, d.Period,
-                    d.Start, d.End, d.Room, "", "", "", [], body.Text("note") ?? d.Note);
-                var intro = await worker.DeadlineIntro(draft, ct);
-                store.SetDeadlineIntro(d.Id, intro);
-                await Send(response, 200, new { ok = true, intro });
+                if (body.Field("expectedVersion").ValueKind != JsonValueKind.Number || body.Field("expectedVersion").GetInt32() != d.Version)
+                { await Send(response, 409, new { ok = false, error = "Дедлайн изменился. Обнови страницу и повтори." }); return; }
+                var given = Intro(body);
+                if (given?.Length > OpenRouterClient.LeadMax) { await Send(response, 400, new { ok = false, error = "Вводная длиннее 700 символов" }); return; }
+                var manual = ManualEdited(d.Id);
+                if (path.EndsWith("intro"))
+                {
+                    if (manual && body.Field("force").ValueKind != JsonValueKind.True)
+                    { await Send(response, 409, new { ok = false, code = "manual_edit", error = "Эту карточку правили вручную. Новый текст её перезапишет." }); return; }
+                    if (given is null) { await Send(response, 400, new { ok = false, error = "Нет текста вводной" }); return; }
+                    store.SetDeadlineIntro(d.Id, given, actor, DateTimeOffset.UtcNow);
+                    await Send(response, 200, new { ok = true, note = "Карточка обновится в течение минуты без нового уведомления." });
+                    return;
+                }
+                var intro = given ?? await worker.TryDeadlineIntro(new Draft("", actor, d.Id, d.Version, d.Status == "cancelled" ? "cancel" : "create", d.SubjectId, d.Work, d.Date, d.Period,
+                    d.Start, d.End, d.Room, "", "", "", [], body.Text("note") ?? d.Note), ct);
+                if (intro is null) { await Send(response, 502, new { ok = false, error = NoAi }); return; }
+                await Send(response, 200, new { ok = true, intro, introSource = Source(given), card = TelegramHtml.Sanitize(Deadlines.Card(config, d with { Intro = intro })), version = d.Version, manualEdited = manual });
                 return;
             }
             case "/api/ai-settings" when !post && owner:
@@ -514,6 +540,13 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         }
         await Send(response, 404, new { ok = false, error = "Неизвестный запрос" });
     }
+
+    private const string NoAi = "ИИ не ответил. Можно сохранить со стандартной фразой или написать вводную вручную.";
+    /// <summary>An editor-written lead, if the request carries one (an empty string means the standard phrase).</summary>
+    private static string? Intro(JsonElement body) => body.Field("intro").ValueKind == JsonValueKind.String
+        ? System.Text.RegularExpressions.Regex.Replace(body.Field("intro").GetString()!.Trim(), @"(?:\r?\n){3,}", "\n\n") : null;
+    private static string Source(string? given) => given is null ? "ai" : given.Length == 0 ? "standard" : "manual";
+    private bool ManualEdited(int deadline) => store.Post("deadline:" + deadline) is { } p && store.Get($"manual_msg:{config.GroupId}:{p.MessageId}") is not null;
 
     private async Task Commit(HttpListenerResponse response, long actor, int? expected, string source,
         Func<Registry, (Registry, List<string>)> change, CancellationToken ct)
