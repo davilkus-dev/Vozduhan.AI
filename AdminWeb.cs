@@ -140,7 +140,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, 200, new
                 {
                     ok = true, version = store.RegistryVersion(), registry = owner ? config.R : config.R.Redacted(),
-                    history = store.RegistryHistory(30).Select(h => h with { Summary = string.Join("\n", RegistryOps.ForViewer(h.Summary.Split('\n'), owner)) })
+                    history = store.RegistryHistory(30).Select(h => h with { Summary = string.Join("\n", owner ? h.Summary.Split('\n').ToList() : RegistryOps.ForViewer(RegistryOps.Diff(store.RegistryAt(h.Version - 1) ?? new Registry(), store.RegistryAt(h.Version)!), false)) })
                 });
                 return;
             case "/api/registry" when post:
@@ -207,6 +207,8 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             {
                 var parsed = Json.Read<ParsedDeadline>(body.GetRawText());
                 var draft = Deadlines.Resolve(config, parsed, null, store.AllDeadlines(), actor, "веб-админка", DateTimeOffset.UtcNow);
+                if (parsed.Action != "create" && parsed.ExpectedVersion != draft.ExpectedVersion)
+                { await Send(response, 409, new { ok = false, error = "Дедлайн изменился. Обнови страницу и повтори." }); return; }
                 if (draft.Missing.Length > 0) { await Send(response, 400, new { ok = false, error = string.Join("\n", draft.Missing), preview = Deadlines.Preview(config, draft) }); return; }
                 if (body.Field("dry").ValueKind == JsonValueKind.True) { await Send(response, 200, new { ok = true, preview = Deadlines.Preview(config, draft) }); return; }
                 draft = draft with { Intro = await worker.DeadlineIntro(draft, ct), MorningIntro = "Сегодня сдаём:" };
@@ -332,8 +334,14 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 return;
             }
             case "/api/wakeup/delete" when post:
-                await Send(response, 200, new { ok = store.SetWakeup(body.Field("id").GetInt64(), "deleted") });
+            {
+                var id = body.Field("id").GetInt64();
+                var wakeup = store.Wakeups().FirstOrDefault(w => w.Id == id);
+                if (wakeup is null || (!owner && wakeup.Deadline == 0))
+                { await Send(response, 403, new { ok = false, error = "Нет доступа к этому посту" }); return; }
+                await Send(response, 200, new { ok = store.SetWakeup(id, "deleted") });
                 return;
+            }
             case "/api/wakeup/replan" when post:
             {
                 var d = store.AllDeadlines().FirstOrDefault(x => x.Id == body.Field("deadline").GetInt32() && x.Status == "active");

@@ -452,7 +452,7 @@ public sealed record Draft(string Token, long ActorId, int? TargetId, int Expect
     string? SubjectId, string? Work, string? Date, int? Period, string? Start, string? End, string? Room,
     string Source, string Intro, string MorningIntro, string[] Missing, string? Note = null);
 public sealed record ParsedDeadline(string Action = "create", int? TargetId = null, string? SubjectId = null,
-    string? Work = null, string? Date = null, int? Period = null, string? Question = null, string? Note = null, string? Room = null);
+    string? Work = null, string? Date = null, int? Period = null, string? Question = null, string? Note = null, string? Room = null, int? ExpectedVersion = null);
 public sealed record Inbox(long Id, string Payload, int Attempts, long ActorId);
 public sealed record Delivery(string Key, long ChatId, int TopicId, string Text, long Due, long Expires, int Attempts);
 public sealed record SavedPost(string Key, int MessageId, string Text, bool Pinned);
@@ -467,10 +467,11 @@ public static class Deadlines
     {
         var r = c.R;
         var action = p.Action is "update" or "cancel" ? p.Action : "create";
-        var id = p.TargetId ?? (action != "create" ? previous?.TargetId : null);
+        var id = action == "create" ? null : p.TargetId ?? previous?.TargetId;
+        if (p.TargetId is not null && previous?.TargetId != p.TargetId) previous = null;
         var target = existing.FirstOrDefault(d => d.Id == id);
         var missing = new List<string>();
-        var note = p.Note ?? previous?.Note;
+        var note = p.Note ?? previous?.Note ?? target?.Note;
         if (note?.Length > 400) missing.Add("Сократи публичное примечание до 400 символов.");
         if (action != "create" && target is null) missing.Add("Укажи ID дедлайна из /deadlines.");
         var subjectId = p.SubjectId ?? previous?.SubjectId ?? target?.SubjectId;
@@ -503,8 +504,9 @@ public static class Deadlines
         var period = periodNumber is null ? null : r.PeriodOf(periodNumber.Value);
         if (periodNumber is not null && period is null) missing.Add("Номер пары отсутствует в расписании звонков.");
         var slot = slots.FirstOrDefault(s => s.Period == periodNumber);
-        var room = p.Room ?? (slot is not null ? slot.RoomText : null) ?? (sameSchedule && previous?.Period == periodNumber ? previous?.Room : null)
-            ?? (target is not null && target.Date == date && target.Period == periodNumber ? target.Room : null) ?? subject?.Room;
+        var room = p.Room ?? (sameSchedule && previous?.Period == periodNumber ? previous?.Room : null)
+            ?? (target is not null && target.SubjectId == subjectId && target.Date == date && target.Period == periodNumber ? target.Room : null)
+            ?? (slot is not null ? slot.RoomText : null) ?? subject?.Room;
         if (action == "cancel" && target is not null)
             return new(Guid.NewGuid().ToString("N")[..16], actor, target.Id, target.Version, action, target.SubjectId,
                 target.Work, target.Date, target.Period, target.Start, target.End, target.Room, source, "", "", missing.ToArray(), note);

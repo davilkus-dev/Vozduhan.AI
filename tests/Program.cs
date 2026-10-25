@@ -417,6 +417,7 @@ try
         catch (InvalidDataException) { count++; Console.WriteLine("PASS empty visible model answer is rejected"); }
     }
     count += await NewFeatureTests.Run(temp, f => Config(f));
+    count += await ReviewRegressionTests.Run(f => Config(f));
     Console.WriteLine($"All {count} checks passed. No real Telegram or OpenRouter calls.");
 }
 finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(temp, true); }

@@ -238,6 +238,8 @@ public static class RegistryOps
                     r.Lessons[i] = old with { Until = until };
                     var next = changed with { Id = r.NextLessonId(), From = from };
                     r.Lessons = [.. r.Lessons, next];
+                    r.Changes = r.Changes.Select(c => c.LessonId == old.Id && string.CompareOrdinal(c.Date, from) >= 0
+                        ? c with { LessonId = next.Id } : c).ToArray();
                     return $"🔄 С {from} постоянно: {Schedule.Describe(r, next)} (раньше: {Schedule.Describe(r, old)})";
                 }
                 r.Lessons[i] = changed;

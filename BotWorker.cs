@@ -155,6 +155,9 @@ public sealed partial class BotWorker : BackgroundService
         if (method is not ("sendMessage" or "editMessageText" or "deleteMessage")) return;
         var request = JsonSerializer.SerializeToElement(data, Json.Options);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (method == "editMessageText" && result.ValueKind == JsonValueKind.Object)
+            store.Remember(result.Field("chat").Number("id"), result.TopicId(), (int)result.Number("message_id"), result.Number("date"), result.GetRawText());
+        if (method == "deleteMessage") store.ForgetMessage(request.Number("chat_id"), (int)request.Number("message_id"));
         if (method == "sendMessage" && result.ValueKind == JsonValueKind.Object)
             store.LogMessage(now, result.Field("chat").Number("id"), result.Field("chat").Text("type") ?? "", result.TopicId(),
                 (int)result.Number("message_id"), botId, "out", result.Body(), result.GetRawText());
@@ -260,6 +263,7 @@ public sealed partial class BotWorker : BackgroundService
                 await Undo(m, responseKey, actor, ct); return;
             case "/discard" when editor:
                 store.DiscardRegistryDraft(actor);
+                store.Delete($"planner_question:{actor}");
                 await ManageDeadline(m, responseKey, ct); return;
         }
         if (DeadlineCommands.Contains(command))
@@ -314,7 +318,7 @@ public sealed partial class BotWorker : BackgroundService
                     var left = day.DayNumber - today.DayNumber;
                     var when = left == 0 ? "сегодня" : left == 1 ? "завтра" : $"{Schedule.DayShort[Schedule.Dow(day)].ToLowerInvariant()} {day:dd.MM}";
                     return $"\n\n<b>{H(r.SubjectName(x.SubjectId))}</b> — {H(x.Work)}\n📅 {when}, {x.Period} пара ({x.Start}) · 🚪 <code>{H(x.Room)}</code>" +
-                        (string.IsNullOrWhiteSpace(x.Note) ? "" : $"\n<i>{H(x.Note)}</i>") + $" <i>#{x.Id}</i>";
+                         $" <i>#{x.Id}</i>";
                 }));
             }
             case "/subjects":
@@ -427,16 +431,25 @@ public sealed partial class BotWorker : BackgroundService
 
     private async Task Respond(JsonElement to, string key, string text, CancellationToken ct, object? keyboard = null, bool html = false)
     {
-        JsonElement sent;
-        try { sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), text, ct, keyboard, (int)to.Number("message_id"), html); }
-        catch (TelegramError e) when (html && e.Code == 400 && e.Description.Contains("parse", StringComparison.OrdinalIgnoreCase))
+        var parts = TelegramHtml.Split(html ? text : WebUtility.HtmlEncode(text)).ToArray();
+        int first = 0;
+        for (var i = 0; i < parts.Length; i++)
         {
-            log.LogWarning("Telegram rejected command HTML: {Error}", Failure(e));
-            sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), TelegramHtml.Plain(text), ct, keyboard, (int)to.Number("message_id"));
+            var partKey = key + ":part:" + i;
+            if (store.Post(partKey) is { } done) { if (i == 0) first = done.MessageId; continue; }
+            JsonElement sent;
+            try { sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), parts[i], ct, keyboard, i == 0 ? (int)to.Number("message_id") : null, html: true); }
+            catch (TelegramError e) when (e.Code == 400 && e.Description.Contains("parse", StringComparison.OrdinalIgnoreCase))
+            { sent = await telegram.Send(to.Field("chat").Number("id"), to.TopicId(), TelegramHtml.Plain(parts[i]), ct, keyboard); }
+            var id = (int)sent.Number("message_id");
+            if (i == 0) first = id;
+            store.SavePost(partKey, id, "");
+            store.Remember(sent.Field("chat").Number("id"), sent.TopicId(), id, sent.Number("date"), sent.GetRawText());
         }
-        store.SavePost(key, (int)sent.Number("message_id"), "");
-        store.Remember(sent.Field("chat").Number("id"), sent.TopicId(), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
+        store.SavePost(key, first, "");
+        for (var i = 0; i < parts.Length; i++) store.ForgetPost(key + ":part:" + i);
     }
+
     private async Task NotifyOwner(string text, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;

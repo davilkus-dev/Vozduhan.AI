@@ -39,7 +39,7 @@ public static class Schedule
         var date = d.ToString("yyyy-MM-dd");
         var slots = r.Lessons.Where(l => Applies(r, l, d)).Select(l => FromLesson(r, l, date, "regular", null)).ToList();
         var changes = r.Changes.Where(c => c.Date == date)
-            .OrderBy(c => Array.IndexOf(["dayoff", "cancel", "modify", "add"], c.Type)).ThenBy(c => c.Id);
+            .OrderBy(c => Array.IndexOf(["dayoff", "cancel", "modify", "add"], c.Type)).ThenBy(c => int.TryParse(c.Id?[1..], out var id) ? id : 0).ThenBy(c => c.Id);
         foreach (var c in changes)
         {
             switch (c.Type)

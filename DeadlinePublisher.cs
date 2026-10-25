@@ -44,6 +44,7 @@ public sealed partial class BotWorker
             .OrderBy(d => d.Date).ThenBy(d => d.Start).ThenBy(d => d.Id).Take(config.MaxPins).Select(d => "deadline:" + d.Id).ToHashSet();
         foreach (var p in store.Posts("deadline:"))
         {
+            if (store.Get($"deleted_msg:{config.GroupId}:{p.MessageId}") is not null) continue;
             var want = urgent.Contains(p.Key);
             if (p.Pinned == want) continue;
             try { await telegram.Pin(config.GroupId, p.MessageId, want, ct); store.Pinned(p.Key, want); }
@@ -82,6 +83,7 @@ public sealed partial class BotWorker
     private async Task UpsertPost(string key, int topic, string text, CancellationToken ct, bool recreate = true)
     {
         var p = store.Post(key);
+        if (p is not null && store.Get($"deleted_msg:{config.GroupId}:{p.MessageId}") is not null) return;
         var probeKey = "post_probe:" + key;
         var currentTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (p?.Text == text && long.TryParse(store.Get(probeKey), out var lastProbe) && currentTime - lastProbe < 300) return;
@@ -106,14 +108,5 @@ public sealed partial class BotWorker
         store.Set(probeKey, currentTime.ToString());
         store.Remember(config.GroupId, topic, (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
     }
-    public static IEnumerable<string> SplitPost(string text)
-    {
-        while (text.Length > 3800)
-        {
-            var at = text.LastIndexOf('\n', 3700);
-            if (at < 1000) at = 3700;
-            yield return text[..at]; text = text[at..].TrimStart();
-        }
-        if (text.Length > 0) yield return text;
-    }
+    public static IEnumerable<string> SplitPost(string text) => TelegramHtml.Split(text);
 }

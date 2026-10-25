@@ -220,17 +220,19 @@ const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписани
   ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
 function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
   $("#nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{S.tab=b.dataset.k;render();window.scrollTo(0,0)})}
-function render(){nav();$("#bar").classList.toggle("show",!!dirty());const el=$("#main");el.innerHTML="";VIEWS[S.tab](el)}
+let renderId=0;
+function render(){renderId++;nav();$("#bar").classList.toggle("show",!!dirty());const el=$("#main");el.innerHTML="";VIEWS[S.tab](el)}
 const VIEWS={};
 
 // ---------- week ----------
 VIEWS.week=async el=>{
+  const viewId=renderId;
   el.innerHTML=page("Неделя","Расписание с учётом разовых изменений. Нажми на пару, чтобы отменить или поменять её на конкретный день.",
     `<button class="b ic" id="pw">←</button><input type="date" id="wd" value="${S.weekDate}"><button class="b ic" id="nw">→</button><button class="b" id="tw">Сегодня</button>`)+
     `<div class="stats" id="wst"></div><div class="week" id="wk"></div>${dirty()?'<p class="muted small" style="margin-top:12px">Неделя показана по сохранённой версии — сохрани изменения, чтобы увидеть их здесь.</p>':""}`;
   $("#pw").onclick=()=>{S.weekDate=addDays(S.weekDate,-7);render()};$("#nw").onclick=()=>{S.weekDate=addDays(S.weekDate,7);render()};
   $("#tw").onclick=()=>{S.weekDate=S.me.today;render()};$("#wd").onchange=e=>{S.weekDate=e.target.value;render()};
-  const w=await api("week?date="+S.weekDate);
+  const w=await api("week?date="+S.weekDate);if(viewId!==renderId)return;
   const all=w.days.flatMap(d=>d.slots),live=all.filter(s=>s.status!=="cancelled");
   $("#wst").innerHTML=`<div class="stat"><b>${w.inTerm?w.week+"-я":"—"}</b><span>${w.inTerm?w.parity+" неделя":"вне семестра"}</span></div>
     <div class="stat"><b>${live.length}</b><span>пар на неделе</span></div><div class="stat"><b>${live.filter(s=>s.kind==="lecture").length} / ${live.filter(s=>s.kind!=="lecture").length}</b><span>лекций / практик</span></div>
@@ -311,6 +313,7 @@ const ST={cancelled:'<span class="st cancelled">отменено</span>',planned
 const SRC={ai:"🤖 ИИ",manual:"✋ вручную",post:"📝 пост"};
 const dt=ts=>new Date(ts*1000).toLocaleString("ru-RU",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 VIEWS.plan=async el=>{
+  const viewId=renderId;
   el.innerHTML=page("План бота","Когда бот сам проснётся и что напишет: утро, случайные вбросы, вечерние напоминания, будильники к дедлайнам (их расставляет ИИ, можно править) и подготовленные посты.")/*OWNER*/+
   `<div class="card"><h3>✍️ Написать группе</h3><p class="muted small">Повод или идея — бот напишет в своём стиле. Пусто — что-то по текущему моменту. Можно отправить сразу (в Сводку или в Воздуханство) или запланировать — запланированное уходит в Сводку.</p>
    <textarea id="idea" rows="2" placeholder="сходка в 15:00 у А-13, всех зовём"></textarea>
@@ -318,16 +321,16 @@ VIEWS.plan=async el=>{
    <div id="genout"></div></div>`/*END*/+
   `<div id="pl"><div class="card empty">Загрузка…</div></div>`;
   /*OWNER*/
-  $("#gen").onclick=async()=>{$("#genout").innerHTML='<p class="muted">Пишу…</p>';const r=await api("post-now",{idea:$("#idea").value});
+  $("#gen").onclick=async()=>{$("#genout").innerHTML='<p class="muted">Пишу…</p>';const r=await api("post-now",{idea:$("#idea").value});if(viewId!==renderId)return;
     if(!r.ok){$("#genout").innerHTML=`<p style="color:var(--bad)">${esc(r.error)}</p>`;return}
     $("#genout").innerHTML=`<pre style="margin-top:10px">${esc(r.text)}</pre><div class="row"><button class="b p" id="sendnow">📋 В Сводку</button><button class="b" id="sendchat">💬 В Воздуханство</button><button class="b" id="again">Ещё вариант</button></div>`;
     const go=async target=>{const s2=await api("post-now",{send:true,text:r.text,target});if(s2.ok){toast(target==="chat"?"Отправлено в Воздуханство":"Отправлено в Сводку");$("#genout").innerHTML=""}else info("Ошибка",`<p>${esc(s2.error)}</p>`)};
     $("#sendnow").onclick=()=>go("summary");$("#sendchat").onclick=()=>go("chat");
     $("#again").onclick=()=>$("#gen").click()};
   $("#sched").onclick=async()=>{const at=$("#pat").value,idea=$("#idea").value.trim();if(!at||!idea)return info("Не хватает данных","<p>Нужны идея и время.</p>");
-    const r=await api("wakeup",{deadline:0,at,reason:idea});if(r.ok){toast("Запланировано");render()}else info("Ошибка",`<p>${esc(r.error)}</p>`)};
+    const r=await api("wakeup",{deadline:0,at,reason:idea});if(viewId!==renderId)return;if(r.ok){toast("Запланировано");render()}else info("Ошибка",`<p>${esc(r.error)}</p>`)};
   /*END*/
-  const r=await api("plan");const a=r.ambient;
+  const r=await api("plan");if(viewId!==renderId)return;const a=r.ambient;
   // One planned post: status, warm-up buttons (owner) and the exact preview once it is prepared.
   const item=(label,it)=>`<div class="pi"><div class="row"><span>${label}</span>${ST[it.status]||""}${it.prep?`<span class="chip">${it.prep.source==="manual"?"✍️ вручную":"🔥 прогрет"}</span>`:""}`+
     /*OWNER*/(it.status==="planned"||it.status==="pending"?`<button class="b pb" data-warm="${it.key}" title="Сгенерировать заранее">🔥</button><button class="b pb" data-edit="${it.key}" title="Написать/поправить вручную">✏️</button>${it.prep?`<button class="b pb" data-clear="${it.key}" title="Сбросить текст — сгенерирует в момент отправки">↺</button>`:""}${it.key.startsWith("ambient:")?`<button class="b pb d" data-cancel="${it.key}" title="Отменить это сообщение">🚫</button>`:""}`:"")+
@@ -444,13 +447,14 @@ VIEWS.settings=el=>{
 
 // ---------- deadlines ----------
 VIEWS.deadlines=async el=>{
+  const viewId=renderId;
   el.innerHTML=page("Дедлайны","Сохранённый здесь дедлайн сразу публикуется в теме дедлайнов, как из Telegram. Кабинет и время берутся из расписания.",`<button class="b p" id="addD">＋ Дедлайн</button>`)+`<div id="dl" class="card tw"><div class="empty">Загрузка…</div></div>`;
-  const r=await api("deadlines");
+  const r=await api("deadlines");if(viewId!==renderId)return;
   const row=d=>`<tr class="${d.past||d.status!=="active"?"off":""}"><td class="faint">#${d.id}</td><td><b>${fmtDate(d.date)}</b> <span class="muted">${SD[dow(d.date)]}</span></td><td>${d.period} · ${d.start}</td><td>${esc(d.subject)}</td><td>${esc(d.work)}${d.note?`<div class="faint small">${esc(d.note)}</div>`:""}</td><td>${esc(d.room)}</td>
     <td>${d.status==="active"?(d.past?'<span class="chip">прошёл</span>':'<span class="st added">активен</span>'):'<span class="st cancelled">отменён</span>'}</td>
     <td>${d.status==="active"&&!d.past?`<div class="row" style="flex-wrap:nowrap"><button class="b" data-rg="${d.id}" title="Бот заново напишет живой текст поста">✨ Текст</button><button class="b" data-mv="${d.id}">Перенести</button><button class="b d" data-cn="${d.id}">Отменить</button></div>`:""}</td></tr>`;
   $("#dl").innerHTML=`<table><thead><tr><th>ID</th><th>Дата</th><th>Пара</th><th>Предмет</th><th>Работа</th><th>Кабинет</th><th>Статус</th><th></th></tr></thead><tbody>${r.deadlines.map(row).join("")||'<tr><td colspan="8" class="empty">Пока нет</td></tr>'}</tbody></table>`;
-  const send=async(body,title)=>{const pre=await api("deadline",{...body,dry:true});
+  const send=async(body,title)=>{if(body.targetId)body.expectedVersion=r.deadlines.find(d=>d.id===body.targetId)?.version;const pre=await api("deadline",{...body,dry:true});
     if(!pre.ok)return info("Не хватает данных",`${pre.preview?`<pre>${esc(pre.preview)}</pre>`:""}<p>${esc(pre.error)}</p>`);
     const i=await menu(title,[{t:"Сохранить и опубликовать",cls:"p"}],`<pre>${esc(pre.preview)}</pre>`);if(i!==0)return;
     const s=await api("deadline",body);if(s.ok){toast("Сохранено");render()}else info("Ошибка",`<p>${esc(s.error)}</p>`)};
@@ -465,14 +469,15 @@ VIEWS.deadlines=async el=>{
 
 // ---------- log ----------
 VIEWS.log=async el=>{
+  const viewId=renderId;
   el.innerHTML=page("Журнал сообщений","Всё, что бот получил и отправил: личка, Воздуханство, темы. Нажми на сообщение — увидишь исходный JSON"+(/*OWNER*/OWNER()?" и запросы к ИИ.":/*END*/"."))+
   `<div class="log"><div class="card chats" id="cl"><div class="empty">Загрузка…</div></div><div class="card"><div class="row" style="margin-bottom:10px;flex-wrap:nowrap"><input id="lq" placeholder="Поиск по тексту${S.chat?" в этом чате":" по всем чатам"}" style="flex:1"><button class="b" id="lgo">Найти</button></div><div class="msgs" id="ml"><div class="empty">Выбери чат слева или ищи по всем</div></div><button class="b" id="more" style="margin-top:8px;display:none">Показать раньше</button></div></div>`;
-  const r=await api("chats");
+  const r=await api("chats");if(viewId!==renderId)return;
   $("#cl").innerHTML=r.chats.map((c,i)=>`<div class="c ${S.chat&&S.chat.chat===c.chat&&S.chat.topic===c.topic?"on":""}" data-i="${i}"><div>${esc(c.title)}</div><div class="faint small">${c.count} сообщ. · ${time(c.last)}</div></div>`).join("")||'<div class="empty">Пусто</div>';
-  let before=null,rows=[];
-  const show=async reset=>{if(reset){before=null;rows=[]}
+  let before=null,rows=[];let requestId=0;
+  const show=async reset=>{const current=++requestId;if(reset){before=null;rows=[]}
     const q=$("#lq").value.trim();const p=new URLSearchParams();if(S.chat){p.set("chat",S.chat.chat);p.set("topic",S.chat.topic)}if(q)p.set("q",q);if(before)p.set("before",before);
-    const res=await api("log?"+p);rows=rows.concat(res.rows||[]);if(res.rows?.length)before=res.rows[res.rows.length-1].id;
+    const res=await api("log?"+p);if(current!==requestId||!el.isConnected)return;rows=rows.concat(res.rows||[]);if(res.rows?.length)before=res.rows[res.rows.length-1].id;
     $("#more").style.display=(res.rows||[]).length>=150?"":"none";
     $("#ml").innerHTML=rows.slice().reverse().map(m=>`<div class="m ${m.direction}" data-id="${m.id}" data-chat="${m.chat}" data-msg="${m.message}"><div class="h">${["in","edit","callback"].includes(m.direction)?esc(m.name||"")+(m.username?" @"+esc(m.username):"")+" · "+m.sender:"бот"} · ${time(m.time)}${m.direction==="edit"?" · правка":""}${m.direction==="out-edit"?" · правка поста":""}${!S.chat?" · чат "+esc(String(m.chat)):""}</div>${esc(m.text)}</div>`).join("")||'<div class="empty">Нет сообщений</div>';
     if(reset)$("#ml").scrollTop=$("#ml").scrollHeight;
@@ -495,12 +500,13 @@ VIEWS.log=async el=>{
   $("#cl").querySelectorAll("[data-i]").forEach(x=>x.onclick=()=>{S.chat=r.chats[+x.dataset.i];$("#cl").querySelectorAll(".c").forEach(y=>y.classList.toggle("on",y===x));show(true)});
   $("#lgo").onclick=()=>show(true);$("#lq").onkeydown=e=>{if(e.key==="Enter")show(true)};$("#more").onclick=()=>show(false);
   if(S.chat)show(true)};
-/*OWNER*/async function showAi(id){const r=await api("ai?id="+id);const a=r.rows?.[0];if(!a)return;
+/*OWNER*/async function showAi(id){const viewId=renderId;const r=await api("ai?id="+id);if(viewId!==renderId)return;const a=r.rows?.[0];if(!a)return;
   let req=a.request;try{req=JSON.stringify(JSON.parse(a.request),null,2)}catch{}
   info(`ИИ · ${a.kind} · ${a.ms} мс`,`<p class="faint small">${esc(a.model)} · ${time(a.time)} · ${esc(a.tag)}</p>${a.error?`<p style="color:var(--bad)">${esc(a.error)}</p>`:""}<h3>Ответ</h3><pre>${esc(a.response)}</pre><h3>Данные запроса</h3><pre>${esc(req)}</pre><h3>Системный промпт</h3><pre>${esc(a.system)}</pre>`)}
 const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"]];
 const SUGGEST=["google/gemini-3.8-flash","deepseek/deepseek-v4.1-flash","z-ai/glm-5.3","z-ai/glm-5.3-flash"];
-VIEWS.ai=async el=>{el.innerHTML=page("Нейронки и запросы","Какая модель что делает — и промпт, данные и ответ каждого запроса, чтобы ловить баги. Логи хранятся aiLogDays дней.")+
+VIEWS.ai=async el=>{
+  const viewId=renderId;el.innerHTML=page("Нейронки и запросы","Какая модель что делает — и промпт, данные и ответ каждого запроса, чтобы ловить баги. Логи хранятся aiLogDays дней.")+
   `<div class="card" id="aiset"><div class="empty">Загрузка…</div></div><div class="card tw" id="al"><div class="empty">Загрузка…</div></div>`;
   const st=await api("ai-settings");const c=st.current;
   const eff=(k,v)=>`<select id="ef_${k}" style="width:110px;flex:0 0 110px" title="уровень мышления">${["minimal","low","medium","high"].map(x=>`<option ${x===v?"selected":""}>${x}</option>`).join("")}</select>`;
@@ -515,14 +521,15 @@ VIEWS.ai=async el=>{el.innerHTML=page("Нейронки и запросы","Ка
     for(const [k] of KINDS){const v=$("#m_"+k).value.trim();if(v)settings.modelRouting[k]=v;settings.reasoningEffort[k]=$("#ef_"+k).value}
     const x=await api("ai-settings",{settings});if(x.ok){toast("Модели сохранены");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)};
   $("#m_reset").onclick=async()=>{await api("ai-settings",{reset:true});toast("Вернул модели из конфига");render()};
-  const r=await api("ai?limit=100");
+  const r=await api("ai?limit=100");if(viewId!==renderId)return;
   $("#al").innerHTML=`<table><thead><tr><th>Когда</th><th>Тип</th><th>Сообщение</th><th>Время</th><th>Ответ</th></tr></thead><tbody>${(r.rows||[]).map(a=>`<tr data-id="${a.id}" style="cursor:pointer"><td>${time(a.time)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small faint">${esc(a.tag)}</td><td>${a.ms} мс</td><td class="small">${a.error?`<span style="color:var(--bad)">${esc(a.error)}</span>`:esc(a.response)}</td></tr>`).join("")||'<tr><td colspan="5" class="empty">Пока нет</td></tr>'}</tbody></table>`;
   $("#al").querySelectorAll("tr[data-id]").forEach(x=>x.onclick=()=>showAi(+x.dataset.id))};
 
 /*END*/
 // ---------- seen users ----------
-VIEWS.seen=async el=>{el.innerHTML=page("Люди в Telegram","Все, кто писал боту или в группу. Если человек есть в списке без Telegram ID — привяжи, и бот начнёт ему отвечать.")+`<div class="card tw" id="su"><div class="empty">Загрузка…</div></div>`;
-  const r=await api("seen");
+VIEWS.seen=async el=>{
+  const viewId=renderId;el.innerHTML=page("Люди в Telegram","Все, кто писал боту или в группу. Если человек есть в списке без Telegram ID — привяжи, и бот начнёт ему отвечать.")+`<div class="card tw" id="su"><div class="empty">Загрузка…</div></div>`;
+  const r=await api("seen");if(viewId!==renderId)return;
   $("#su").innerHTML=`<table><thead><tr><th>Telegram ID</th><th>Имя</th><th>Username</th><th>Последний раз</th><th>Сообщ.</th><th>В списке</th><th></th></tr></thead><tbody>${r.users.map(u=>`<tr><td class="faint">${u.id}</td><td>${esc(u.name)}</td><td>${u.username?"@"+esc(u.username):""}</td><td>${time(u.lastSeen)}</td><td>${u.count}</td><td>${u.member?esc(u.member):'<span class="faint">—</span>'}</td><td>${u.member?"":`<button class="b" data-b="${u.id}" data-u="${esc(u.username)}">Привязать</button>`}</td></tr>`).join("")||'<tr><td colspan="7" class="empty">Пока никого</td></tr>'}</tbody></table>`;
   $("#su").querySelectorAll("[data-b]").forEach(b=>b.onclick=async()=>{const free=S.draft.members.map((m,i)=>({m,i})).filter(x=>x.m.userId==null);
     if(!free.length)return info("Некого привязывать","<p>У всех записей уже есть Telegram ID. Добавь человека во вкладке «Группа».</p>");
@@ -530,11 +537,11 @@ VIEWS.seen=async el=>{el.innerHTML=page("Люди в Telegram","Все, кто �
     if(!v)return;const m=S.draft.members[+v.i];m.userId=+b.dataset.b;if(!m.username&&b.dataset.u)m.username=b.dataset.u;touch();toast("Привязано — не забудь сохранить")})};
 
 // ---------- history ----------
-VIEWS.history=el=>{el.innerHTML=page("История реестра","Каждое сохранение — новая версия. Откат тоже создаёт версию, так что ничего не теряется.")+`<div class="card tw"><table><thead><tr><th>Версия</th><th>Когда</th><th>Кто</th><th>Откуда</th><th>Что изменилось</th><th></th></tr></thead><tbody>${S.history.map(h=>{
+VIEWS.history=el=>{const viewId=renderId;el.innerHTML=page("История реестра","Каждое сохранение — новая версия. Откат тоже создаёт версию, так что ничего не теряется.")+`<div class="card tw"><table><thead><tr><th>Версия</th><th>Когда</th><th>Кто</th><th>Откуда</th><th>Что изменилось</th><th></th></tr></thead><tbody>${S.history.map(h=>{
   const who=h.actor===0?"конфиг":S.draft.members.find(m=>m.userId===h.actor)?.shortName||h.actor;const lines=h.summary.split("\n").filter(Boolean);
   return `<tr><td><b>${h.version}</b></td><td>${time(h.time)}</td><td>${esc(who)}</td><td class="small muted">${esc(h.source)}</td><td class="small" style="white-space:pre-line">${esc(lines.slice(0,6).join("\n"))||'<span class="faint">—</span>'}${lines.length>6?"\n…":""}</td><td>${h.version!==S.version?`<button class="b" data-r="${h.version}">Откатить</button>`:'<span class="chip">текущая</span>'}</td></tr>`}).join("")}</tbody></table></div>`;
   el.querySelectorAll("[data-r]").forEach(b=>b.onclick=async()=>{const i=await menu("Откат к версии "+b.dataset.r,[{t:"Откатить",cls:"p"}],'<p class="muted">Создаст новую версию с содержимым выбранной. Можно откатиться обратно.</p>');
-    if(i!==0)return;const r=await api("restore",{version:+b.dataset.r});if(r.ok){toast("Откат выполнен");load()}else info("Не получилось",`<p>${esc(r.error)}</p>`)})};
+    if(i!==0)return;const r=await api("restore",{version:+b.dataset.r});if(viewId!==renderId)return;if(r.ok){toast("Откат выполнен");load()}else info("Не получилось",`<p>${esc(r.error)}</p>`)})};
 
 load().catch(e=>{if(e.message!=="401")$("#main").innerHTML=`<div class="card">Ошибка загрузки: ${esc(e.message)}</div>`});
 </script>

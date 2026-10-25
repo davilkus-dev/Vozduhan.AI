@@ -171,6 +171,31 @@ public static partial class TelegramHtml
         return sb.ToString();
     }
 
+    public static IEnumerable<string> Split(string html)
+    {
+        html = Sanitize(html);
+        var stack = new List<(string Name, string Open)>();
+        var sb = new StringBuilder();
+        string Close() => string.Concat(stack.AsEnumerable().Reverse().Select(t => "</" + t.Name + ">"));
+        foreach (Match token in Regex.Matches(html, @"<[^>]+>|&[^;\s]+;|[\uD800-\uDBFF][\uDC00-\uDFFF]|[\s\S]"))
+        {
+            var value = token.Value;
+            if (sb.Length + value.Length + Close().Length > 3800 && sb.Length > 0)
+            {
+                yield return sb + Close();
+                sb.Clear();
+                foreach (var t in stack) sb.Append(t.Open);
+            }
+            sb.Append(value);
+            if (!value.StartsWith('<')) continue;
+            var tag = Tag().Match(value);
+            if (!tag.Success) continue;
+            if (tag.Groups[1].Value == "/") { if (stack.Count > 0) stack.RemoveAt(stack.Count - 1); }
+            else stack.Add((tag.Groups[2].Value, value));
+        }
+        if (sb.Length > 0) yield return sb + Close();
+    }
+
     /// <summary>Plain-text fallback when Telegram still rejects the markup.</summary>
     public static string Plain(string html) => WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", ""));
 }

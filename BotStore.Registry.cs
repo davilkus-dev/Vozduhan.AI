@@ -126,7 +126,7 @@ public sealed partial class BotStore
             else
             {
                 var ops = draft.Operations.Select(o => JsonDocument.Parse(o).RootElement.Clone()).ToArray();
-                result = CommitRegistry(actor, "telegram", null, current => RegistryOps.ApplyAll(current, ops, Config.OwnerId, actor == Config.OwnerId));
+                result = CommitRegistry(actor, "telegram", draft.BaseVersion, current => RegistryOps.ApplyAll(current, ops, Config.OwnerId, actor == Config.OwnerId));
             }
             DiscardRegistryDraft(actor, token);
             return result;

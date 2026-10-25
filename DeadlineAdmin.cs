@@ -10,7 +10,9 @@ public sealed partial class BotWorker
     {
         if (string.IsNullOrWhiteSpace(text)) { await ChatGuarded(m, key, true, actor, ct); return; }
         PlanResult plan;
-        try { plan = await ai.Plan(text, conversation.PlannerState(actor, store.Draft(actor), store.RegistryDraft(actor)), Tag(m), ct); }
+        var pending = store.Get($"planner_question:{actor}");
+        var request = pending is null ? text : pending + "\nУточнение: " + text;
+        try { plan = await ai.Plan(request, conversation.PlannerState(actor, store.Draft(actor), store.RegistryDraft(actor)), Tag(m), ct); }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
             log.LogWarning("Planner failed: {Error}", Failure(e));
@@ -18,6 +20,9 @@ public sealed partial class BotWorker
                 "/deadline, /move, /cancel, /today или веб-админку (/web) — они работают без нейронки.", ct);
             return;
         }
+        if (plan.Intent == "registry" && plan.Operations.Length == 0 && plan.Question is not null)
+            store.Set($"planner_question:{actor}", Conversation.Limit(request, 4000));
+        else store.Delete($"planner_question:{actor}");
         switch (plan.Intent)
         {
             case "deadline":

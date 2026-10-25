@@ -63,6 +63,7 @@ public sealed partial class BotStore : IDisposable
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");
+            Exec("UPDATE wakeups SET status='pending' WHERE status='sending'");
             Exec("UPDATE inbox SET priority=2 WHERE state=0 AND json_valid(payload) AND json_type(payload,'$.callback_query')='object'");
         }
         var binding = $"{config.GroupId}:{config.ChatTopicId}:{config.DeadlinesTopicId}";
@@ -178,6 +179,10 @@ public sealed partial class BotStore : IDisposable
             return true;
         }
     }
+    public void ForgetMessage(long chat, int id)
+    {
+        lock (gate) Exec("DELETE FROM messages WHERE chat=$c AND id=$id", ("c", chat), ("id", id));
+    }
     public string? Message(long chat, int id)
     {
         lock (gate) return Scalar("SELECT payload FROM messages WHERE chat=$c AND id=$id", ("c", chat), ("id", id)) as string;
@@ -225,7 +230,7 @@ public sealed partial class BotStore : IDisposable
             var draft = direct ?? Draft(actor, token!) ?? throw new InvalidOperationException("Карточка уже обработана, заменена или устарела.");
             if (draft.Missing.Length != 0) throw new InvalidOperationException("Сначала уточни недостающие поля.");
             var all = AllDeadlines();
-            var old = all.FirstOrDefault(d => d.Id == draft.TargetId);
+            var old = draft.Action == "create" ? null : all.FirstOrDefault(d => d.Id == draft.TargetId);
             if (draft.Action != "create" && (old is null || old.Version != draft.ExpectedVersion))
                 throw new InvalidOperationException("Этот дедлайн уже изменился. Открой его заново через /edit.");
             if (draft.Action != "cancel" && Config.Utc(DateOnly.Parse(draft.Date!).ToDateTime(TimeOnly.Parse(draft.End!))) <= now)

@@ -569,7 +569,7 @@ static class NewFeatureTests
                 Assert(again.StatusCode == HttpStatusCode.Unauthorized && (await again.Content.ReadAsStringAsync()).Contains("уже использована"), "Used link not explained");
                 // Owner secrets exist before the head opens the admin.
                 s.CommitRegistry(1, "test", null, cur => RegistryOps.ApplyAll(cur, [Op(new { op = "subject_upsert", id = "java", adminComment = "СЕКРЕТ-КОММЕНТ", addAliases = new[] { "СЕКРЕТ-СЛЕНГ" } }),
-                    Op(new { op = "member_update", member = new { userId = 3 }, adminNote = "СЕКРЕТ-ЗАМЕТКА" }), Op(new { op = "knowledge_set", text = "СЕКРЕТ-ЗНАНИЯ" })], c.OwnerId, true));
+                    Op(new { op = "member_update", member = new { userId = 3 }, adminNote = "СЕКРЕТ-ЗАМЕТКА\nСЕКРЕТ-ВТОРАЯ-СТРОКА" }), Op(new { op = "knowledge_set", text = "СЕКРЕТ-ЗНАНИЯ" })], c.OwnerId, true));
                 var rawState = await browser.GetStringAsync("api/registry");
                 Assert(!rawState.Contains("СЕКРЕТ"), "Owner-only data visible to the head");
                 Assert((await browser.GetAsync("api/ai")).StatusCode == HttpStatusCode.Forbidden, "AI log with system prompt visible to the head");
@@ -585,7 +585,7 @@ static class NewFeatureTests
                 var save = await browser.PostAsync("api/registry", new StringContent(Json.Write(new { baseVersion = version, registry }), Encoding.UTF8, "application/json"));
                 Assert(save.IsSuccessStatusCode && c.R.Lessons.Single(l => l.SubjectId == "java").Room == "Г-999", "Web save failed");
                 Assert(c.R.Subject("java")!.AdminComment == "СЕКРЕТ-КОММЕНТ" && c.R.Subject("java")!.Aliases!.Contains("СЕКРЕТ-СЛЕНГ") &&
-                    c.R.Members.Single(m => m.UserId == 3).AdminNote == "СЕКРЕТ-ЗАМЕТКА" && c.R.Knowledge == "СЕКРЕТ-ЗНАНИЯ", "Head save wiped owner secrets");
+                    c.R.Members.Single(m => m.UserId == 3).AdminNote == "СЕКРЕТ-ЗАМЕТКА\nСЕКРЕТ-ВТОРАЯ-СТРОКА" && c.R.Knowledge == "СЕКРЕТ-ЗНАНИЯ", "Head save wiped owner secrets");
                 Assert(!(await browser.GetStringAsync("api/export")).Contains("СЕКРЕТ"), "Export leaks secrets to the head");
                 var stale = await browser.PostAsync("api/registry", new StringContent(Json.Write(new { baseVersion = version, registry }), Encoding.UTF8, "application/json"));
                 Assert(stale.StatusCode == HttpStatusCode.Conflict, "Stale web save accepted");
@@ -597,6 +597,14 @@ static class NewFeatureTests
                 Assert(chats.Field("chats").GetArrayLength() > 0, "Chat list empty");
                 var dl = await browser.PostAsync("api/deadline", new StringContent(Json.Write(new { action = "create", subjectId = "siaod", work = "Практика №3", date = "2026-12-07" }), Encoding.UTF8, "application/json"));
                 Assert(dl.IsSuccessStatusCode && s.AllDeadlines().Any(d => d.Work == "Практика №3" && d.Room == "А412"), "Web deadline failed");
+                var savedDeadline = s.AllDeadlines().Single(d => d.Work == "Практика №3");
+                var changed = Deadlines.Resolve(c, new("update", savedDeadline.Id, Work: "Практика №4"), null, s.AllDeadlines(), 1, "test", DateTimeOffset.UtcNow);
+                s.ConfirmDirect(1, changed, DateTimeOffset.UtcNow);
+                var conflict = await browser.PostAsync("api/deadline", new StringContent(Json.Write(new { action = "cancel", targetId = savedDeadline.Id, expectedVersion = savedDeadline.Version }), Encoding.UTF8, "application/json"));
+                Assert(conflict.StatusCode == HttpStatusCode.Conflict, "Stale web deadline confirmation accepted");
+                var ownerPost = s.AddWakeup(0, DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(), "private", "post", 1);
+                var denied = await browser.PostAsync("api/wakeup/delete", new StringContent(Json.Write(new { id = ownerPost }), Encoding.UTF8, "application/json"));
+                Assert(denied.StatusCode == HttpStatusCode.Forbidden && s.Wakeups().Single(w => w.Id == ownerPost).Status == "pending", "Head deleted an owner post");
                 Assert((await browser.GetStringAsync("")).Contains("<"), "Admin page not served");
                 count++; Console.WriteLine("PASS web admin: VPN allowlist, one-time login, CSRF header, dry run, save, conflict, week, deadlines");
             }
