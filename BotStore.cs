@@ -2,6 +2,9 @@ using Microsoft.Data.Sqlite;
 
 namespace Vozduhan.AI;
 
+/// <summary>A change of the developer's note; null text clears it.</summary>
+public sealed record DevNoteUpdate(string? Text);
+
 public sealed partial class BotStore : IDisposable
 {
     private readonly SqliteConnection db;
@@ -63,6 +66,7 @@ public sealed partial class BotStore : IDisposable
         AddColumn("wakeups", "attempts", "INTEGER NOT NULL DEFAULT 0");
         AddColumn("wakeups", "note", "TEXT NULL");
         AddColumn("wakeups", "next_try", "INTEGER NOT NULL DEFAULT 0");
+        AddColumn("deadlines", "dev_note", "TEXT NULL");
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");
@@ -198,7 +202,43 @@ public sealed partial class BotStore : IDisposable
     {
         lock (gate) return Query("SELECT payload FROM deadlines ORDER BY date,id", r => Json.Read<Deadline>(r.GetString(0)));
     }
-    /// <summary>Replaces only the model-written lead of a deadline; the publisher then edits the card in place.</summary>
+    // ---------- Developer's private note: kept outside Deadline/Draft so no serialized record can carry it ----------
+
+    public string? DevNote(int id)
+    {
+        lock (gate) return Scalar("SELECT dev_note FROM deadlines WHERE id=$id", ("id", id)) as string;
+    }
+    public Dictionary<int, string> DevNotes()
+    {
+        lock (gate) return Query("SELECT id,dev_note FROM deadlines WHERE dev_note IS NOT NULL", r => (r.GetInt32(0), r.GetString(1))).ToDictionary(x => x.Item1, x => x.Item2);
+    }
+    public void SetDevNote(int id, string? text, long actor, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            var note = CheckDevNote(text, actor);
+            if (!AllDeadlines().Any(d => d.Id == id)) throw new InvalidOperationException("Нет такого дедлайна.");
+            using var tx = db.BeginTransaction();
+            WriteDevNote(id, note, actor, now);
+            tx.Commit();
+        }
+    }
+    public const int DevNoteMax = 600;
+    private string? CheckDevNote(string? text, long actor)
+    {
+        if (actor != Config.OwnerId) throw new InvalidOperationException("Заметку разработчика может менять только разработчик.");
+        var note = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        if (note?.Length > DevNoteMax) throw new InvalidOperationException($"Заметка разработчика длиннее {DevNoteMax} символов.");
+        return note;
+    }
+    private void WriteDevNote(int id, string? note, long actor, DateTimeOffset now)
+    {
+        var before = Scalar("SELECT dev_note FROM deadlines WHERE id=$id", ("id", id)) as string;
+        Exec("UPDATE deadlines SET dev_note=$n WHERE id=$id", ("n", note), ("id", id));
+        Exec("INSERT INTO audit(time,actor,action,payload) VALUES($t,$a,'devnote',$p)", ("t", now.ToUnixTimeSeconds()), ("a", actor),
+            ("p", Json.Write(new { deadline = id, before, after = note })));
+    }
+
     /// <summary>Replaces the published lead without a new version (wake-ups stay); the change is audited.</summary>
     public void SetDeadlineIntro(int id, string intro, long actor, DateTimeOffset now)
     {
@@ -232,12 +272,13 @@ public sealed partial class BotStore : IDisposable
     }
     public Deadline Confirm(long actor, string token, DateTimeOffset now) => Commit(actor, null, token, now);
     /// <summary>Saves a fully resolved draft without the per-editor draft slot (web admin).</summary>
-    public Deadline ConfirmDirect(long actor, Draft draft, DateTimeOffset now) => Commit(actor, draft, null, now);
-    private Deadline Commit(long actor, Draft? direct, string? token, DateTimeOffset now)
+    public Deadline ConfirmDirect(long actor, Draft draft, DateTimeOffset now, DevNoteUpdate? devNote = null) => Commit(actor, draft, null, now, devNote);
+    private Deadline Commit(long actor, Draft? direct, string? token, DateTimeOffset now, DevNoteUpdate? devNote = null)
     {
         lock (gate)
         {
             if (!Config.CanEdit(actor)) throw new InvalidOperationException("Редактировать могут только разработчик и староста.");
+            var note = devNote is null ? null : CheckDevNote(devNote.Text, actor);
             using var tx = db.BeginTransaction();
             var draft = direct ?? Draft(actor, token!) ?? throw new InvalidOperationException("Карточка уже обработана, заменена или устарела.");
             if (draft.Missing.Length != 0) throw new InvalidOperationException("Сначала уточни недостающие поля.");
@@ -263,6 +304,7 @@ public sealed partial class BotStore : IDisposable
                 ("date", d.Date), ("s", d.Status), ("p", Json.Write(d)), ("id", d.Id));
             Exec("INSERT INTO audit(time,actor,action,payload) VALUES($t,$a,$op,$p)", ("t", now.ToUnixTimeSeconds()),
                 ("a", actor), ("op", draft.Action), ("p", Json.Write(new { before = old, after = d })));
+            if (devNote is not null) WriteDevNote(d.Id, note, actor, now);
             if (old is not null)
             {
                 Exec("UPDATE deliveries SET state=2 WHERE key LIKE $key AND state=0", ("key", $"change:{id}:%"));

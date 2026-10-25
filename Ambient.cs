@@ -255,23 +255,25 @@ public sealed partial class BotWorker
     {
         var left = config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start))) - at;
         var timeLeft = left.TotalHours < 1 ? $"{Math.Max(0, (int)left.TotalMinutes)} мин" : left.TotalHours < 48 ? $"{(int)left.TotalHours} ч" : $"{(int)left.TotalDays} дн";
-        return new { for_time = config.LocalNow(at).ToString("yyyy-MM-dd HH:mm"), wakeup = new { deadline = conversation.DeadlineView(d), reason = w.Reason, time_left = timeLeft } };
+        return new { for_time = config.LocalNow(at).ToString("yyyy-MM-dd HH:mm"), wakeup = new { deadline = conversation.DeadlineView(d), dev_note = store.DevNote(d.Id), reason = w.Reason, time_left = timeLeft } };
     }
 
     /// <summary>
     /// The lively lead of a deadline post (create / update / cancel), written in the bot's voice with full context.
     /// The editor's note is backstage context for the model, never printed by itself.
     /// </summary>
-    internal async Task<string> DeadlineIntro(Draft d, CancellationToken ct) =>
-        OpenRouterClient.Join(await TryDeadlineIntro(d, ct) ?? (d.Action switch
+    internal async Task<string> DeadlineIntro(Draft d, CancellationToken ct, DevNoteUpdate? devNote = null) =>
+        OpenRouterClient.Join(await TryDeadlineIntro(d, ct, devNote) ?? (d.Action switch
         {
             "cancel" => "Отбой, эту сдачу отменили.",
             "update" => "Гайс, по сдаче новости.",
             _ => "Гайс, держим в голове."
         }));
     /// <summary>The lead written by the model, checked strictly; null when the model failed, stayed silent or the text was rejected.</summary>
-    internal async Task<string?> TryDeadlineIntro(Draft d, CancellationToken ct)
+    /// <summary>devNote: an unsaved developer's note to use; null takes the saved one of the target deadline.</summary>
+    internal async Task<string?> TryDeadlineIntro(Draft d, CancellationToken ct, DevNoteUpdate? devNote = null)
     {
+        var dev = devNote is not null ? (string.IsNullOrWhiteSpace(devNote.Text) ? null : devNote.Text.Trim()) : d.TargetId is int target ? store.DevNote(target) : null;
         var old = store.AllDeadlines().FirstOrDefault(x => x.Id == d.TargetId);
         var start = d.Date is null || d.Start is null ? (DateTimeOffset?)null : config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start)));
         var left = start - DateTimeOffset.UtcNow;
@@ -285,7 +287,7 @@ public sealed partial class BotWorker
                 action = d.Action, subject = config.R.SubjectName(d.SubjectId), work = d.Work, date = d.Date,
                 weekday = d.Date is null ? null : Schedule.DayNames[Schedule.Dow(DateOnly.Parse(d.Date))], period = d.Period, start = d.Start, room = d.Room,
                 time_left = left is null ? null : left.Value.TotalHours < 48 ? $"{Math.Max(0, (int)left.Value.TotalHours)} ч" : $"{(int)left.Value.TotalDays} дн",
-                backstage_note = d.Note,
+                backstage_note = d.Note, dev_note = dev,
                 previous = old is null ? null : new { old.Date, old.Period, old.Start, old.Room, old.Work }
             }
         }, ct, strict: true);

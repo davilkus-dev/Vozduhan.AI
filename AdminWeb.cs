@@ -209,18 +209,30 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 return;
             }
             case "/api/deadlines" when !post:
+            {
+                // The developer's note exists only in the owner's answer: the head gets no field at all.
+                var notes = owner ? store.DevNotes() : [];
                 await Send(response, 200, new
                 {
                     ok = true,
-                    deadlines = store.AllDeadlines().OrderByDescending(x => x.Date).Select(x => new
+                    deadlines = store.AllDeadlines().OrderByDescending(x => x.Date).Select(x =>
                     {
-                        x.Id, x.Version, x.SubjectId, subject = config.R.SubjectName(x.SubjectId), x.Work, x.Date, x.Period, x.Start, x.End, x.Room, x.Status, x.Note,
-                        past = Deadlines.Ends(config, x) < DateTimeOffset.UtcNow
+                        var view = new
+                        {
+                            x.Id, x.Version, x.SubjectId, subject = config.R.SubjectName(x.SubjectId), x.Work, x.Date, x.Period, x.Start, x.End, x.Room, x.Status, x.Note,
+                            past = Deadlines.Ends(config, x) < DateTimeOffset.UtcNow
+                        };
+                        return owner ? (object)new { view.Id, view.Version, view.SubjectId, view.subject, view.Work, view.Date, view.Period, view.Start, view.End, view.Room,
+                            view.Status, view.Note, view.past, devNote = notes.GetValueOrDefault(x.Id) } : view;
                     })
                 });
                 return;
+            }
             case "/api/deadline" when post:
             {
+                if (body.Field("devNote").ValueKind != JsonValueKind.Undefined && !owner) { await Send(response, 403, new { ok = false, error = "Заметка разработчика недоступна" }); return; }
+                DevNoteUpdate? devNote = body.Field("devNote").ValueKind == JsonValueKind.Undefined ? null : new(body.Text("devNote"));
+                if (devNote?.Text?.Trim().Length > BotStore.DevNoteMax) { await Send(response, 400, new { ok = false, error = $"Заметка разработчика длиннее {BotStore.DevNoteMax} символов." }); return; }
                 var parsed = Json.Read<ParsedDeadline>(body.GetRawText());
                 var draft = Deadlines.Resolve(config, parsed, null, store.AllDeadlines(), actor, "веб-админка", DateTimeOffset.UtcNow);
                 if (parsed.Action != "create" && parsed.ExpectedVersion != draft.ExpectedVersion)
@@ -231,7 +243,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 if (given?.Length > OpenRouterClient.LeadMax) { await Send(response, 400, new { ok = false, error = "Вводная длиннее 700 символов" }); return; }
                 if (body.Field("preview").ValueKind == JsonValueKind.True)
                 {
-                    var intro = given ?? await worker.TryDeadlineIntro(draft, ct);
+                    var intro = given ?? await worker.TryDeadlineIntro(draft, ct, devNote);
                     if (intro is null) { await Send(response, 502, new { ok = false, error = NoAi }); return; }
                     var old = store.AllDeadlines().FirstOrDefault(x => x.Id == draft.TargetId);
                     var (card, news) = Deadlines.PostsPreview(config, draft with { Intro = intro, MorningIntro = "Сегодня сдаём:" }, old);
@@ -239,10 +251,10 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                         facts = Deadlines.Preview(config, draft), manualEdited = old is not null && ManualEdited(old.Id) });
                     return;
                 }
-                draft = draft with { Intro = given ?? await worker.DeadlineIntro(draft, ct), MorningIntro = "Сегодня сдаём:" };
+                draft = draft with { Intro = given ?? await worker.DeadlineIntro(draft, ct, devNote), MorningIntro = "Сегодня сдаём:" };
                 try
                 {
-                    var saved = store.ConfirmDirect(actor, draft, DateTimeOffset.UtcNow);
+                    var saved = store.ConfirmDirect(actor, draft, DateTimeOffset.UtcNow, devNote);
                     await Send(response, 200, new { ok = true, preview = Deadlines.Facts(config, saved) });
                 }
                 catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); }
@@ -394,6 +406,16 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 try { generated = await worker.GenerateAmbient("manual", new { idea = body.Text("idea"), requested_at = config.LocalNow(DateTimeOffset.UtcNow).ToString("HH:mm") }, ct, strict: true); }
                 catch (AiTextRejectedException e) { await Send(response, 400, new { ok = false, error = BotWorker.Rejected(e) + " Нажми ещё раз" }); return; }
                 await Send(response, generated is null ? 502 : 200, new { ok = generated is not null, text = generated, error = generated is null ? "Нейронка не ответила" : null });
+                return;
+            }
+            case "/api/deadline/devnote" when post:
+            {
+                if (!owner) { await Send(response, 403, new { ok = false, error = "Заметка разработчика недоступна" }); return; }
+                var id = body.Field("id").ValueKind == JsonValueKind.Number ? body.Field("id").GetInt32() : 0;
+                if (!store.AllDeadlines().Any(x => x.Id == id)) { await Send(response, 404, new { ok = false, error = "Нет такого дедлайна" }); return; }
+                try { store.SetDevNote(id, body.Text("text"), actor, DateTimeOffset.UtcNow); }
+                catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); return; }
+                await Send(response, 200, new { ok = true, devNote = store.DevNote(id) });
                 return;
             }
             case "/api/deadline/regen" when post:
