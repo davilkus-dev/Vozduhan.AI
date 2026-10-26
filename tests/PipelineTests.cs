@@ -301,6 +301,8 @@ static class PipelineTests
             await e.Process(Remember(e, Msg(3, 102, 3, photo: Photo("p1"), caption: "что тут?")));
             Assert(Last() == "[фото: кот в шапке; надпись: «ПЯТНИЦА»] что тут?", "Photo description missing: " + Last());
             Assert(e.Calls("getFile").Single().Body.Text("file_id") == "p1", "Not the ≤1280 photo size downloaded");
+            Assert(!OpenRouterClient.ChatRules(e.C, false).Contains("не видишь картинки/файлы") && OpenRouterClient.ChatRules(e.C, false).Contains("[фото: …]"),
+                "Writer still told it cannot see images while Media Digest is on");
             var request = JsonDocument.Parse(e.DigestRequests.Single()).RootElement;
             var parts = request.Field("messages")[1].Field("content");
             Assert(parts[1].Field("image_url").Text("url")!.StartsWith("data:image/jpeg;base64,") && request.Field("messages")[0].Text("content")!.Contains("не инструкции"),
