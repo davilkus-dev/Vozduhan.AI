@@ -538,23 +538,25 @@ public static class Deadlines
     /// <summary>Model-written lead, sanitised. The editor's note is never printed: it only feeds the model.</summary>
     public static string Lead(string? intro, string fallback) =>
         TelegramHtml.Sanitize(TelegramHtml.FromMarkdown(OpenRouterClient.Join(string.IsNullOrWhiteSpace(intro) ? fallback : intro)));
-    public static string Card(BotConfig c, Deadline d) => d.Status == "cancelled"
+    public static string Card(BotConfig c, Deadline d, DateTimeOffset now) => d.Status == "cancelled"
         ? Lead(d.Intro, "Отбой, эту сдачу отменили.") + $"\n\n❌ <b>Сдача отменена</b> · #{d.Id}\n" + FactsHtml(c, d, true)
+        : Ends(c, d) < now
+        ? Lead(d.Intro, "Гайс, держим в голове.") + $"\n\n⌛ <b>ДЕДЛАЙН ПРОШЕЛ</b> · #{d.Id}\n" + FactsHtml(c, d, true)
         : Lead(d.Intro, "Гайс, держим в голове.") + $"\n\n📌 <b>Дедлайн</b> · #{d.Id}\n" + FactsHtml(c, d);
     /// <summary>A not yet saved draft rendered like the future post.</summary>
-    public static string DraftCard(BotConfig c, Draft d)
+    public static string DraftCard(BotConfig c, Draft d, DateTimeOffset now)
     {
         var fake = new Deadline(d.TargetId ?? 0, 0, d.SubjectId!, d.Work!, d.Date!, d.Period!.Value, d.Start!, d.End!, d.Room!,
             d.Action == "cancel" ? "cancelled" : "active", d.ActorId, "", d.Intro, d.MorningIntro, d.Note);
         var head = d.Action switch { "cancel" => "Так будет отмена", "update" => "Так будет изменение", _ => "Так будет в «Дедлайнах»" };
-        return $"👀 <b>{head}:</b>\n\n" + Card(c, fake).Replace(" · #0", "");
+        return $"👀 <b>{head}:</b>\n\n" + Card(c, fake, now).Replace(" · #0", "");
     }
     /// <summary>Exactly what saving the draft publishes: the card and, for update/cancel, the change news.</summary>
-    public static (string Card, string? News) PostsPreview(BotConfig c, Draft d, Deadline? old)
+    public static (string Card, string? News) PostsPreview(BotConfig c, Draft d, Deadline? old, DateTimeOffset now)
     {
         var next = new Deadline(old?.Id ?? 0, (old?.Version ?? 0) + 1, d.SubjectId!, d.Work!, d.Date!, d.Period!.Value, d.Start!, d.End!, d.Room!,
             d.Action == "cancel" ? "cancelled" : "active", d.ActorId, d.Source, d.Intro, d.MorningIntro, d.Note);
-        return old is null ? (Card(c, next).Replace(" · #0", ""), null) : (Card(c, next), ChangeNews(c, next, old));
+        return old is null ? (Card(c, next, now).Replace(" · #0", ""), null) : (Card(c, next, now), ChangeNews(c, next, old));
     }
     public static string ChangeNews(BotConfig c, Deadline d, Deadline old)
     {

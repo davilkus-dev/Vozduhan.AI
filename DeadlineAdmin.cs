@@ -156,7 +156,7 @@ public sealed partial class BotWorker
             store.SaveDraft(draft);
             // Ready draft: show exactly what will appear in «Дедлайны». Incomplete one: the plain checklist of what is missing.
             var preview = draft.Missing.Length == 0
-                ? Deadlines.DraftCard(config, draft) +
+                ? Deadlines.DraftCard(config, draft, DateTimeOffset.UtcNow) +
                   (string.IsNullOrWhiteSpace(draft.Note) ? "" : $"\n\n<i>Комментарий для бота (в пост дословно не попадёт): {System.Net.WebUtility.HtmlEncode(draft.Note)}</i>") +
                   "\n\nПубликую только после подтверждения. Можно поправить сообщением."
                 : System.Net.WebUtility.HtmlEncode(Deadlines.Preview(config, draft));

@@ -216,7 +216,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, 200, new
                 {
                     ok = true,
-                    deadlines = store.AllDeadlines().OrderByDescending(x => x.Date).Select(x =>
+                    deadlines = store.AllDeadlines().Where(x => x.Status != "deleted" || q["deleted"] == "1").OrderByDescending(x => x.Date).Select(x =>
                     {
                         var view = new
                         {
@@ -247,7 +247,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                     var intro = given ?? await worker.TryDeadlineIntro(draft, ct, devNote);
                     if (intro is null) { await Send(response, 502, new { ok = false, error = NoAi }); return; }
                     var old = store.AllDeadlines().FirstOrDefault(x => x.Id == draft.TargetId);
-                    var (card, news) = Deadlines.PostsPreview(config, draft with { Intro = intro, MorningIntro = "Сегодня сдаём:" }, old);
+                    var (card, news) = Deadlines.PostsPreview(config, draft with { Intro = intro, MorningIntro = "Сегодня сдаём:" }, old, DateTimeOffset.UtcNow);
                     await Send(response, 200, new { ok = true, intro, introSource = Source(given), card = TelegramHtml.Sanitize(card), news = news is null ? null : TelegramHtml.Sanitize(news),
                         facts = Deadlines.Preview(config, draft), manualEdited = old is not null && ManualEdited(old.Id) });
                     return;
@@ -423,6 +423,24 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, generated is null ? 502 : 200, new { ok = generated is not null, text = generated, error = generated is null ? "Нейронка не ответила" : null });
                 return;
             }
+            case "/api/deadline/delete" when post:
+            {
+                var id = body.Field("id").ValueKind == JsonValueKind.Number ? body.Field("id").GetInt32() : 0;
+                var d = store.AllDeadlines().FirstOrDefault(x => x.Id == id && x.Status != "deleted");
+                if (d is null) { await Send(response, 404, new { ok = false, error = "Нет такого дедлайна" }); return; }
+                if (body.Field("expectedVersion").ValueKind != JsonValueKind.Number || body.Field("expectedVersion").GetInt32() != d.Version)
+                { await Send(response, 409, new { ok = false, error = "Дедлайн изменился. Обнови страницу и повтори." }); return; }
+                if (body.Field("dry").ValueKind == JsonValueKind.True)
+                {
+                    await Send(response, 200, new { ok = true, card = store.Post("deadline:" + id) is not null,
+                        news = store.Posts($"change:{id}:").Count(p => !p.Key.Contains(":part:")), wakeups = store.Wakeups(id).Count(w => w.Status == "pending") });
+                    return;
+                }
+                try { store.DeleteDeadline(actor, id, d.Version, DateTimeOffset.UtcNow); }
+                catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); return; }
+                await Send(response, 200, new { ok = true });
+                return;
+            }
             case "/api/deadline/devnote" when post:
             {
                 if (!owner) { await Send(response, 403, new { ok = false, error = "Заметка разработчика недоступна" }); return; }
@@ -457,7 +475,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 var intro = given ?? await worker.TryDeadlineIntro(new Draft("", actor, d.Id, d.Version, d.Status == "cancelled" ? "cancel" : "create", d.SubjectId, d.Work, d.Date, d.Period,
                     d.Start, d.End, d.Room, "", "", "", [], body.Text("note") ?? d.Note), ct);
                 if (intro is null) { await Send(response, 502, new { ok = false, error = NoAi }); return; }
-                await Send(response, 200, new { ok = true, intro, introSource = Source(given), card = TelegramHtml.Sanitize(Deadlines.Card(config, d with { Intro = intro })), version = d.Version, manualEdited = manual });
+                await Send(response, 200, new { ok = true, intro, introSource = Source(given), card = TelegramHtml.Sanitize(Deadlines.Card(config, d with { Intro = intro }, DateTimeOffset.UtcNow)), version = d.Version, manualEdited = manual });
                 return;
             }
             case "/api/ai-settings" when !post && owner:

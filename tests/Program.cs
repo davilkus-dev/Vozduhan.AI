@@ -182,7 +182,7 @@ try
         Assert(Deadlines.Preview(s.Config, edit).Contains("Комментарий для бота"), "Editor note missing from confirmation");
         var changed = Save(s, edit);
         // The note only feeds the model's lead; the program never prints it into the post.
-        Assert(!Deadlines.Card(s.Config, changed).Contains("Цынгалев") && !Deadlines.Card(s.Config, changed).Contains("PRIVATE EDITOR"), "Card prints the editor note or the DM");
+        Assert(!Deadlines.Card(s.Config, changed, now).Contains("Цынгалев") && !Deadlines.Card(s.Config, changed, now).Contains("PRIVATE EDITOR"), "Card prints the editor note or the DM");
         var news = s.Due(now).Single(x => x.Key.StartsWith("change:")).Text;
         Assert(!news.Contains("Цынгалев") && news.Contains("<blockquote>") && news.Contains("🔄"), "Change news format wrong: " + news);
     });
@@ -422,6 +422,7 @@ try
     count += await DeadlinePreviewTests.Run(f => Config(f));
     count += await DevNoteTests.Run(f => Config(f));
     count += await UsageTests.Run(f => Config(f));
+    count += await DeadlineLifecycleTests.Run(f => Config(f));
     Console.WriteLine($"All {count} checks passed. No real Telegram or OpenRouter calls.");
 }
 finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(temp, true); }

@@ -480,11 +480,12 @@ async function introDialog(title,load,apply,okText,note){
   d.onclose=null;draw();d.showModal()}
 VIEWS.deadlines=async el=>{
   const viewId=renderId;
-  el.innerHTML=page("Дедлайны","Сохранённый здесь дедлайн сразу публикуется в теме дедлайнов, как из Telegram. Кабинет и время берутся из расписания.",`<button class="b p" id="addD">＋ Дедлайн</button>`)+`<div id="dl" class="card tw"><div class="empty">Загрузка…</div></div>`;
-  const r=await api("deadlines");if(viewId!==renderId)return;
+  el.innerHTML=page("Дедлайны","Сохранённый здесь дедлайн сразу публикуется в теме дедлайнов, как из Telegram. Кабинет и время берутся из расписания.",`<label class="row small"><input type="checkbox" id="shD"${S.showDeleted?" checked":""}> показать удалённые</label><button class="b p" id="addD">＋ Дедлайн</button>`)+`<div id="dl" class="card tw"><div class="empty">Загрузка…</div></div>`;
+  $("#shD").onchange=e=>{S.showDeleted=e.target.checked;render()};
+  const r=await api("deadlines"+(S.showDeleted?"?deleted=1":""));if(viewId!==renderId)return;
   const row=d=>`<tr class="${d.past||d.status!=="active"?"off":""}"><td class="faint">#${d.id}</td><td><b>${fmtDate(d.date)}</b> <span class="muted">${SD[dow(d.date)]}</span></td><td>${d.period} · ${d.start}</td><td>${esc(d.subject)}</td><td>${esc(d.work)}${d.note?`<div class="faint small">${esc(d.note)}</div>`:""}/*OWNER*/${OWNER()?`${d.devNote?`<div class="faint small"><i>🔒 ${esc(d.devNote)}</i></div>`:""}<button class="b pb" data-dn="${d.id}" title="Закрытая заметка: видишь только ты">🤫 Заметка</button>`:""}/*END*/</td><td>${esc(d.room)}</td>
-    <td>${d.status==="active"?(d.past?'<span class="chip">прошёл</span>':'<span class="st added">активен</span>'):'<span class="st cancelled">отменён</span>'}</td>
-    <td>${d.status==="active"&&!d.past?`<div class="row" style="flex-wrap:nowrap"><button class="b" data-rg="${d.id}" title="Бот заново напишет живой текст поста">✨ Текст</button><button class="b" data-mv="${d.id}">Перенести</button><button class="b d" data-cn="${d.id}">Отменить</button></div>`:""}</td></tr>`;
+    <td>${d.status==="deleted"?'<span class="chip">удалён</span>':d.status==="active"?(d.past?'<span class="chip">прошёл</span>':'<span class="st added">активен</span>'):'<span class="st cancelled">отменён</span>'}</td>
+    <td>${d.status==="deleted"?"":`<div class="row" style="flex-wrap:nowrap">${d.status==="active"&&!d.past?`<button class="b" data-rg="${d.id}" title="Бот заново напишет живой текст поста">✨ Текст</button><button class="b" data-mv="${d.id}">Перенести</button><button class="b d" data-cn="${d.id}">Отменить</button>`:""}<button class="b d" data-del="${d.id}" title="Заведён по ошибке: убрать из темы и всех списков">🗑 Удалить</button></div>`}</td></tr>`;
   $("#dl").innerHTML=`<table><thead><tr><th>ID</th><th>Дата</th><th>Пара</th><th>Предмет</th><th>Работа</th><th>Кабинет</th><th>Статус</th><th></th></tr></thead><tbody>${r.deadlines.map(row).join("")||'<tr><td colspan="8" class="empty">Пока нет</td></tr>'}</tbody></table>`;
   const send=async(body,title)=>{if(body.targetId)body.expectedVersion=r.deadlines.find(d=>d.id===body.targetId)?.version;
     const note=body.action==="cancel"?undefined:(body.note||""),withNote=n=>n===undefined?{}:{note:n||null};
@@ -499,6 +500,11 @@ VIEWS.deadlines=async el=>{
       '<p class="muted small">Видишь только ты. Бот использует её как закулисный контекст для текста поста и напоминаний, не цитирует. Пост и будильники не меняются.</p>');
     if(!v)return;const x=await api("deadline/devnote",{id:dl.id,text:v.text||""});if(x.ok){toast(x.devNote?"Заметка сохранена":"Заметка удалена");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)});/*END*/
   el.querySelectorAll("[data-cn]").forEach(b=>b.onclick=()=>send({action:"cancel",targetId:+b.dataset.cn},"Отмена сдачи"));
+  el.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{const dl=r.deadlines.find(x=>x.id===+b.dataset.del)||{},base={id:dl.id,expectedVersion:dl.version};
+    const x=await api("deadline/delete",{...base,dry:true});if(!x.ok)return info("Ошибка",`<p>${esc(x.error)}</p>`);
+    const gone=[x.card?"карточка в «Дедлайнах»":"",x.news?`новостей об изменениях: ${x.news}`:"",x.wakeups?`будильников: ${x.wakeups}`:""].filter(Boolean);
+    if(await menu("Удалить дедлайн #"+dl.id+"?",[{t:"🗑 Удалить",cls:"d"}],`<p>${esc(dl.subject)} — ${esc(dl.work)}, ${fmtDate(dl.date)}</p><p>Исчезнет: ${esc(gone.length?gone.join(", "):"запись из списков")}.</p><p style="color:var(--warn)">Действие нельзя отменить из интерфейса.</p>`)!==0)return;
+    const y=await api("deadline/delete",base);if(y.ok){toast("Удалено");render()}else info("Ошибка",`<p>${esc(y.error)}</p>`)});
   el.querySelectorAll("[data-rg]").forEach(b=>b.onclick=async()=>{const dl=r.deadlines.find(x=>x.id===+b.dataset.rg)||{};
     const v=await form("Переписать текст поста #"+b.dataset.rg,[{k:"note",label:"Комментарий для бота",type:"textarea",rows:3,ph:"последний шанс, Арапов злой — бот перескажет своими словами"}],
       {note:dl.note||""});if(!v)return;b.disabled=true;b.textContent="Пишу…";const base={id:dl.id,expectedVersion:dl.version};

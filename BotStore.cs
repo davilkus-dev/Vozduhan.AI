@@ -290,7 +290,7 @@ public sealed partial class BotStore : IDisposable
             var draft = direct ?? Draft(actor, token!) ?? throw new InvalidOperationException("Карточка уже обработана, заменена или устарела.");
             if (draft.Missing.Length != 0) throw new InvalidOperationException("Сначала уточни недостающие поля.");
             var all = AllDeadlines();
-            var old = draft.Action == "create" ? null : all.FirstOrDefault(d => d.Id == draft.TargetId);
+            var old = draft.Action == "create" ? null : all.FirstOrDefault(d => d.Id == draft.TargetId && d.Status != "deleted");
             if (draft.Action != "create" && (old is null || old.Version != draft.ExpectedVersion))
                 throw new InvalidOperationException("Этот дедлайн уже изменился. Открой его заново через /edit.");
             if (draft.Action != "cancel" && Config.Utc(DateOnly.Parse(draft.Date!).ToDateTime(TimeOnly.Parse(draft.End!))) <= now)
@@ -321,6 +321,26 @@ public sealed partial class BotStore : IDisposable
             if (token is not null) Discard(actor, token);
             RebuildMorning(d.Date, now);
             if (old is not null && old.Date != d.Date) RebuildMorning(old.Date, now);
+            tx.Commit();
+            return d;
+        }
+    }
+    /// <summary>Hides a mistaken deadline everywhere; the row and its ID stay, the publisher removes its posts.</summary>
+    public Deadline DeleteDeadline(long actor, int id, int expectedVersion, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            if (!Config.CanEdit(actor)) throw new InvalidOperationException("Удалять могут только разработчик и староста.");
+            var old = AllDeadlines().FirstOrDefault(d => d.Id == id && d.Status != "deleted") ?? throw new InvalidOperationException("Нет такого дедлайна.");
+            if (old.Version != expectedVersion) throw new InvalidOperationException("Этот дедлайн уже изменился. Обнови и повтори.");
+            var d = old with { Version = old.Version + 1, Status = "deleted", EditorId = actor };
+            using var tx = db.BeginTransaction();
+            Exec("UPDATE deadlines SET version=$v,status=$s,payload=$p WHERE id=$id", ("v", d.Version), ("s", d.Status), ("p", Json.Write(d)), ("id", id));
+            Exec("INSERT INTO audit(time,actor,action,payload) VALUES($t,$a,'delete',$p)", ("t", now.ToUnixTimeSeconds()), ("a", actor),
+                ("p", Json.Write(new { before = old })));
+            Exec("UPDATE deliveries SET state=2 WHERE key LIKE $key AND state=0", ("key", $"change:{id}:%"));
+            DropPendingWakeups(id);
+            RebuildMorning(d.Date, now);
             tx.Commit();
             return d;
         }

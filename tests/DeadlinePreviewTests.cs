@@ -94,7 +94,7 @@ static class DeadlinePreviewTests
             Assert(code == HttpStatusCode.OK && d7.Intro == "Мой текст\n\nвторой абзац" && aiCalls == 1, "Saved lead differs: " + Json.Write(d7.Intro));
             (code, _) = await Post(owner, "deadline", Create("Практика №8", new { intro = "" }));
             var d8 = s.AllDeadlines().Single(d => d.Work == "Практика №8");
-            Assert(code == HttpStatusCode.OK && d8.Intro == "" && Deadlines.Card(c, d8).StartsWith("Гайс, держим в голове.") && aiCalls == 1, "Empty lead not standard");
+            Assert(code == HttpStatusCode.OK && d8.Intro == "" && Deadlines.Card(c, d8, DateTimeOffset.UtcNow).StartsWith("Гайс, держим в голове.") && aiCalls == 1, "Empty lead not standard");
             (code, p) = await Post(owner, "deadline", Create("Практика №9", new { intro = new string('ж', 701) }));
             Assert(code == HttpStatusCode.BadRequest && p.Text("error") == "Вводная длиннее 700 символов" && !s.AllDeadlines().Any(d => d.Work == "Практика №9"), "Long lead accepted");
             (code, _) = await Post(owner, "deadline", Create("Практика №9"));

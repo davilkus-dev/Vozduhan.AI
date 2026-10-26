@@ -112,7 +112,7 @@ static class ReviewRegressionTests
         Assert(store.Message(c.GroupId, 800)!.Contains("NEW"), "Edit left stale AI history");
         await Call(worker, "DeleteSent", c.GroupId, 800, CancellationToken.None);
         Assert(store.Message(c.GroupId, 800) is null && store.Get($"deleted_msg:{c.GroupId}:800") is not null, "Deletion left history or omitted tombstone");
-        store.SavePost("deadline:" + first.Id, 800, Deadlines.Card(c, store.AllDeadlines().Single(d => d.Id == first.Id)));
+        store.SavePost("deadline:" + first.Id, 800, Deadlines.Card(c, store.AllDeadlines().Single(d => d.Id == first.Id), now));
         await Call(worker, "Publish", CancellationToken.None);
         Assert(store.Post("deadline:" + first.Id)!.MessageId == 800, "Publisher resurrected manually deleted card");
         Console.WriteLine("PASS review: manual post retry, long commands, edited/deleted history and deletion persistence");
