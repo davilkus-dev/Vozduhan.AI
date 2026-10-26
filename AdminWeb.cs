@@ -535,6 +535,33 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             case "/api/ai" when !post:
                 await Send(response, 200, new { ok = true, rows = store.AiCalls(q["tag"], L("id"), L("before"), (int)(L("limit") ?? 50), full: L("id") is not null || q["tag"] is not null) });
                 return;
+            case "/api/usage" when !owner:
+            case "/api/usage/alert" when !owner:
+                await Send(response, 403, new { ok = false, error = "Расходы на ИИ — только для разработчика" });
+                return;
+            case "/api/usage" when !post:
+            {
+                var now = DateTimeOffset.UtcNow;
+                var report = store.UsageReport(now, int.TryParse(q["days"], out var days) && days is 7 or 30 or 90 ? days : 30);
+                var key = await worker.KeyInfo(ct);
+                await Send(response, 200, new { ok = true, report.Days, report.Date, report.Summary, report.Forecast, report.ByDay, report.ByKind, report.ByModel,
+                    wasted = new { cost = report.WastedCost, attempts = report.WastedAttempts, byKind = report.Wasted }, report.Top,
+                    key = key is null ? null : new { key.Usage, key.UsageDaily, key.UsageWeekly, key.UsageMonthly, key.Limit, key.LimitRemaining, bot = store.UsageUtc(now) },
+                    alert = store.SpendAlert() });
+                return;
+            }
+            case "/api/usage/alert" when !post:
+                await Send(response, 200, new { ok = true, alert = store.SpendAlert() });
+                return;
+            case "/api/usage/alert" when post:
+            {
+                static double? Usd(JsonElement e) => e.ValueKind == JsonValueKind.Number && e.TryGetDouble(out var v) && v is >= 0 and <= 100000 ? v : null;
+                if (Usd(body.Field("dailyUsd")) is not { } daily || Usd(body.Field("monthlyUsd")) is not { } monthly)
+                { await Send(response, 400, new { ok = false, error = "Пороги — числа от 0 до 100000 долларов, 0 — выключено" }); return; }
+                store.SetSpendAlert(new(daily, monthly));
+                await Send(response, 200, new { ok = true, alert = store.SpendAlert() });
+                return;
+            }
             case "/api/seen" when !post:
             {
                 var bound = config.R.Members.Where(m => m.UserId is not null).ToDictionary(m => m.UserId!.Value, m => m.FullName);

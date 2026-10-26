@@ -113,6 +113,10 @@ ul.lines li{margin:3px 0}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;box-shadow:var(--shadow)}
 .stat b{display:block;font-size:20px;letter-spacing:-.02em}.stat span{color:var(--muted);font-size:12px}
+.uc{display:flex;align-items:flex-end;gap:2px;height:160px;margin:8px 0 4px;border-bottom:1px solid var(--line)}
+.ub{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:flex-end;cursor:pointer}
+.ub i{display:block;width:100%;background:var(--accent);border-radius:3px 3px 0 0;opacity:.75}
+.ub.t i{background:var(--accent2)}.ub:hover i,.ub.on i{opacity:1;outline:2px solid var(--accent-soft)}
 @media (max-width:900px){
   .app{grid-template-columns:minmax(0,1fr)}
   aside{position:sticky;top:0;height:auto;z-index:10;flex-direction:row;align-items:center;padding:8px 10px;border-right:0;border-bottom:1px solid var(--line);gap:8px}
@@ -219,7 +223,7 @@ window.onbeforeunload=e=>{if(dirty()){e.preventDefault();e.returnValue=""}};
 // ---------- navigation ----------
 const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["plan","🛎","План бота"],["-"],
   ["subjects","🎓","Предметы"],["members","👥","Группа"],/*OWNER*/["knowledge","🧠","Знания",true],/*END*/["settings","🔔","Звонки и семестр"],["-"],
-  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
+  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],["usage","💸","Расходы",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
 function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
   $("#nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{S.tab=b.dataset.k;render();window.scrollTo(0,0)})}
 let renderId=0;
@@ -564,6 +568,46 @@ VIEWS.ai=async el=>{
   $("#al").innerHTML=`<table><thead><tr><th>Когда</th><th>Тип</th><th>Сообщение</th><th>Время</th><th>Ответ</th></tr></thead><tbody>${(r.rows||[]).map(a=>`<tr data-id="${a.id}" style="cursor:pointer"><td>${time(a.time)}</td><td><span class="chip">${esc(a.kind)}</span></td><td class="small faint">${esc(a.tag)}</td><td>${a.ms} мс</td><td class="small">${a.error?`<span style="color:var(--bad)">${esc(a.error)}</span>`:esc(a.response)}</td></tr>`).join("")||'<tr><td colspan="5" class="empty">Пока нет</td></tr>'}</tbody></table>`;
   $("#al").querySelectorAll("tr[data-id]").forEach(x=>x.onclick=()=>showAi(+x.dataset.id))};
 
+/*END*/
+/*OWNER*/const usd=v=>v==null?"—":v===0?"$0":"$"+(Math.abs(v)<1?v.toFixed(4):v.toFixed(2));
+const num=n=>(n||0).toLocaleString("ru-RU");
+const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
+const KUSE={chat:"Болтовня",plan:"Разбор сообщений редактора",deadline:"Разбор дедлайна",wakeplan:"План будильников",test:"Проверка модели",other:"Прочее",
+  "ambient-morning":"Утренний вброс","ambient-spontaneous":"Вброс днём","ambient-manual":"Пост по просьбе","ambient-wakeup":"Будильник","ambient-deadline":"Текст дедлайна",
+  "ambient-summary":"Сводка","ambient-eve":"Вечернее напоминание"};
+const kuse=k=>`${esc(KUSE[k]||k)} <span class="chip">${esc(k)}</span>`;
+const toks=x=>`вход ${num(x.promptTokens)}${x.cachedTokens?` (кеш ${num(x.cachedTokens)})`:""} · выход ${num(x.completionTokens)}${x.reasoningTokens?` (рассужд. ${num(x.reasoningTokens)})`:""}`;
+VIEWS.usage=async el=>{
+  const viewId=renderId;S.usageDays=S.usageDays||30;
+  el.innerHTML=page("Расходы на ИИ","Сколько стоят запросы к OpenRouter: по дням, задачам и моделям. Цена берётся из ответа OpenRouter, каждая попытка считается отдельно. Дни — по местному времени группы.",
+    [7,30,90].map(d=>`<button class="b ${S.usageDays===d?"p":""}" data-days="${d}">${d} дней</button>`).join(""))+`<div id="us"><div class="card empty">Загрузка…</div></div>`;
+  el.querySelectorAll("[data-days]").forEach(b=>b.onclick=()=>{S.usageDays=+b.dataset.days;render()});
+  const r=await api("usage?days="+S.usageDays);if(viewId!==renderId)return;
+  if(!r.ok)return void($("#us").innerHTML=`<div class="card">${esc(r.error)}</div>`);
+  const s=r.summary,k=r.key;
+  const tile=(t,x,extra="")=>`<div class="stat"><span>${t}</span><b>${usd(x.cost)}</b><span>${num(x.attempts)} попыток${x.costMissing?` · <span style="color:var(--warn)">без цены: ${x.costMissing}</span>`:""}</span><div class="faint small">${toks(x)}</div>${extra}</div>`;
+  const off=(a,b)=>a!=null&&Math.abs(a-b)>.05&&Math.abs(a-b)>.1*Math.max(Math.abs(a),Math.abs(b));
+  const keyLine=k?`По данным OpenRouter: сегодня (UTC) ${usd(k.usageDaily)}, за месяц (UTC) ${usd(k.usageMonthly)}, остаток лимита ${k.limitRemaining==null?"— лимита нет":usd(k.limitRemaining)}.`+
+    (off(k.usageDaily,k.bot.daily.cost)||off(k.usageMonthly,k.bot.monthly.cost)?` <span style="color:var(--warn)">⚠ Расходится со счётчиком бота (сегодня ${usd(k.bot.daily.cost)}, месяц ${usd(k.bot.monthly.cost)}): ключ может тратить кто-то ещё, или у части ответов не было цены.</span>`:""):"По данным OpenRouter: недоступно.";
+  const empty=!s.month.attempts&&!s.yesterday.attempts&&r.byDay.every(d=>!d.totals.attempts);
+  const max=Math.max(...r.byDay.map(d=>d.totals.cost),0);
+  const dayText=d=>`${fmtDate(d.date)}: ${usd(d.totals.cost)} · ${num(d.totals.attempts)} попыток${d.totals.costMissing?` (без цены ${d.totals.costMissing})`:""} · ${toks(d.totals)}`;
+  const table=(head,rows,cols)=>`<div class="tw"><table><thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${rows||`<tr><td colspan="${cols}" class="empty">Нет</td></tr>`}</tbody></table></div>`;
+  $("#us").innerHTML=`<div class="stats">${tile("Сегодня",s.today)}${tile("Вчера",s.yesterday)}${tile("7 дней",s.week)}${tile("Этот месяц",s.month,`<div class="small">прогноз на месяц: <b style="display:inline;font-size:inherit">${r.forecast==null?"мало данных":usd(r.forecast)}</b></div>`)}</div>
+    <p class="muted small">${keyLine}</p>`+(empty?`<div class="card empty">Данных пока нет — они появятся после первого запроса к ИИ.</div>`:`
+    <div class="card"><h3>Траты по дням</h3><div class="row" style="justify-content:space-between"><span class="faint small">макс. ${usd(max)}</span><span class="small" id="ucap">${dayText(r.byDay[r.byDay.length-1])}</span></div>
+      <div class="uc" style="gap:${r.byDay.length>30?1:2}px">${r.byDay.map((d,i)=>`<div class="ub${i===r.byDay.length-1?" t":""}" data-i="${i}" title="${esc(dayText(d))}"><i style="height:${max>0?Math.max(d.totals.cost/max*100,d.totals.attempts?2:0):0}%"></i></div>`).join("")}</div>
+      <div class="row faint small" style="justify-content:space-between"><span>${fmtDate(r.byDay[0].date)}</span><span>${fmtDate(r.byDay[r.byDay.length-1].date)}</span></div></div>
+    <div class="card"><h3>На что тратится</h3>${table(["Вид запроса","Вызовов","Попыток","Стоимость","Доля","За вызов","Кеш входа"],r.byKind.map(x=>`<tr><td>${kuse(x.kind)}</td><td>${num(x.calls)}</td><td>${num(x.attempts)}</td><td><b>${usd(x.cost)}</b>${x.costMissing?` <span class="faint small">без цены: ${x.costMissing}</span>`:""}</td><td>${pct(x.share)}</td><td>${usd(x.avgPerCall)}</td><td>${pct(x.cacheShare)}</td></tr>`).join(""),7)}</div>
+    <div class="card"><h3>Модели</h3>${table(["Модель","Попыток","Токены","Стоимость"],r.byModel.map(x=>`<tr><td>${esc(x.model)}</td><td>${num(x.totals.attempts)}</td><td class="small">${toks(x.totals)}</td><td><b>${usd(x.totals.cost)}</b>${x.totals.costMissing?` <span class="faint small">без цены: ${x.totals.costMissing}</span>`:""}</td></tr>`).join(""),4)}</div>
+    <div class="card"><h3>Ушло зря: ${usd(r.wasted.cost)} на ${num(r.wasted.attempts)} попыток</h3><p class="muted small">Ответы, оборванные по лимиту токенов, и повторные попытки после них.</p>${table(["Вид запроса","Оборвано","Повторов","Попыток","Стоимость"],r.wasted.byKind.map(x=>`<tr><td>${kuse(x.kind)}</td><td>${num(x.cut)}</td><td>${num(x.retries)}</td><td>${num(x.attempts)}</td><td><b>${usd(x.cost)}</b></td></tr>`).join(""),5)}</div>
+    <div class="card"><h3>20 самых дорогих попыток</h3>${table(["Когда","Вид","Модель","Токены","Цена","Конец"],r.top.map(x=>`<tr><td>${time(x.time)}${x.attempt>1?` <span class="chip">попытка ${x.attempt}</span>`:""}<div class="faint small">${esc(x.tag)}</div></td><td>${kuse(x.kind)}</td><td class="small">${esc(x.model)}</td><td class="small">${toks(x)}</td><td><b>${usd(x.cost)}</b></td><td class="small">${esc(x.finish||"—")}</td></tr>`).join(""),6)}</div>`)+`
+    <div class="card"><h3>💸 Предупреждения о перерасходе</h3><p class="muted small">Бот напишет тебе в личку один раз за день или за месяц, когда траты превысят порог. 0 — выключено.</p>
+      <div class="row"><label class="small muted">За день, $ <input id="ua_d" type="number" min="0" max="100000" step="0.01" value="${r.alert.dailyUsd}" style="width:110px"></label>
+      <label class="small muted">За месяц, $ <input id="ua_m" type="number" min="0" max="100000" step="0.01" value="${r.alert.monthlyUsd}" style="width:110px"></label><button class="b p" id="ua_s">Сохранить</button></div></div>`;
+  const cap=$("#ucap");el.querySelectorAll(".ub").forEach(b=>b.onmouseenter=b.onclick=()=>{cap.textContent=dayText(r.byDay[+b.dataset.i]);el.querySelectorAll(".ub.on").forEach(x=>x.classList.remove("on"));b.classList.add("on")});
+  $("#ua_s").onclick=async()=>{const x=await api("usage/alert",{dailyUsd:Number($("#ua_d").value||0),monthlyUsd:Number($("#ua_m").value||0)});
+    if(x.ok)toast("Пороги сохранены");else info("Ошибка",`<p>${esc(x.error)}</p>`)}};
 /*END*/
 // ---------- seen users ----------
 VIEWS.seen=async el=>{

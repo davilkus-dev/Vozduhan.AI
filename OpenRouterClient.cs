@@ -7,6 +7,9 @@ using Microsoft.Extensions.Logging;
 namespace Vozduhan.AI;
 
 public sealed record AiTrace(string Kind, string Tag, string Model, string System, string Request, string Response, long Ms, string? Error);
+public sealed record AiUsage(string Kind, string Tag, string RequestedModel, string? Model, int Attempt, long PromptTokens, long CachedTokens,
+    long CompletionTokens, long ReasoningTokens, double? CostUsd, string? Finish, long Ms);
+public sealed record AiKeyInfo(double? Usage, double? UsageDaily, double? UsageWeekly, double? UsageMonthly, double? Limit, double? LimitRemaining);
 public sealed record PlanResult(string Intent, ParsedDeadline? Deadline, JsonElement[] Operations, string? Question, string? Idea = null);
 
 public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? key)
@@ -15,6 +18,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     public bool Available => !string.IsNullOrWhiteSpace(key);
     /// <summary>Receives every request/response for the admin log. Must not throw.</summary>
     public Action<AiTrace>? Trace { get; set; }
+    public Action<AiUsage>? Usage { get; set; }
     public const string Split = "||";
 
     /// <summary>
@@ -39,22 +43,22 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             {
                 attempts++;
                 (string? content, string? finish) answer;
-                try { answer = await Attempt(model, system, user, json, effort, budget, false, timeout.Token); }
+                try { answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token); }
                 catch (HttpRequestException e) when (e.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.NotFound)
                 {
                     // Some models reject reasoning/json options: retry the same model in compatibility mode.
-                    try { answer = await Attempt(model, system, user, json, effort, budget, true, timeout.Token); }
+                    try { answer = await Attempt(model, system, user, json, effort, budget, true, (kind, tag, attempts), timeout.Token); }
                     catch (HttpRequestException) when (model != config.Model && modelOverride is null)
                     {
                         model = config.Model;
-                        answer = await Attempt(model, system, user, json, effort, budget, false, timeout.Token);
+                        answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token);
                     }
                 }
                 catch (HttpRequestException) when (model != config.Model && modelOverride is null)
                 {
                     // The routed model is unavailable or rate-limited: fall back to the main model.
                     model = config.Model;
-                    answer = await Attempt(model, system, user, json, effort, budget, false, timeout.Token);
+                    answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token);
                 }
                 var (content, finish) = answer;
                 var cut = finish is "length" or "max_tokens" || string.IsNullOrEmpty(content) || (json && !ValidJson(content));
@@ -99,11 +103,13 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     {
         try { using var _ = JsonDocument.Parse(text); return true; } catch (JsonException) { return false; }
     }
-    private async Task<(string? Content, string? Finish)> Attempt(string model, string system, string user, bool json, string effort, int budget, bool compat, CancellationToken ct)
+    private async Task<(string? Content, string? Finish)> Attempt(string model, string system, string user, bool json, string effort, int budget, bool compat,
+        (string Kind, string Tag, int Number) call, CancellationToken ct)
     {
         await slots.WaitAsync(ct);
         try
         {
+            var clock = Stopwatch.StartNew();
             using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/chat/completions");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
             request.Headers.Add("X-OpenRouter-Title", "Vozduhan.AI");
@@ -114,16 +120,67 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
                 reasoning = compat ? null : new { effort, exclude = true },
                 temperature = json ? 0.3 : 1.0, top_p = 0.95, max_tokens = budget,
                 provider = new { allow_fallbacks = true, require_parameters = !compat, data_collection = "deny" },
-                response_format = json && !compat ? new { type = "json_object" } : null
+                response_format = json && !compat ? new { type = "json_object" } : null,
+                usage = new { include = true }
             }, options: Json.Options);
             using var response = await http.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode) throw new HttpRequestException($"OpenRouter returned HTTP {(int)response.StatusCode}", null, response.StatusCode);
             using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
             var choices = doc.RootElement.Field("choices");
+            var finish = choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0 ? choices[0].Text("finish_reason") : null;
+            try
+            {
+                var u = doc.RootElement.Field("usage");
+                Usage?.Invoke(new(call.Kind, call.Tag, model, doc.RootElement.Text("model"), call.Number, Count(u.Field("prompt_tokens")),
+                    Count(u.Field("prompt_tokens_details").Field("cached_tokens")), Count(u.Field("completion_tokens")),
+                    Count(u.Field("completion_tokens_details").Field("reasoning_tokens")), Money(u.Field("cost")), finish, clock.ElapsedMilliseconds));
+            }
+            catch { /* accounting must never break a reply */ }
             if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0) throw new InvalidDataException("OpenRouter returned no choices");
-            return (choices[0].Field("message").Text("content")?.Trim(), choices[0].Text("finish_reason"));
+            return (choices[0].Field("message").Text("content")?.Trim(), finish);
         }
         finally { slots.Release(); }
+    }
+    private static long Count(JsonElement e) => Money(e) is { } n && n > 0 && n < long.MaxValue ? (long)Math.Round(n) : 0;
+    private static double? Money(JsonElement e) => e.ValueKind switch
+    {
+        JsonValueKind.Number when e.TryGetDouble(out var n) && double.IsFinite(n) => n,
+        JsonValueKind.String when double.TryParse(e.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n) && double.IsFinite(n) => n,
+        _ => null
+    };
+
+    private readonly SemaphoreSlim keyGate = new(1);
+    private (DateTimeOffset Until, AiKeyInfo? Info) keyCache;
+    /// <summary>Usage and limit of the OpenRouter key: cached for 5 minutes, a failure gives null and is retried after a minute.</summary>
+    public async Task<AiKeyInfo?> KeyInfo(CancellationToken ct)
+    {
+        if (!Available) return null;
+        await keyGate.WaitAsync(ct);
+        try
+        {
+            if (DateTimeOffset.UtcNow < keyCache.Until) return keyCache.Info;
+            AiKeyInfo? info = null;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "api/v1/key");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                using var response = await http.SendAsync(request, timeout.Token);
+                if (response.IsSuccessStatusCode)
+                {
+                    using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(timeout.Token), cancellationToken: timeout.Token);
+                    var d = doc.RootElement.Field("data");
+                    if (d.ValueKind == JsonValueKind.Object)
+                        info = new(Money(d.Field("usage")), Money(d.Field("usage_daily")), Money(d.Field("usage_weekly")), Money(d.Field("usage_monthly")),
+                            Money(d.Field("limit")), Money(d.Field("limit_remaining")));
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested) { info = null; }
+            keyCache = (DateTimeOffset.UtcNow + (info is null ? TimeSpan.FromMinutes(1) : TimeSpan.FromMinutes(5)), info);
+            return info;
+        }
+        finally { keyGate.Release(); }
     }
 
     private const string ToneRules = """

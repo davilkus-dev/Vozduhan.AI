@@ -61,6 +61,11 @@ public sealed partial class BotStore : IDisposable
             CREATE TABLE IF NOT EXISTS wakeups(id INTEGER PRIMARY KEY AUTOINCREMENT, deadline INTEGER NOT NULL, due INTEGER NOT NULL,
                 reason TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, created INTEGER NOT NULL, actor INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS wakeups_due ON wakeups(status,due);
+            CREATE TABLE IF NOT EXISTS ai_usage(id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, kind TEXT NOT NULL, tag TEXT NOT NULL,
+                requested_model TEXT NOT NULL, model TEXT NULL, attempt INTEGER NOT NULL, prompt_tokens INTEGER NOT NULL, cached_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, cost REAL NULL, finish TEXT NULL, ms INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS ai_usage_time ON ai_usage(time);
+            CREATE INDEX IF NOT EXISTS ai_usage_kind ON ai_usage(kind,time);
             PRAGMA user_version=2;
             """);
         AddColumn("wakeups", "attempts", "INTEGER NOT NULL DEFAULT 0");
@@ -408,6 +413,7 @@ public sealed partial class BotStore : IDisposable
             Exec("DELETE FROM web_tokens WHERE expires<$s", ("s", now.ToUnixTimeSeconds()));
             Exec("DELETE FROM chat_log WHERE time<$s", ("s", now.AddDays(-Config.LogDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM ai_log WHERE time<$s", ("s", now.AddDays(-Config.AiLogDays).ToUnixTimeSeconds()));
+            Exec("DELETE FROM ai_usage WHERE time<$s", ("s", now.AddDays(-UsageDays).ToUnixTimeSeconds()));
             var day = now.ToString("yyyy-MM-dd");
             if (Get("backup_day") == day) return;
             var folder = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Config.DataPath))!, "backups");

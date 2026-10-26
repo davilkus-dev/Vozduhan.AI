@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace Vozduhan.AI;
 
@@ -10,6 +11,18 @@ public sealed record ChatSummary(long Chat, string ChatType, int Topic, long Cou
 public sealed record SeenUser(long Id, string Username, string Name, long FirstSeen, long LastSeen, long LastChat, long Count);
 public sealed record AiRow(long Id, long Time, string Kind, string Tag, string Model, string System, string Request, string Response, long Ms, string? Error);
 /// <summary>A moment when the bot wakes up to push the group about a deadline. source: ai / manual.</summary>
+public sealed record UsageTotals(double Cost, long Attempts, long PromptTokens, long CachedTokens, long CompletionTokens, long ReasoningTokens, long CostMissing);
+public sealed record UsageDay(string Date, UsageTotals Totals);
+public sealed record UsageKind(string Kind, long Calls, long Attempts, double Cost, double Share, double? AvgPerCall, double? CacheShare, long CostMissing);
+public sealed record UsageModel(string Model, UsageTotals Totals);
+public sealed record UsageWaste(string Kind, long Cut, long Retries, long Attempts, double Cost);
+public sealed record UsageAttempt(long Time, string Kind, string Tag, string Model, int Attempt, long PromptTokens, long CachedTokens,
+    long CompletionTokens, long ReasoningTokens, double? Cost, string? Finish, long Ms);
+public sealed record UsageSummary(UsageTotals Today, UsageTotals Yesterday, UsageTotals Week, UsageTotals Month);
+public sealed record UsageReport(int Days, string Date, UsageSummary Summary, double? Forecast,
+    List<UsageDay> ByDay, List<UsageKind> ByKind, List<UsageModel> ByModel, double WastedCost, long WastedAttempts, List<UsageWaste> Wasted, List<UsageAttempt> Top);
+public sealed record UsageUtc(UsageTotals Daily, UsageTotals Weekly, UsageTotals Monthly);
+public sealed record SpendAlert(double DailyUsd, double MonthlyUsd);
 public sealed record Wakeup(long Id, int Deadline, long Due, string Reason, string Source, string Status, long Created, int Attempts = 0, string? Note = null, long NextTry = 0);
 public sealed class RegistryConflict(string message) : InvalidOperationException(message);
 
@@ -218,6 +231,81 @@ public sealed partial class BotStore
                 r.GetString(7), r.GetInt64(8), r.IsDBNull(9) ? null : r.GetString(9)),
             ("tag", tag), ("id", id), ("b", beforeId), ("n", Math.Clamp(limit, 1, 200)));
     }
+
+    // ---------- AI spending ----------
+
+    public const int UsageDays = 400;
+    public void AddUsage(AiUsage u, DateTimeOffset? at = null)
+    {
+        lock (gate) Exec("""
+            INSERT INTO ai_usage(time,kind,tag,requested_model,model,attempt,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,cost,finish,ms)
+            VALUES($t,$k,$tag,$rm,$m,$a,$p,$c,$o,$r,$cost,$f,$ms)
+            """, ("t", (at ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds()), ("k", u.Kind), ("tag", u.Tag), ("rm", u.RequestedModel), ("m", u.Model),
+            ("a", u.Attempt), ("p", u.PromptTokens), ("c", u.CachedTokens), ("o", u.CompletionTokens), ("r", u.ReasoningTokens), ("cost", u.CostUsd),
+            ("f", u.Finish), ("ms", u.Ms));
+    }
+    private const string UsageSums = "COALESCE(SUM(cost),0.0),COUNT(*),COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(cached_tokens),0)," +
+        "COALESCE(SUM(completion_tokens),0),COALESCE(SUM(reasoning_tokens),0),COALESCE(SUM(cost IS NULL),0)";
+    private static UsageTotals Sums(SqliteDataReader r, int i) =>
+        new(r.GetDouble(i), r.GetInt64(i + 1), r.GetInt64(i + 2), r.GetInt64(i + 3), r.GetInt64(i + 4), r.GetInt64(i + 5), r.GetInt64(i + 6));
+    public UsageTotals UsageTotal(DateTimeOffset from, DateTimeOffset to)
+    {
+        lock (gate) return Query($"SELECT {UsageSums} FROM ai_usage WHERE time>=$f AND time<$t", r => Sums(r, 0),
+            ("f", from.ToUnixTimeSeconds()), ("t", to.ToUnixTimeSeconds()))[0];
+    }
+    /// <summary>The same periods as the OpenRouter key counters: UTC day, UTC week from Monday, UTC month.</summary>
+    public UsageUtc UsageUtc(DateTimeOffset now)
+    {
+        var day = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var end = day.AddDays(1);
+        return new(UsageTotal(day, end), UsageTotal(day.AddDays(-(((int)day.DayOfWeek + 6) % 7)), end), UsageTotal(new DateTimeOffset(day.Year, day.Month, 1, 0, 0, 0, TimeSpan.Zero), end));
+    }
+    /// <summary>Spending by the group's local days: period bounds are local midnights, rows are bucketed with the zone offset at the current moment.</summary>
+    public UsageReport UsageReport(DateTimeOffset now, int days)
+    {
+        var today = DateOnly.FromDateTime(Config.LocalNow(now));
+        DateTimeOffset At(DateOnly d) => Config.Utc(d.ToDateTime(TimeOnly.MinValue));
+        var end = At(today.AddDays(1));
+        (string, object?) f = ("f", At(today.AddDays(1 - days)).ToUnixTimeSeconds()), t = ("t", end.ToUnixTimeSeconds());
+        lock (gate)
+        {
+            var daily = Query($"SELECT date(time+$o,'unixepoch') d,{UsageSums} FROM ai_usage WHERE time>=$f AND time<$t GROUP BY d",
+                r => (Day: r.GetString(0), Totals: Sums(r, 1)), ("o", (long)Config.Zone.GetUtcOffset(now).TotalSeconds), f, t).ToDictionary(x => x.Day, x => x.Totals);
+            var none = new UsageTotals(0, 0, 0, 0, 0, 0, 0);
+            var byDay = Enumerable.Range(1 - days, days).Select(i => today.AddDays(i).ToString("yyyy-MM-dd")).Select(d => new UsageDay(d, daily.GetValueOrDefault(d) ?? none)).ToList();
+            double? forecast = null;
+            if (Scalar("SELECT MIN(time) FROM ai_usage") is long first)
+            {
+                var start = DateOnly.FromDateTime(Config.LocalNow(DateTimeOffset.FromUnixTimeSeconds(first)));
+                if (start < today.AddDays(-7)) start = today.AddDays(-7);
+                var full = today.DayNumber - start.DayNumber;
+                if (full >= 3) forecast = UsageTotal(At(start), At(today)).Cost / full * DateTime.DaysInMonth(today.Year, today.Month);
+            }
+            var kinds = Query("""
+                SELECT kind,COALESCE(SUM(attempt=1),0),COUNT(*),COALESCE(SUM(cost),0.0),COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(cost IS NULL),0)
+                FROM ai_usage WHERE time>=$f AND time<$t GROUP BY kind ORDER BY 4 DESC,1
+                """, r => (Kind: r.GetString(0), Calls: r.GetInt64(1), Attempts: r.GetInt64(2), Cost: r.GetDouble(3), Prompt: r.GetInt64(4), Cached: r.GetInt64(5), Missing: r.GetInt64(6)), f, t);
+            var total = kinds.Sum(k => k.Cost);
+            var models = Query($"SELECT COALESCE(model,requested_model) m,{UsageSums} FROM ai_usage WHERE time>=$f AND time<$t GROUP BY m ORDER BY 2 DESC,1",
+                r => new UsageModel(r.GetString(0), Sums(r, 1)), f, t);
+            var wasted = Query("""
+                SELECT kind,COALESCE(SUM(finish IN ('length','max_tokens')),0),COALESCE(SUM(attempt>1),0),COUNT(*),COALESCE(SUM(cost),0.0) FROM ai_usage
+                WHERE time>=$f AND time<$t AND (finish IN ('length','max_tokens') OR attempt>1) GROUP BY kind ORDER BY 5 DESC,1
+                """, r => new UsageWaste(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.GetInt64(3), r.GetDouble(4)), f, t);
+            var top = Query("""
+                SELECT time,kind,tag,COALESCE(model,requested_model),attempt,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,cost,finish,ms
+                FROM ai_usage WHERE time>=$f AND time<$t ORDER BY cost IS NULL,cost DESC,id DESC LIMIT 20
+                """, r => new UsageAttempt(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt32(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7),
+                    r.GetInt64(8), r.IsDBNull(9) ? null : r.GetDouble(9), r.IsDBNull(10) ? null : r.GetString(10), r.GetInt64(11)), f, t);
+            return new(days, today.ToString("yyyy-MM-dd"), new(UsageTotal(At(today), end), UsageTotal(At(today.AddDays(-1)), At(today)), UsageTotal(At(today.AddDays(-6)), end),
+                UsageTotal(At(new DateOnly(today.Year, today.Month, 1)), end)), forecast, byDay,
+                kinds.Select(k => new UsageKind(k.Kind, k.Calls, k.Attempts, k.Cost, total > 0 ? k.Cost / total : 0, k.Calls > 0 ? k.Cost / k.Calls : null,
+                    k.Prompt > 0 ? (double)k.Cached / k.Prompt : null, k.Missing)).ToList(),
+                models, wasted.Sum(w => w.Cost), wasted.Sum(w => w.Attempts), wasted, top);
+        }
+    }
+    public SpendAlert SpendAlert() => Get("usage_alert") is { } saved ? Json.Read<SpendAlert>(saved) : new(0, 0);
+    public void SetSpendAlert(SpendAlert alert) => Set("usage_alert", Json.Write(alert));
 
     // ---------- Deadline wake-ups ----------
 

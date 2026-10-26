@@ -25,6 +25,7 @@ public sealed partial class BotWorker : BackgroundService
         telegram.Observer = LogOutgoing;
         ai.Log ??= log;
         ai.Trace ??= t => store.AiLog(t.Kind, t.Tag, t.Model, t.System, t.Request, t.Response, t.Ms, t.Error);
+        ai.Usage ??= u => { store.AddUsage(u); SpendCheck(); };
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -451,11 +452,59 @@ public sealed partial class BotWorker : BackgroundService
         for (var i = 0; i < parts.Length; i++) store.ForgetPost(key + ":part:" + i);
     }
 
-    private async Task NotifyOwner(string text, CancellationToken ct)
+    private async Task<bool> NotifyOwner(string text, CancellationToken ct, bool throttle = true)
     {
         var now = DateTimeOffset.UtcNow;
-        if (long.TryParse(store.Get("last_owner_warning"), out var t) && now.ToUnixTimeSeconds() - t < 3600) return;
-        store.Set("last_owner_warning", now.ToUnixTimeSeconds().ToString());
-        try { await telegram.Send(config.OwnerId, 0, text, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
+        if (throttle && long.TryParse(store.Get("last_owner_warning"), out var t) && now.ToUnixTimeSeconds() - t < 3600) return false;
+        if (throttle) store.Set("last_owner_warning", now.ToUnixTimeSeconds().ToString());
+        try { await telegram.Send(config.OwnerId, 0, text, ct); return true; } catch (Exception) when (!ct.IsCancellationRequested) { return false; }
+    }
+
+    internal Task<AiKeyInfo?> KeyInfo(CancellationToken ct) => ai.KeyInfo(ct);
+    private long spendCheckedAt = long.MinValue / 2;
+    private int spendQueued;
+    private readonly SemaphoreSlim spendGate = new(1);
+    /// <summary>Runs the spending check after a usage row, at most once a minute; a skipped check is queued for the end of that minute.</summary>
+    private void SpendCheck()
+    {
+        var wait = Interlocked.Read(ref spendCheckedAt) + 60_000 - Environment.TickCount64;
+        if (wait > 0)
+        {
+            if (Interlocked.Exchange(ref spendQueued, 1) == 0)
+                _ = Task.Delay(TimeSpan.FromMilliseconds(wait)).ContinueWith(_ => { Interlocked.Exchange(ref spendQueued, 0); SpendCheck(); }, TaskScheduler.Default);
+            return;
+        }
+        Interlocked.Exchange(ref spendCheckedAt, Environment.TickCount64);
+        _ = Task.Run(async () =>
+        {
+            try { await SpendAlerts(DateTimeOffset.UtcNow, CancellationToken.None); }
+            catch (Exception e) { log.LogWarning("Spending check failed ({Type})", Failure(e)); }
+        });
+    }
+    /// <summary>One private message to the developer per local day and per month when spending passes a threshold; the mark survives restarts.</summary>
+    internal async Task SpendAlerts(DateTimeOffset now, CancellationToken ct)
+    {
+        var alert = store.SpendAlert();
+        if (alert.DailyUsd <= 0 && alert.MonthlyUsd <= 0) return;
+        await spendGate.WaitAsync(ct);
+        try
+        {
+            var today = DateOnly.FromDateTime(config.LocalNow(now));
+            var end = config.Utc(today.AddDays(1).ToDateTime(TimeOnly.MinValue));
+            var checks = new[]
+            {
+                (Limit: alert.DailyUsd, Key: "usage_alert_sent:day", Mark: today.ToString("yyyy-MM-dd"), From: config.Utc(today.ToDateTime(TimeOnly.MinValue)), Label: "Сегодня"),
+                (Limit: alert.MonthlyUsd, Key: "usage_alert_sent:month", Mark: today.ToString("yyyy-MM"), From: config.Utc(new DateOnly(today.Year, today.Month, 1).ToDateTime(TimeOnly.MinValue)), Label: "За месяц")
+            };
+            foreach (var c in checks)
+            {
+                if (c.Limit <= 0 || store.Get(c.Key) == c.Mark) continue;
+                var spent = store.UsageTotal(c.From, end).Cost;
+                if (spent <= c.Limit) continue;
+                var text = string.Create(CultureInfo.InvariantCulture, $"💸 {c.Label} потрачено ${spent:0.00} (порог ${c.Limit:0.00})");
+                if (await NotifyOwner(text, ct, throttle: false)) store.Set(c.Key, c.Mark);
+            }
+        }
+        finally { spendGate.Release(); }
     }
 }
