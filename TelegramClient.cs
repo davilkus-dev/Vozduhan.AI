@@ -97,6 +97,26 @@ public sealed class TelegramClient(HttpClient http, string token)
         new { chat_id = chat, message_id = id, disable_notification = true }, ct);
     public Task<JsonElement> Typing(long chat, int topic, CancellationToken ct) =>
         Call("sendChatAction", new { chat_id = chat, message_thread_id = topic > 1 ? (int?)topic : null, action = "typing" }, ct);
+    public Task<JsonElement> GetFile(string fileId, CancellationToken ct) => Call("getFile", new { file_id = fileId }, ct);
+    /// <summary>Downloads a file by its getFile path; null when it is larger than max bytes.</summary>
+    public async Task<byte[]?> Download(string path, long max, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
+        using var response = await http.GetAsync($"./file/bot{token}/{path}", HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Telegram file download returned HTTP {(int)response.StatusCode}", null, response.StatusCode);
+        if (response.Content.Headers.ContentLength > max) return null;
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, timeout.Token)) > 0)
+        {
+            if (buffer.Length + read > max) return null;
+            buffer.Write(chunk, 0, read);
+        }
+        return buffer.ToArray();
+    }
     public Task<JsonElement> React(long chat, int id, string emoji, CancellationToken ct) => Call("setMessageReaction",
         new { chat_id = chat, message_id = id, reaction = new[] { new { type = "emoji", emoji } } }, ct);
 }

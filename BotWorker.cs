@@ -17,11 +17,20 @@ public sealed partial class BotWorker : BackgroundService
     private string username = "";
     private readonly SemaphoreSlim publicationGate = new(1);
     private readonly Conversation conversation;
+    private readonly MediaDigest digest;
+    private readonly System.Threading.Channels.Channel<string> digestQueue =
+        System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(200) { FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest });
+    /// <summary>Live chat: at most this many messages are handled at once; waiting for a coalescing window does not hold a handler.</summary>
+    private const int ChatHandlers = 3;
+    private readonly SemaphoreSlim chatHandlers = new(ChatHandlers);
+    private static readonly AsyncLocal<bool> holdsHandler = new();
+    public static TimeSpan CoalesceQuiet = TimeSpan.FromSeconds(1.5), CoalesceMax = TimeSpan.FromSeconds(6);
 
     public BotWorker(BotConfig config, BotStore store, TelegramClient telegram, OpenRouterClient ai, ILogger<BotWorker> log)
     {
         this.config = config; this.store = store; this.telegram = telegram; this.ai = ai; this.log = log;
         conversation = new(config, store);
+        digest = new(config, store, telegram, ai, log);
         telegram.Observer = LogOutgoing;
         ai.Log ??= log;
         ai.Trace ??= t => store.AiLog(t.Kind, t.Tag, t.Model, t.System, t.Request, t.Response, t.Ms, t.Error);
@@ -47,15 +56,14 @@ public sealed partial class BotWorker : BackgroundService
                 await Task.Delay(TimeSpan.FromSeconds(10), ct);
             }
         }
-        await Task.WhenAll(Supervise("poll", () => Poll(ct), ct),
-            Supervise("worker-1", () => ProcessLoop(0, ct), ct),
-            Supervise("worker-2", () => ProcessLoop(0, ct), ct),
-            Supervise("worker-3", () => ProcessLoop(0, ct), ct),
+        await Task.WhenAll(Enumerable.Range(1, ChatHandlers * 2).Select(i => Supervise($"worker-{i}", () => ProcessLoop(0, ct), ct)).Concat([
+            Supervise("poll", () => Poll(ct), ct),
+            Supervise("digest", () => DigestLoop(ct), ct),
             Supervise("moderation", () => ProcessLoop(1, ct), ct),
             Supervise("callbacks", () => ProcessLoop(2, ct), ct),
             Supervise("publisher", () => PublishLoop(ct), ct),
             Supervise("ambient", () => AmbientLoop(ct), ct),
-            Supervise("wakeplan", () => PlanLoop(ct), ct));
+            Supervise("wakeplan", () => PlanLoop(ct), ct)]));
     }
 
     private async Task Supervise(string name, Func<Task> run, CancellationToken ct)
@@ -97,6 +105,7 @@ public sealed partial class BotWorker : BackgroundService
                     var actor = cb.ValueKind == JsonValueKind.Object ? cb.Field("from").Number("id") : m.Field("from").Number("id");
                     var priority = 0;
                     var allowed = false;
+                    var chatId = cb.ValueKind == JsonValueKind.Object ? cb.Field("message").Field("chat").Number("id") : m.Field("chat").Number("id");
                     if (cb.ValueKind == JsonValueKind.Object)
                     {
                         allowed = config.CanEdit(actor) && cb.Field("message").Field("chat").Number("id") == actor;
@@ -113,14 +122,18 @@ public sealed partial class BotWorker : BackgroundService
                                 (chat.Number("id") == config.GroupId && topic == config.ChatTopicId && HasContent(m));
                             if (allowed)
                             {
-                                store.Remember(chat.Number("id"), topic, (int)m.Number("message_id"), m.Number("date"), m.GetRawText());
+                                var fresh = update.Field("message").ValueKind == JsonValueKind.Object;
+                                store.Remember(chat.Number("id"), topic, (int)m.Number("message_id"), m.Number("date"), m.GetRawText(),
+                                    fresh ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : 0);
+                                if (fresh && config.Features is { MediaDigest: true, DigestAll: true } && chat.Number("id") == config.GroupId && MediaDigest.Find(m) is not null)
+                                    digestQueue.Writer.TryWrite(m.GetRawText());
                                 var reply = m.Field("reply_to_message");
                                 if (reply.ValueKind == JsonValueKind.Object)
                                     store.RememberReference(chat.Number("id"), topic, (int)reply.Number("message_id"), reply.Number("date"), reply.GetRawText());
                             }
                         }
                     }
-                    store.Ingest(update.Number("update_id"), actor, allowed ? update.GetRawText() : null, priority);
+                    store.Ingest(update.Number("update_id"), actor, allowed ? update.GetRawText() : null, priority, chatId);
                 }
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
@@ -175,25 +188,70 @@ public sealed partial class BotWorker : BackgroundService
 
     private async Task ProcessLoop(int priority, CancellationToken ct)
     {
+        holdsHandler.Value = priority == 0;
         while (!ct.IsCancellationRequested)
         {
-            var item = store.Claim(priority);
-            if (item is null) { await Task.Delay(250, ct); continue; }
+            if (priority == 0) await chatHandlers.WaitAsync(ct);
             try
             {
-                using var doc = JsonDocument.Parse(item.Payload);
-                await Process(doc.RootElement, ct);
-                store.Finish(item.Id);
+                var item = store.Claim(priority);
+                if (item is null) { await Task.Delay(250, ct); continue; }
+                try
+                {
+                    using var doc = JsonDocument.Parse(item.Payload);
+                    await Process(doc.RootElement, ct);
+                    store.Finish(item.Id);
+                }
+                catch (Exception e) when (!ct.IsCancellationRequested)
+                {
+                    log.LogWarning("Update {Id} failed ({Type}), attempt {Attempt}", item.Id, Failure(e), item.Attempts + 1);
+                    store.Retry(item, e);
+                    if (e is TelegramError { Code: 401 or 409 })
+                        await NotifyOwner("Telegram отклонил запрос: проверь токен и отсутствие второго polling-процесса. Подробности в journalctl.", ct);
+                    if (priority == 1) await NotifyOwner("Не могу удалить сообщение в AI-теме. Проверь права бота и доступность Telegram.", ct);
+                }
             }
-            catch (Exception e) when (!ct.IsCancellationRequested)
-            {
-                log.LogWarning("Update {Id} failed ({Type}), attempt {Attempt}", item.Id, Failure(e), item.Attempts + 1);
-                store.Retry(item, e);
-                if (e is TelegramError { Code: 401 or 409 })
-                    await NotifyOwner("Telegram отклонил запрос: проверь токен и отсутствие второго polling-процесса. Подробности в journalctl.", ct);
-                if (priority == 1) await NotifyOwner("Не могу удалить сообщение в AI-теме. Проверь права бота и доступность Telegram.", ct);
-            }
+            finally { if (priority == 0) chatHandlers.Release(); }
         }
+    }
+
+    private async Task DigestLoop(CancellationToken ct)
+    {
+        await foreach (var raw in digestQueue.Reader.ReadAllAsync(ct))
+        {
+            using var doc = JsonDocument.Parse(raw);
+            await digest.Describe(doc.RootElement, "digest-bg", ct);
+        }
+    }
+
+    /// <summary>
+    /// Waits until the author is quiet for CoalesceQuiet (at most CoalesceMax from the message). If they wrote again, this message is
+    /// marked as coalesced into the newest one, which will be answered instead (and counts as addressed to the bot).
+    /// </summary>
+    private async Task<bool> Coalesced(JsonElement m, string key, long actor, string text, CancellationToken ct)
+    {
+        if (!config.Features.Coalesce) return false;
+        var chat = m.Field("chat").Number("id"); var topic = m.TopicId(); var id = (int)m.Number("message_id");
+        var arrived = store.Arrived(chat, id) ?? m.Number("date") * 1000;
+        int? newest;
+        while (true)
+        {
+            var later = store.Around(chat, topic, actor, afterId: id).Where(x => !(JsonSerializer.Deserialize<JsonElement>(x.Payload).Text("text") ?? "").StartsWith('/')).ToList();
+            newest = later.Count > 0 ? later[^1].Id : null;
+            var wait = Math.Min(later.Select(x => x.Arrived).Append(arrived).Max() + (long)CoalesceQuiet.TotalMilliseconds,
+                arrived + (long)CoalesceMax.TotalMilliseconds) - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (wait <= 0) break;
+            // The handler is free for other chats while we wait; this chat stays claimed, so its order holds.
+            if (holdsHandler.Value) chatHandlers.Release();
+            try { await Task.Delay(TimeSpan.FromMilliseconds(wait), ct); }
+            finally { if (holdsHandler.Value) await chatHandlers.WaitAsync(CancellationToken.None); }
+        }
+        if (newest is null) return false;
+        var before = store.Post($"coalesce:{chat}:{id}")?.Text;
+        store.SavePost($"coalesce:{chat}:{newest}", id, Conversation.Limit(string.Join("\n", new[] { before, text }.Where(x => !string.IsNullOrEmpty(x))), 4000));
+        store.SavePost(key, 0, $"coalesced:{newest}");
+        store.LogMessage(DateTimeOffset.UtcNow.ToUnixTimeSeconds(), chat, m.Field("chat").Text("type") ?? "", topic, id, actor, "coalesced", $"[склеено с сообщением {newest}]", "{}");
+        return true;
     }
 
     private static readonly string[] PublicCommands = ["/today", "/tomorrow", "/week", "/date", "/next", "/deadlines", "/subjects", "/roster", "/help", "/start"];
@@ -236,9 +294,10 @@ public sealed partial class BotWorker : BackgroundService
             return;
         }
         var editor = config.CanEdit(actor);
+        var joined = store.Post($"coalesce:{chat}:{id}")?.Text;
         if (!isPrivate)
         {
-            if (!Conversation.CallsBot(m, botId, username)) return;
+            if (!Conversation.CallsBot(m, botId, username) && joined is null) return;
             // Commands in the group are answered deterministically and never reveal editor/owner data.
             if (PublicCommands.Contains(command)) { await Respond(m, responseKey, Info(command, words), ct, html: true); return; }
             if (command.Length > 0)
@@ -248,6 +307,7 @@ public sealed partial class BotWorker : BackgroundService
                     : $"Не знаю команду {WebUtility.HtmlEncode(command)} 🤔\n\n" + Help(false), ct, html: true);
                 return;
             }
+            if (await Coalesced(m, responseKey, actor, text, ct)) return;
             await ChatGuarded(m, responseKey, false, actor, ct);
             return;
         }
@@ -277,7 +337,8 @@ public sealed partial class BotWorker : BackgroundService
             return;
         }
         if (command.Length > 0) { await Respond(m, responseKey, $"Не знаю команду {WebUtility.HtmlEncode(command)} 🤔\n\n" + Help(editor), ct, html: true); return; }
-        if (editor) { await AdminDialog(m, responseKey, actor, text, ct); return; }
+        if (await Coalesced(m, responseKey, actor, text, ct)) return;
+        if (editor) { await AdminDialog(m, responseKey, actor, joined is null ? text : joined + "\n" + text, ct); return; }
         await ChatGuarded(m, responseKey, true, actor, ct);
     }
 
@@ -386,7 +447,11 @@ public sealed partial class BotWorker : BackgroundService
         {
             using var typing = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var indicator = KeepTyping(chat, topic, typing.Token);
-            try { answer = await ai.Chat(conversation.AdminContext(isPrivate), conversation.Context(m, isPrivate), Tag(m), config.SplitReplies, ct); }
+            try
+            {
+                await digest.Prepare(Related(m), "digest", ct);
+                answer = await ai.Chat(conversation.AdminContext(isPrivate), conversation.Context(m, isPrivate), Tag(m), config.SplitReplies, ct);
+            }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
                 log.LogWarning("AI chat failed: {Error}", Failure(e));
@@ -400,6 +465,17 @@ public sealed partial class BotWorker : BackgroundService
         store.SavePost(key, first ?? 0, "");
         store.ForgetPost(answerKey);
         for (var i = 0; i < parts.Count; i++) store.ForgetPost(key + ":part:" + i);
+    }
+
+    /// <summary>The message, what it replies to and the author's messages just before it (a photo and then «что тут?»).</summary>
+    private IEnumerable<JsonElement> Related(JsonElement m)
+    {
+        if (!config.Features.MediaDigest) return [];
+        var chat = m.Field("chat").Number("id"); var id = (int)m.Number("message_id");
+        var since = (store.Arrived(chat, id) ?? m.Number("date") * 1000) - (long)CoalesceMax.TotalMilliseconds;
+        return store.Around(chat, m.TopicId(), m.Field("from").Number("id"), beforeId: id).Where(x => x.Arrived >= since)
+            .Select(x => JsonSerializer.Deserialize<JsonElement>(x.Payload)).Prepend(m.Field("reply_to_message")).Prepend(m)
+            .Where(x => x.ValueKind == JsonValueKind.Object).ToList();
     }
 
     /// <summary>A quick human acknowledgement: sometimes 👀, 👍 or 👌, sometimes nothing.</summary>

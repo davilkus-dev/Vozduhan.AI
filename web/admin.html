@@ -361,7 +361,9 @@ VIEWS.plan=async el=>{
     <label>Шанс каждого вброса, %</label><input type="number" id="a_ch" min="0" max="100" value="${Math.round(a.spontaneousChance*100)}">
     <label>Окно вбросов</label><div class="row"><input type="time" id="a_from" value="${a.activeFrom}">—<input type="time" id="a_to" value="${a.activeTo}"></div>
     <label>Напоминание накануне</label><div class="row"><input type="checkbox" id="a_eve" ${a.eveReminders?"checked":""}><input type="time" id="a_evet" value="${a.eveReminderTime}"></div></div>
-    <div class="row"><button class="b p" id="a_save">Сохранить</button><button class="b" id="a_reset">Сбросить к конфигу</button></div></details>`/*END*/;
+    <div class="row"><button class="b p" id="a_save">Сохранить</button><button class="b" id="a_reset">Сбросить к конфигу</button></div></details>
+    <details class="card"><summary style="cursor:pointer"><b>🧪 Новые функции</b> <span class="muted small">— по умолчанию всё выключено, действует сразу</span></summary>
+    <div class="f" id="f_body"><span class="muted">Загрузка…</span></div><div class="row"><button class="b p" id="f_save">Сохранить</button></div></details>`/*END*/;
   $("#pl").innerHTML=settings+`<div class="stats"><div class="stat"><b>${a.enabled?"вкл":"выкл"}</b><span>инициатива бота</span></div><div class="stat"><b>${a.summaryTime}</b><span>утро в «Сводку»</span></div>
     <div class="stat"><b>до ${a.spontaneousPerDay}</b><span>вбросов в день (${Math.round(a.spontaneousChance*100)}%), ${a.activeFrom}–${a.activeTo}</span></div><div class="stat"><b>${a.eveReminders?a.eveReminderTime:"выкл"}</b><span>напоминание накануне</span></div></div>
     <div class="card tw"><h3>Ближайшие 7 дней</h3><table><thead><tr><th>День</th><th>Утро</th><th>Вбросы в Воздуханство</th><th>Вечером в «Сводку»</th></tr></thead><tbody>${days}</tbody></table></div>
@@ -385,6 +387,13 @@ VIEWS.plan=async el=>{
       spontaneousPerDay:+$("#a_cnt").value,spontaneousChance:(+$("#a_ch").value)/100,activeFrom:$("#a_from").value,activeTo:$("#a_to").value,eveReminders:$("#a_eve").checked,eveReminderTime:$("#a_evet").value}});
     if(x.ok){toast("Настройки сохранены");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)};
   const rs=$("#a_reset");if(rs)rs.onclick=async()=>{await api("ambient",{reset:true});toast("Вернул настройки из конфига");render()};
+  const FEAT=[["coalesce","Склейка: на несколько сообщений подряд — один ответ"],["mediaDigest","Media Digest: фото, стикеры и видео — описанием для бота"],
+    ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"]];
+  if($("#f_body"))api("features").then(x=>{if(viewId!==renderId||!x.ok)return;const f=x.features;
+    $("#f_body").innerHTML=FEAT.map(([k,t])=>`<label>${t}</label><input type="checkbox" id="f_${k}" ${f[k]?"checked":""}>`).join("")+
+      `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`;
+    $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
+      const r=await api("features",{settings});if(r.ok)toast("Новые функции сохранены");else info("Ошибка",`<p>${esc(r.error)}</p>`)}});
   /*END*/
   el.querySelectorAll("[data-re]").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="Думаю…";const x=await api("wakeup/replan",{deadline:+b.dataset.re});if(x.ok)toast("ИИ поставил будильников: "+x.count);else info("Ошибка",`<p>${esc(x.error)}</p>`);render()});
   el.querySelectorAll("[data-add]").forEach(b=>b.onclick=async()=>{const v=await form("Напоминание к дедлайну",[{k:"at",label:"Когда",type:"datetime-local"},{k:"reason",label:"Зачем / о чём",ph:"за час до пары, пусть несут распечатки"}]);
@@ -528,7 +537,7 @@ VIEWS.log=async el=>{
     const q=$("#lq").value.trim();const p=new URLSearchParams();if(S.chat){p.set("chat",S.chat.chat);p.set("topic",S.chat.topic)}if(q)p.set("q",q);if(before)p.set("before",before);
     const res=await api("log?"+p);if(current!==requestId||!el.isConnected)return;rows=rows.concat(res.rows||[]);if(res.rows?.length)before=res.rows[res.rows.length-1].id;
     $("#more").style.display=(res.rows||[]).length>=150?"":"none";
-    $("#ml").innerHTML=rows.slice().reverse().map(m=>`<div class="m ${m.direction}" data-id="${m.id}" data-chat="${m.chat}" data-msg="${m.message}"><div class="h">${["in","edit","callback"].includes(m.direction)?esc(m.name||"")+(m.username?" @"+esc(m.username):"")+" · "+m.sender:"бот"} · ${time(m.time)}${m.direction==="edit"?" · правка":""}${m.direction==="out-edit"?" · правка поста":""}${!S.chat?" · чат "+esc(String(m.chat)):""}</div>${esc(m.text)}</div>`).join("")||'<div class="empty">Нет сообщений</div>';
+    $("#ml").innerHTML=rows.slice().reverse().map(m=>`<div class="m ${m.direction}" data-id="${m.id}" data-chat="${m.chat}" data-msg="${m.message}"><div class="h">${["in","edit","callback","coalesced"].includes(m.direction)?esc(m.name||"")+(m.username?" @"+esc(m.username):"")+" · "+m.sender:"бот"} · ${time(m.time)}${m.direction==="edit"?" · правка":""}${m.direction==="coalesced"?" · склеено":""}${m.direction==="out-edit"?" · правка поста":""}${!S.chat?" · чат "+esc(String(m.chat)):""}</div>${esc(m.text)}</div>`).join("")||'<div class="empty">Нет сообщений</div>';
     if(reset)$("#ml").scrollTop=$("#ml").scrollHeight;
     if(OWNER())$("#ml").querySelectorAll(".m").forEach(x=>x.onclick=async()=>{const raw=await api("raw?id="+x.dataset.id);
       const ai=/*OWNER*/OWNER()?await api("ai?tag="+encodeURIComponent(`chat:${x.dataset.chat}:${x.dataset.msg}`)):/*END*/{rows:[]};
@@ -552,7 +561,7 @@ VIEWS.log=async el=>{
 /*OWNER*/async function showAi(id){const viewId=renderId;const r=await api("ai?id="+id);if(viewId!==renderId)return;const a=r.rows?.[0];if(!a)return;
   let req=a.request;try{req=JSON.stringify(JSON.parse(a.request),null,2)}catch{}
   info(`ИИ · ${a.kind} · ${a.ms} мс`,`<p class="faint small">${esc(a.model)} · ${time(a.time)} · ${esc(a.tag)}</p>${a.error?`<p style="color:var(--bad)">${esc(a.error)}</p>`:""}<h3>Ответ</h3><pre>${esc(a.response)}</pre><h3>Данные запроса</h3><pre>${esc(req)}</pre><h3>Системный промпт</h3><pre>${esc(a.system)}</pre>`)}
-const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"]];
+const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"],["digest","Описание медиа (нужна модель с картинками и аудио)"]];
 const SUGGEST=["google/gemini-3.8-flash","deepseek/deepseek-v4.1-flash","z-ai/glm-5.3","z-ai/glm-5.3-flash"];
 VIEWS.ai=async el=>{
   const viewId=renderId;el.innerHTML=page("Нейронки и запросы","Какая модель что делает — и промпт, данные и ответ каждого запроса, чтобы ловить баги. Логи хранятся aiLogDays дней.")+
@@ -578,7 +587,7 @@ VIEWS.ai=async el=>{
 /*OWNER*/const usd=v=>v==null?"—":v===0?"$0":"$"+(Math.abs(v)<1?v.toFixed(4):v.toFixed(2));
 const num=n=>(n||0).toLocaleString("ru-RU");
 const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
-const KUSE={chat:"ответ в чате",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
+const KUSE={chat:"ответ в чате",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
   "ambient-deadline":"вводная поста дедлайна","ambient-wakeup":"напоминание","ambient-summary":"утренняя сводка","ambient-morning":"утро в чате",
   "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост"};
 const kuse=k=>`<span title="${esc(k)}">${esc(KUSE[k]||k)}</span>`;

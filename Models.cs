@@ -99,6 +99,21 @@ public sealed class AmbientSettings
     public string EveReminderTime { get; set; } = "20:00";
 }
 
+/// <summary>New features, all off by default. Stored in kv "feature_settings"; read at the moment of action.</summary>
+public sealed class FeatureSettings
+{
+    /// <summary>Several quick messages of one author get one answer, to the newest.</summary>
+    public bool Coalesce { get; set; }
+    /// <summary>Photos, stickers, voices and videos reach the model as short descriptions.</summary>
+    public bool MediaDigest { get; set; }
+    public bool DigestVoice { get; set; }
+    public int DigestDailyLimit { get; set; } = 200;
+    /// <summary>Every media in Воздуханство is described in the background, not only messages to the bot.</summary>
+    public bool DigestAll { get; set; }
+    /// <summary>Videos, circles and GIFs are described by several frames (needs ffmpeg) instead of one preview.</summary>
+    public bool DigestVideo { get; set; }
+}
+
 /// <summary>Model choice editable from the web admin (owner). Any OpenRouter model id works.</summary>
 public sealed class AiSettings
 {
@@ -325,6 +340,7 @@ public sealed class BotConfig
     public AmbientSettings Ambient { get; set; } = new();
     /// <summary>The ambient block as written in the config file (for "reset to config" in the admin).</summary>
     [JsonIgnore] public AmbientSettings? FileAmbient { get; set; }
+    [JsonIgnore] public FeatureSettings Features { get; set; } = new();
     /// <summary>Chance of an instant 👀/👍/👌 reaction before a chat answer.</summary>
     public double ReactionChance { get; set; } = 0.7;
     public string[] Reactions { get; set; } = ["👀", "👍", "👌"];

@@ -66,6 +66,8 @@ public sealed partial class BotStore : IDisposable
                 completion_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, cost REAL NULL, finish TEXT NULL, ms INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS ai_usage_time ON ai_usage(time);
             CREATE INDEX IF NOT EXISTS ai_usage_kind ON ai_usage(kind,time);
+            CREATE TABLE IF NOT EXISTS media_digest(file_unique_id TEXT PRIMARY KEY, kind TEXT NOT NULL, summary TEXT NOT NULL,
+                transcript TEXT NULL, created INTEGER NOT NULL);
             PRAGMA user_version=2;
             """);
         AddColumn("wakeups", "attempts", "INTEGER NOT NULL DEFAULT 0");
@@ -74,6 +76,9 @@ public sealed partial class BotStore : IDisposable
         AddColumn("deadlines", "dev_note", "TEXT NULL");
         AddColumn("ai_usage", "call_id", "TEXT NULL");
         AddColumn("ai_usage", "discard", "TEXT NULL");
+        AddColumn("inbox", "chat", "INTEGER NOT NULL DEFAULT 0");
+        AddColumn("messages", "arrived", "INTEGER NOT NULL DEFAULT 0");
+        Exec("CREATE INDEX IF NOT EXISTS inbox_chat ON inbox(chat,state)");
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");
@@ -95,6 +100,7 @@ public sealed partial class BotStore : IDisposable
         if (Get("ambient_settings") is { } saved) Config.Ambient = Json.Read<AmbientSettings>(saved);
         Config.FileAi ??= Config.AiSnapshot();
         if (Get("ai_settings") is { } ai) Config.ApplyAi(Json.Read<AiSettings>(ai));
+        if (Get("feature_settings") is { } features) Config.Features = Json.Read<FeatureSettings>(features);
     }
 
     private void AddColumn(string table, string column, string definition)
@@ -132,13 +138,13 @@ public sealed partial class BotStore : IDisposable
     {
         lock (gate) Exec("INSERT INTO kv VALUES($k,$v) ON CONFLICT(key) DO UPDATE SET value=$v", ("k", key), ("v", value));
     }
-    public void Ingest(long id, long actor, string? payload, int priority)
+    public void Ingest(long id, long actor, string? payload, int priority, long chat = 0)
     {
         lock (gate)
         {
             using var tx = db.BeginTransaction();
-            if (payload is not null) Exec("INSERT OR IGNORE INTO inbox(id,actor,payload,priority) VALUES($id,$a,$p,$r)",
-                ("id", id), ("a", actor), ("p", payload), ("r", priority));
+            if (payload is not null) Exec("INSERT OR IGNORE INTO inbox(id,actor,payload,priority,chat) VALUES($id,$a,$p,$r,$c)",
+                ("id", id), ("a", actor), ("p", payload), ("r", priority), ("c", chat));
             Set("offset", (id + 1).ToString());
             tx.Commit();
         }
@@ -150,7 +156,8 @@ public sealed partial class BotStore : IDisposable
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var item = Query("""
                 SELECT id,payload,attempts,actor FROM inbox i WHERE state=0 AND next_at<=$now AND priority=$priority
-                AND NOT EXISTS(SELECT 1 FROM inbox b WHERE b.actor=i.actor AND b.priority=i.priority AND b.id<i.id AND b.state IN (0,1))
+                AND NOT EXISTS(SELECT 1 FROM inbox b WHERE b.priority=i.priority AND b.id<>i.id AND (b.id<i.id OR b.state=1) AND b.state IN (0,1)
+                    AND CASE WHEN i.chat<>0 THEN b.chat=i.chat ELSE b.actor=i.actor END)
                 ORDER BY priority DESC,id LIMIT 1
                 """, r => new Inbox(r.GetInt64(0), r.GetString(1), r.GetInt32(2), r.GetInt64(3)), ("now", now), ("priority", priority)).FirstOrDefault();
             if (item is not null) Exec("UPDATE inbox SET state=1 WHERE id=$id", ("id", item.Id));
@@ -169,12 +176,25 @@ public sealed partial class BotStore : IDisposable
             ("s", permanent || !transient && item.Attempts >= 4 ? 3 : 0),
             ("n", DateTimeOffset.UtcNow.AddSeconds(delay).ToUnixTimeSeconds()), ("id", item.Id));
     }
-    public void Remember(long chat, int topic, int id, long sent, string payload)
+    /// <summary>arrived: when the bot received a new message, unix ms; 0 keeps the stored value.</summary>
+    public void Remember(long chat, int topic, int id, long sent, string payload, long arrived = 0)
     {
         lock (gate) Exec("""
-            INSERT INTO messages VALUES($c,$t,$id,$s,$p) ON CONFLICT(chat,id)
-            DO UPDATE SET topic=$t,sent=$s,payload=$p
-            """, ("c", chat), ("t", topic), ("id", id), ("s", sent), ("p", payload));
+            INSERT INTO messages(chat,topic,id,sent,payload,arrived) VALUES($c,$t,$id,$s,$p,$a) ON CONFLICT(chat,id)
+            DO UPDATE SET topic=$t,sent=$s,payload=$p,arrived=CASE WHEN $a>0 THEN $a ELSE arrived END
+            """, ("c", chat), ("t", topic), ("id", id), ("s", sent), ("p", payload), ("a", arrived));
+    }
+    /// <summary>Messages of one author in a conversation strictly between two IDs, oldest first, with arrival in unix ms.</summary>
+    public List<(int Id, long Arrived, string Payload)> Around(long chat, int topic, long actor, int afterId = int.MinValue, int beforeId = int.MaxValue)
+    {
+        lock (gate) return Query("""
+            SELECT id,CASE WHEN arrived>0 THEN arrived ELSE sent*1000 END,payload FROM messages
+            WHERE chat=$c AND topic=$t AND id>$a AND id<$b AND json_extract(payload,'$.from.id')=$u ORDER BY id
+            """, r => (r.GetInt32(0), r.GetInt64(1), r.GetString(2)), ("c", chat), ("t", topic), ("a", afterId), ("b", beforeId), ("u", actor));
+    }
+    public long? Arrived(long chat, int id)
+    {
+        lock (gate) return Scalar("SELECT CASE WHEN arrived>0 THEN arrived ELSE sent*1000 END FROM messages WHERE chat=$c AND id=$id", ("c", chat), ("id", id)) as long?;
     }
     public List<string> History(long chat, int topic, int through, int count)
     {
@@ -183,7 +203,7 @@ public sealed partial class BotStore : IDisposable
     }
     public void RememberReference(long chat, int topic, int id, long sent, string payload)
     {
-        lock (gate) Exec("INSERT OR IGNORE INTO messages VALUES($c,$t,$id,$s,$p)",
+        lock (gate) Exec("INSERT OR IGNORE INTO messages(chat,topic,id,sent,payload) VALUES($c,$t,$id,$s,$p)",
             ("c", chat), ("t", topic), ("id", id), ("s", sent), ("p", payload));
     }
     public bool ChatBudget(long actor, DateTimeOffset now)
@@ -196,6 +216,27 @@ public sealed partial class BotStore : IDisposable
             Set(key, (used + 1).ToString());
             return true;
         }
+    }
+    public bool DigestBudget(DateTimeOffset now, int limit)
+    {
+        lock (gate)
+        {
+            var key = $"digest_budget:{Config.LocalNow(now):yyyy-MM-dd}";
+            var used = int.TryParse(Get(key), out var n) ? n : 0;
+            if (used >= limit) return false;
+            Set(key, (used + 1).ToString());
+            return true;
+        }
+    }
+    public (string Summary, string? Transcript)? Digest(string uniqueId)
+    {
+        lock (gate) return Query("SELECT summary,transcript FROM media_digest WHERE file_unique_id=$id",
+            r => ((string, string?)?)(r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1)), ("id", uniqueId)).FirstOrDefault();
+    }
+    public void SaveDigest(string uniqueId, string kind, string summary, string? transcript)
+    {
+        lock (gate) Exec("INSERT OR REPLACE INTO media_digest VALUES($id,$k,$s,$t,$c)", ("id", uniqueId), ("k", kind), ("s", summary),
+            ("t", transcript), ("c", DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
     }
     public void ForgetMessage(long chat, int id)
     {
@@ -424,6 +465,7 @@ public sealed partial class BotStore : IDisposable
     }
     public void ForgetPost(string key) { lock (gate) Exec("DELETE FROM posts WHERE key=$k", ("k", key)); }
     public void Pinned(string key, bool value) { lock (gate) Exec("UPDATE posts SET pinned=$p WHERE key=$k", ("p", value ? 1 : 0), ("k", key)); }
+    public const int DigestDays = 180;
     public void Maintain(DateTimeOffset now)
     {
         lock (gate)
@@ -436,6 +478,7 @@ public sealed partial class BotStore : IDisposable
             Exec("DELETE FROM chat_log WHERE time<$s", ("s", now.AddDays(-Config.LogDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM ai_log WHERE time<$s", ("s", now.AddDays(-Config.AiLogDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM ai_usage WHERE time<$s", ("s", now.AddDays(-UsageDays).ToUnixTimeSeconds()));
+            Exec("DELETE FROM media_digest WHERE created<$s", ("s", now.AddDays(-DigestDays).ToUnixTimeSeconds()));
             var day = now.ToString("yyyy-MM-dd");
             if (Get("backup_day") == day) return;
             var folder = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Config.DataPath))!, "backups");

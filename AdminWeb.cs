@@ -478,6 +478,21 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, 200, new { ok = true, intro, introSource = Source(given), card = TelegramHtml.Sanitize(Deadlines.Card(config, d with { Intro = intro }, DateTimeOffset.UtcNow)), version = d.Version, manualEdited = manual });
                 return;
             }
+            case "/api/features" when !owner:
+                await Send(response, 403, new { ok = false, error = "Новые функции настраивает только разработчик" });
+                return;
+            case "/api/features" when !post:
+                await Send(response, 200, new { ok = true, features = config.Features });
+                return;
+            case "/api/features":
+            {
+                if (Features(body.Field("settings"), config.Features) is not { } next)
+                { await Send(response, 400, new { ok = false, error = "Неверные настройки: флаги — true/false, числа — целые от 0 до 10000" }); return; }
+                config.Features = next;
+                store.Set("feature_settings", Json.Write(next));
+                await Send(response, 200, new { ok = true, features = next });
+                return;
+            }
             case "/api/ai-settings" when !post && owner:
                 await Send(response, 200, new { ok = true, current = config.AiSnapshot(), file = config.FileAi, saved = store.Get("ai_settings") is not null });
                 return;
@@ -625,7 +640,23 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         await Send(response, 404, new { ok = false, error = "Неизвестный запрос" });
     }
 
-    private const string NoAi = "ИИ не ответил. Можно сохранить со стандартной фразой или написать вводную вручную.";
+    /// <summary>Applies the given fields onto a copy of the current settings; null on an unknown field or a wrong type or range.</summary>
+    private static FeatureSettings? Features(JsonElement e, FeatureSettings current)
+    {
+        if (e.ValueKind != JsonValueKind.Object) return null;
+        var next = Json.Read<FeatureSettings>(Json.Write(current));
+        var fields = typeof(FeatureSettings).GetProperties().ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
+        foreach (var p in e.EnumerateObject())
+        {
+            if (!fields.TryGetValue(p.Name, out var f)) return null;
+            if (f.PropertyType == typeof(bool) && p.Value.ValueKind is JsonValueKind.True or JsonValueKind.False) f.SetValue(next, p.Value.GetBoolean());
+            else if (f.PropertyType == typeof(int) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt32(out var n) && n is >= 0 and <= 10000) f.SetValue(next, n);
+            else return null;
+        }
+        return next;
+    }
+
+    private const string NoAi ="ИИ не ответил. Можно сохранить со стандартной фразой или написать вводную вручную.";
     /// <summary>An editor-written lead, if the request carries one (an empty string means the standard phrase).</summary>
     private static string? Intro(JsonElement body) => body.Field("intro").ValueKind == JsonValueKind.String
         ? System.Text.RegularExpressions.Regex.Replace(body.Field("intro").GetString()!.Trim(), @"(?:\r?\n){3,}", "\n\n") : null;

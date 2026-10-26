@@ -33,7 +33,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
             time_utc = m.Number("date"),
             topic_id = m.TopicId(),
             author = Identity(m.Field("from")),
-            text = Limit(m.Body(), 2400),
+            text = Limit(MediaDigest.Text(m, store), 2400),
             reply_to_message_id = reply.Number("message_id"),
             selected_quote = m.Field("quote").Text("text"),
             quote_is_manual = m.Field("quote").Flag("is_manual"),

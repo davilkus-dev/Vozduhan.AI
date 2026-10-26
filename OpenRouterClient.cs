@@ -14,7 +14,11 @@ public sealed record PlanResult(string Intent, ParsedDeadline? Deadline, JsonEle
 
 public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? key)
 {
-    private readonly SemaphoreSlim slots = new(2);
+    public const int InteractiveSlots = 2, BackgroundSlots = 1;
+    /// <summary>Kinds a person is waiting for; every other kind (ambient-*, wakeplan, idea, observer, digest-bg…) is background.</summary>
+    private static readonly HashSet<string> Interactive = ["chat", "router", "plan", "deadline", "digest", "picker", "test"];
+    private readonly SemaphoreSlim interactive = new(InteractiveSlots), background = new(BackgroundSlots);
+    private SemaphoreSlim Pool(string kind) => Interactive.Contains(kind) ? interactive : background;
     public bool Available => !string.IsNullOrWhiteSpace(key);
     /// <summary>Receives every request/response for the admin log. Must not throw.</summary>
     public Action<AiTrace>? Trace { get; set; }
@@ -26,7 +30,9 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     /// One model call with adaptive effort: reasoning depth depends on the task kind (config.reasoningEffort), and an answer cut
     /// by the output limit (finish_reason=length, empty content or broken JSON) is regenerated with a doubled budget up to the ceiling.
     /// </summary>
-    public async Task<string> Complete(string system, string user, bool json, CancellationToken ct, string kind = "other", string tag = "", string? modelOverride = null, string? callId = null)
+    /// <summary>parts: extra user content (images, audio) sent after the text; the log keeps only the text.</summary>
+    public async Task<string> Complete(string system, string user, bool json, CancellationToken ct, string kind = "other", string tag = "", string? modelOverride = null, string? callId = null,
+        IReadOnlyList<object>? parts = null)
     {
         if (!Available) throw new InvalidOperationException("OpenRouter key is missing");
         callId ??= Guid.NewGuid().ToString("N");
@@ -45,22 +51,22 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             {
                 attempts++;
                 (string? Content, string? Finish, AiUsage Usage, bool HasChoices) answer;
-                try { answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token); }
+                try { answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token, parts); }
                 catch (HttpRequestException e) when (e.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.NotFound)
                 {
                     // Some models reject reasoning/json options: retry the same model in compatibility mode.
-                    try { answer = await Attempt(model, system, user, json, effort, budget, true, (kind, tag, attempts), timeout.Token); }
+                    try { answer = await Attempt(model, system, user, json, effort, budget, true, (kind, tag, attempts), timeout.Token, parts); }
                     catch (HttpRequestException) when (model != config.Model && modelOverride is null)
                     {
                         model = config.Model;
-                        answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token);
+                        answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token, parts);
                     }
                 }
                 catch (HttpRequestException) when (model != config.Model && modelOverride is null)
                 {
                     // The routed model is unavailable or rate-limited: fall back to the main model.
                     model = config.Model;
-                    answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token);
+                    answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token, parts);
                 }
                 var (content, finish, usage, hasChoices) = answer;
                 var discard = finish is "length" or "max_tokens" ? "length" : string.IsNullOrEmpty(content) ? "empty"
@@ -113,8 +119,9 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         try { using var _ = JsonDocument.Parse(text); return true; } catch (JsonException) { return false; }
     }
     private async Task<(string? Content, string? Finish, AiUsage Usage, bool HasChoices)> Attempt(string model, string system, string user, bool json, string effort, int budget, bool compat,
-        (string Kind, string Tag, int Number) call, CancellationToken ct)
+        (string Kind, string Tag, int Number) call, CancellationToken ct, IReadOnlyList<object>? parts)
     {
+        var slots = Pool(call.Kind);
         await slots.WaitAsync(ct);
         try
         {
@@ -125,7 +132,8 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             request.Content = JsonContent.Create(new
             {
                 model,
-                messages = new[] { new { role = "system", content = system }, new { role = "user", content = user } },
+                messages = new[] { new { role = "system", content = (object)system },
+                    new { role = "user", content = parts is null ? user : (object)parts.Prepend(new { type = "text", text = user }).ToArray() } },
                 reasoning = compat ? null : new { effort, exclude = true },
                 temperature = json ? 0.3 : 1.0, top_p = 0.95, max_tokens = budget,
                 provider = new { allow_fallbacks = true, require_parameters = !compat, data_collection = "deny" },
