@@ -26,6 +26,7 @@ public sealed partial class BotWorker : BackgroundService
         ai.Log ??= log;
         ai.Trace ??= t => store.AiLog(t.Kind, t.Tag, t.Model, t.System, t.Request, t.Response, t.Ms, t.Error);
         ai.Usage ??= u => { store.AddUsage(u); SpendCheck(); };
+        ai.DiscardUsage ??= store.DiscardUsage;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -498,11 +499,12 @@ public sealed partial class BotWorker : BackgroundService
             };
             foreach (var c in checks)
             {
-                if (c.Limit <= 0 || store.Get(c.Key) == c.Mark) continue;
+                var mark = c.Mark + "|" + c.Limit.ToString("G", CultureInfo.InvariantCulture);
+                if (c.Limit <= 0 || store.Get(c.Key) == mark) continue;
                 var spent = store.UsageTotal(c.From, end).Cost;
                 if (spent <= c.Limit) continue;
                 var text = string.Create(CultureInfo.InvariantCulture, $"💸 {c.Label} потрачено ${spent:0.00} (порог ${c.Limit:0.00})");
-                if (await NotifyOwner(text, ct, throttle: false)) store.Set(c.Key, c.Mark);
+                if (await NotifyOwner(text, ct, throttle: false)) store.Set(c.Key, mark);
             }
         }
         finally { spendGate.Release(); }

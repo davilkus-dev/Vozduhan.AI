@@ -72,6 +72,8 @@ public sealed partial class BotStore : IDisposable
         AddColumn("wakeups", "note", "TEXT NULL");
         AddColumn("wakeups", "next_try", "INTEGER NOT NULL DEFAULT 0");
         AddColumn("deadlines", "dev_note", "TEXT NULL");
+        AddColumn("ai_usage", "call_id", "TEXT NULL");
+        AddColumn("ai_usage", "discard", "TEXT NULL");
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");

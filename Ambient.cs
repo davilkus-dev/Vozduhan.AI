@@ -41,11 +41,11 @@ public sealed partial class BotWorker
         var local = config.LocalNow(utc);
         var today = DateOnly.FromDateTime(local);
         var date = today.ToString("yyyy-MM-dd");
-        if (config.SummaryTopicId > 0) await Isolated($"ambient:summary:{date}", () => Job($"ambient:summary:{date}", today, a.SummaryTime, local, k => MorningSummary(today, ct, TakePrep(k))), ct);
-        if (a.MorningTime.Length > 0) await Isolated($"ambient:morning:{date}", () => Job($"ambient:morning:{date}", today, a.MorningTime, local, k => PostAmbient("morning", null, ct, TakePrep(k), config.ChatTopicId, k)), ct);
+        if (config.SummaryTopicId > 0) await Isolated($"ambient:summary:{date}", () => Job($"ambient:summary:{date}", today, a.SummaryTime, local, k => MorningSummary(today, ct, TakePrep(k))), ct, utc);
+        if (a.MorningTime.Length > 0) await Isolated($"ambient:morning:{date}", () => Job($"ambient:morning:{date}", today, a.MorningTime, local, k => PostAmbient("morning", null, ct, TakePrep(k), config.ChatTopicId, k)), ct, utc);
         foreach (var (i, time) in SpontaneousPlan(today).Select((t, i) => (i, t)))
-            await Isolated($"ambient:spont:{date}:{i}", () => Job($"ambient:spont:{date}:{i}", today, time, local, k => PostAmbient("spontaneous", null, ct, TakePrep(k), config.ChatTopicId, k)), ct);
-        if (a.EveReminders) await Isolated($"ambient:eve:{date}", () => Job($"ambient:eve:{date}", today, a.EveReminderTime, local, k => EveReminder(today.AddDays(1), ct, TakePrep(k))), ct);
+            await Isolated($"ambient:spont:{date}:{i}", () => Job($"ambient:spont:{date}:{i}", today, time, local, k => PostAmbient("spontaneous", null, ct, TakePrep(k), config.ChatTopicId, k)), ct, utc);
+        if (a.EveReminders) await Isolated($"ambient:eve:{date}", () => Job($"ambient:eve:{date}", today, a.EveReminderTime, local, k => EveReminder(today.AddDays(1), ct, TakePrep(k))), ct, utc);
         var now = utc.ToUnixTimeSeconds();
         foreach (var w in store.DueWakeups(now))
         {
@@ -72,10 +72,18 @@ public sealed partial class BotWorker
             }
         }
     }
-    private async Task Isolated(string key, Func<Task> run, CancellationToken ct)
+    private sealed record AmbientRetry(int Attempts, long Next);
+    private async Task Isolated(string key, Func<Task> run, CancellationToken ct, DateTimeOffset utc)
     {
         try { await run(); }
-        catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Ambient job {Key} failed ({Type})", key, Failure(e)); }
+        catch (Exception e) when (!ct.IsCancellationRequested)
+        {
+            var retryKey = "ambient_retry:" + key;
+            var attempts = (store.Get(retryKey) is { } saved ? Json.Read<AmbientRetry>(saved).Attempts : 0) + 1;
+            var minutes = attempts switch { 1 => 2, 2 => 5, 3 => 10, _ => 15 };
+            store.Set(retryKey, Json.Write(new AmbientRetry(attempts, utc.AddMinutes(minutes).ToUnixTimeSeconds())));
+            log.LogWarning("Ambient job {Key} failed, attempt {Attempt} ({Type})", key, attempts, Failure(e));
+        }
     }
     /// <summary>Short Russian error class for the admin; never exception texts.</summary>
     private static string FailureRu(Exception e) => e switch
@@ -93,8 +101,13 @@ public sealed partial class BotWorker
         var due = day.ToDateTime(TimeOnly.Parse(time));
         if (local < due) return;
         var late = local - due > Late;
-        if (!late) await run(key);
+        if (!late)
+        {
+            if (store.Get("ambient_retry:" + key) is { } saved && config.Utc(local).ToUnixTimeSeconds() < Json.Read<AmbientRetry>(saved).Next) return;
+            await run(key);
+        }
         store.Set(key, late ? "skipped" : "done");
+        store.Delete("ambient_retry:" + key);
         ClearPrep(key);
     }
 
@@ -124,8 +137,9 @@ public sealed partial class BotWorker
         {
             var target = topic ?? ReminderTopic;
             var chatty = target == config.ChatTopicId;
+            if (deliveryKey is not null && store.Posts("ambient_part:" + deliveryKey + ":").Count > 0) ready = TakePrep(deliveryKey);
             if (ready == OpenRouterClient.Skip) return null; // a prepared "stay silent"
-            var text = ready ?? (deliveryKey is null ? null : TakePrep(deliveryKey)) ?? await GenerateAmbient(kind, extra, ct, chatty, strict);
+            var text = ready ?? (deliveryKey is null ? null : TakePrep(deliveryKey)) ?? await GenerateAmbient(kind, extra, ct, chatty, strict, tag: deliveryKey ?? "manual");
             if (deliveryKey is not null) SavePrep(deliveryKey, text ?? OpenRouterClient.Skip, "ai");
             if (text is null || text == OpenRouterClient.Skip) return null;
             var parts = chatty && config.SplitReplies ? OpenRouterClient.Parts(text) : [OpenRouterClient.Join(text)];
@@ -135,10 +149,10 @@ public sealed partial class BotWorker
         }
         finally { ambientGate.Release(); }
     }
-    internal async Task<string?> GenerateAmbient(string kind, object? extra, CancellationToken ct, bool split = false, bool strict = false, DateTimeOffset? at = null)
+    internal async Task<string?> GenerateAmbient(string kind, object? extra, CancellationToken ct, bool split = false, bool strict = false, DateTimeOffset? at = null, string tag = "manual")
     {
         string text;
-        try { text = await ai.Ambient(kind, conversation.AdminContext(false), conversation.AmbientContext(kind, extra, at), split, ct); }
+        try { text = await ai.Ambient(kind, conversation.AdminContext(false), conversation.AmbientContext(kind, extra, at), split, ct, tag); }
         catch (AiTextRejectedException e) when (!strict && !ct.IsCancellationRequested)
         {
             log.LogWarning("Ambient {Kind} text rejected ({Reason}), staying silent", kind, e.Reason);
@@ -185,8 +199,8 @@ public sealed partial class BotWorker
     {
         if (DueOn(tomorrow).Count == 0) return;
         if (lead == OpenRouterClient.Skip) return;
-        lead ??= await GenerateAmbient("eve", new { for_date = tomorrow.AddDays(-1).ToString("yyyy-MM-dd") }, ct);
         var key = $"ambient:eve:{tomorrow.AddDays(-1):yyyy-MM-dd}";
+        lead ??= await GenerateAmbient("eve", new { for_date = tomorrow.AddDays(-1).ToString("yyyy-MM-dd") }, ct, tag: key);
         SavePrep(key, lead ?? "⏰ Завтра сдаём:", "ai");
         var bodyKey = "ambient_body:" + key;
         var body = store.Post(bodyKey)?.Text ?? ComposeEve(tomorrow, lead)!;
@@ -205,8 +219,8 @@ public sealed partial class BotWorker
     internal async Task MorningSummary(DateOnly today, CancellationToken ct, string? lead = null)
     {
         if (lead == OpenRouterClient.Skip) return;
-        lead ??= await GenerateAmbient("summary", new { for_date = today.ToString("yyyy-MM-dd") }, ct);
         var key = $"ambient:summary:{today:yyyy-MM-dd}";
+        lead ??= await GenerateAmbient("summary", new { for_date = today.ToString("yyyy-MM-dd") }, ct, tag: key);
         SavePrep(key, lead ?? "", "ai");
         var bodyKey = "ambient_body:" + key;
         var body = store.Post(bodyKey)?.Text ?? ComposeSummary(today, lead);
@@ -290,7 +304,7 @@ public sealed partial class BotWorker
                 backstage_note = d.Note, dev_note = dev,
                 previous = old is null ? null : new { old.Date, old.Period, old.Start, old.Room, old.Work }
             }
-        }, ct, strict: true);
+        }, ct, strict: true, tag: d.TargetId is { } id ? "deadline:" + id : "deadline:new");
         }
         catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Deadline lead not written ({Type})", Failure(e)); return null; }
         return text is null ? null : OpenRouterClient.Join(text);
@@ -331,6 +345,11 @@ public sealed partial class BotWorker
     {
         if (Prepared(key) is not { } p) return null;
         var current = p.Basis == Basis();
+        if (store.Posts("ambient_part:" + key + ":").Count > 0)
+        {
+            if (!current) log.LogWarning("Partial delivery {Key} has a stale prep basis, resuming saved text", key);
+            return p.Text;
+        }
         if (p.Source == "manual")
         {
             if (!current) log.LogWarning("Manual prep {Key} was written for other facts, sending it as is", key);
@@ -359,11 +378,11 @@ public sealed partial class BotWorker
         {
             var w = store.Wakeups().FirstOrDefault(x => x.Id == id && x.Status == "pending") ?? throw new InvalidOperationException("Будильник уже сработал или удалён.");
             var at = DateTimeOffset.FromUnixTimeSeconds(w.Due);
-            if (w.Deadline == 0) text = await GenerateAmbient("manual", new { idea = w.Reason, for_time = config.LocalNow(at).ToString("yyyy-MM-dd HH:mm") }, ct, at: at);
+            if (w.Deadline == 0) text = await GenerateAmbient("manual", new { idea = w.Reason, for_time = config.LocalNow(at).ToString("yyyy-MM-dd HH:mm") }, ct, strict: true, at: at, tag: key);
             else
             {
                 var d = store.AllDeadlines().FirstOrDefault(x => x.Id == w.Deadline && x.Status == "active") ?? throw new InvalidOperationException("Дедлайн уже не активен.");
-                text = await GenerateAmbient("wakeup", WakeupExtra(w, d, at), ct, at: at);
+                text = await GenerateAmbient("wakeup", WakeupExtra(w, d, at), ct, strict: true, at: at, tag: key);
             }
         }
         else if (parts.Length >= 3 && parts[0] == "ambient" && DateOnly.TryParseExact(parts[2], "yyyy-MM-dd", out var day))
@@ -383,11 +402,11 @@ public sealed partial class BotWorker
             var moment = new { for_date = parts[2], for_time = $"{parts[2]} {time}" };
             text = parts[1] switch
             {
-                "summary" => await GenerateAmbient("summary", moment, ct, at: at),
-                "morning" => await GenerateAmbient("morning", moment, ct, split: true, at: at),
+                "summary" => await GenerateAmbient("summary", moment, ct, strict: true, at: at, tag: key),
+                "morning" => await GenerateAmbient("morning", moment, ct, split: true, strict: true, at: at, tag: key),
                 "eve" => DueOn(day.AddDays(1)).Count == 0 ? throw new InvalidOperationException("На следующий день сдач нет — напоминания не будет.")
-                    : await GenerateAmbient("eve", moment, ct, at: at),
-                _ => await GenerateAmbient("spontaneous", moment, ct, split: true, at: at) ?? OpenRouterClient.Skip
+                    : await GenerateAmbient("eve", moment, ct, strict: true, at: at, tag: key),
+                _ => await GenerateAmbient("spontaneous", moment, ct, split: true, strict: true, at: at, tag: key) ?? OpenRouterClient.Skip
             };
         }
         else throw new InvalidOperationException("Неизвестное событие.");
@@ -454,7 +473,7 @@ public sealed partial class BotWorker
                 other_deadlines = store.AllDeadlines().Where(x => x.Status == "active" && x.Id != d.Id && Deadlines.Ends(config, x) > utc).Take(15).Select(conversation.DeadlineView),
                 sent_reminders = sent.Select(w => new { at = Local(w.Due), reason = w.Reason }),
                 manual_reminders = manual.Where(w => w.Due > now).Select(w => new { at = Local(w.Due), reason = w.Reason })
-            }, ct);
+            }, ct, "wakeplan:" + d.Id);
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {

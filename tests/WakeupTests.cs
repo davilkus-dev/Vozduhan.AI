@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 using Vozduhan.AI;
 
 /// <summary>FIX-3: honest wake-up statuses, error isolation, planning off the hot path, stale and time-shifted warm-ups.</summary>
-static class WakeupTests
+static partial class WakeupTests
 {
     static int count;
     static void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
@@ -310,6 +310,7 @@ static class WakeupTests
             }
             finally { cts.Cancel(); await web.StopAsync(CancellationToken.None); }
         });
+        await RunFix6(make);
         return count;
     }
 }

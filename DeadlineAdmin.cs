@@ -144,7 +144,7 @@ public sealed partial class BotWorker
                     previous = null;
                 }
                 if (string.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("Для дедлайна напиши текстом предмет, работу и дату.");
-                parsed = command != "/edit" && preParsed is not null ? preParsed : await ai.Parse(text, previous, store.AllDeadlines(), ct);
+                parsed = command != "/edit" && preParsed is not null ? preParsed : await ai.Parse(text, previous, store.AllDeadlines(), ct, Tag(m));
                 if (command == "/edit") parsed = parsed with { Action = "update", TargetId = int.Parse(words[1]) };
             }
             var draft = Deadlines.Resolve(config, parsed, previous, store.AllDeadlines(), actor,

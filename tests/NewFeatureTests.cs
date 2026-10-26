@@ -701,18 +701,21 @@ static class NewFeatureTests
                 s.LogMessage(t0, 1, "private", 0, 9104, 1, "in", "ЛИЧКА-РАЗРАБА тайна", "{}");
                 s.LogMessage(t0, c.GroupId, "supergroup", 0, 9105, 99, "out-edit", "ПРАВКА-РАЗРАБА", "{}");
                 s.LogMessage(t0, c.GroupId, "supergroup", 0, 9106, 99, "delete", "[удалено ботом]", "{}");
-                var foreignRow = s.Log(chat: 3).First().Id;
+                s.LogMessage(t0, 2, "private", 0, 9107, 99, "out-edit", "ПРАВКА-В-ЛИЧКЕ", "{}");
+                s.LogMessage(t0, 2, "private", 0, 9108, 99, "delete", "УДАЛЕНИЕ-В-ЛИЧКЕ", "{}");
+                s.LogMessage(t0, 3, "private", 0, 9109, 99, "out-edit", "тайна чужой правки", "{}");
+                s.LogMessage(t0, 1, "private", 0, 9110, 99, "delete", "тайна чужого удаления", "{}");
+                var foreignRow = s.Log(chat: 3).Single(x => x.Message == 9103).Id;
                 s.SeenUser(El(new { id = 777, first_name = "Чужой", username = "stranger" }), 777);
                 s.SeenUser(El(new { id = 3, first_name = "Студент", username = "student" }), 3);
                 Assert((await browser.GetAsync("api/log?chat=3")).StatusCode == HttpStatusCode.Forbidden && (await browser.GetAsync("api/log?chat=1")).StatusCode == HttpStatusCode.Forbidden, "Head opened someone else's DM");
                 foreach (var query in new[] { "", "sender=3", "sender=1", "q=" + Uri.EscapeDataString("тайна"), "q=" + Uri.EscapeDataString("ПРАВКА") })
                 {
                     var rows = JsonDocument.Parse(await browser.GetStringAsync("api/log?" + query)).RootElement.Field("rows");
-                    Assert(rows.EnumerateArray().All(x => x.Field("chat").GetInt64() == 2 || x.Field("chat").GetInt64() == c.GroupId) && !rows.GetRawText().Contains("тайна") &&
-                        !rows.EnumerateArray().Any(x => x.Text("direction") is "out-edit" or "delete"), $"Head log leaks for '{query}': " + rows.GetRawText());
+                    Assert(rows.EnumerateArray().All(x => x.Field("chat").GetInt64() == 2 || x.Field("chat").GetInt64() == c.GroupId) && !rows.GetRawText().Contains("тайна"), $"Head log leaks for '{query}': " + rows.GetRawText());
                 }
                 var headLog = await browser.GetStringAsync("api/log");
-                Assert(headLog.Contains("ГРУППА-ВИДНО") && headLog.Contains("ЛИЧКА-СТАРОСТЫ") && (await browser.GetStringAsync("api/log?sender=3")).Contains("ГРУППА-ВИДНО") &&
+                Assert(headLog.Contains("ПРАВКА-В-ЛИЧКЕ") && headLog.Contains("УДАЛЕНИЕ-В-ЛИЧКЕ") && headLog.Contains("ПРАВКА-РАЗРАБА") && headLog.Contains("удалено ботом") && headLog.Contains("ГРУППА-ВИДНО") && headLog.Contains("ЛИЧКА-СТАРОСТЫ") && (await browser.GetStringAsync("api/log?sender=3")).Contains("ГРУППА-ВИДНО") &&
                     (await browser.GetStringAsync("api/log?chat=2")).Contains("ЛИЧКА-СТАРОСТЫ") && (await browser.GetStringAsync($"api/log?chat={c.GroupId}&topic={c.ChatTopicId}")).Contains("ГРУППА-ВИДНО"), "Head lost the group log or her DM");
                 var headChats = JsonDocument.Parse(await browser.GetStringAsync("api/chats")).RootElement.Field("chats").EnumerateArray().Select(x => x.Field("chat").GetInt64()).ToList();
                 Assert(headChats.Contains(2) && headChats.Contains(c.GroupId) && headChats.All(x => x == 2 || x == c.GroupId), "Head chat list: " + string.Join(",", headChats));
@@ -742,7 +745,7 @@ static class NewFeatureTests
                     var tooLong = await owner.PostAsync("api/prep", new StringContent(Json.Write(new { key = prepKey, action = "save", text = new string('ж', OpenRouterClient.TextMax + 1) }), Encoding.UTF8, "application/json"));
                     Assert(tooLong.StatusCode == HttpStatusCode.BadRequest && (await tooLong.Content.ReadAsStringAsync()).Contains((OpenRouterClient.TextMax + 1).ToString()) && worker.Prepared(prepKey) is null, "Long manual text cut or saved");
                 }
-                count++; Console.WriteLine("PASS web admin FIX-1: head sees only the group and her DM, no raw, no owner edits, seen without details; owner sees all");
+                count++; Console.WriteLine("PASS web admin FIX-1: head sees only the group and her DM, including edits/deletions, no raw, seen without details; owner sees all");
                 var dl = await browser.PostAsync("api/deadline", new StringContent(Json.Write(new { action = "create", subjectId = "siaod", work = "Практика №3", date = "2026-12-07" }), Encoding.UTF8, "application/json"));
                 Assert(dl.IsSuccessStatusCode && s.AllDeadlines().Any(d => d.Work == "Практика №3" && d.Room == "А412"), "Web deadline failed");
                 var savedDeadline = s.AllDeadlines().Single(d => d.Work == "Практика №3");

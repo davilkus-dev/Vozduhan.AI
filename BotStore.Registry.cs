@@ -15,7 +15,7 @@ public sealed record UsageTotals(double Cost, long Attempts, long PromptTokens, 
 public sealed record UsageDay(string Date, UsageTotals Totals);
 public sealed record UsageKind(string Kind, long Calls, long Attempts, double Cost, double Share, double? AvgPerCall, double? CacheShare, long CostMissing);
 public sealed record UsageModel(string Model, UsageTotals Totals);
-public sealed record UsageWaste(string Kind, long Cut, long Retries, long Attempts, double Cost);
+public sealed record UsageWaste(string Kind, string Discard, long Attempts, double Cost);
 public sealed record UsageAttempt(long Time, string Kind, string Tag, string Model, int Attempt, long PromptTokens, long CachedTokens,
     long CompletionTokens, long ReasoningTokens, double? Cost, string? Finish, long Ms);
 public sealed record UsageSummary(UsageTotals Today, UsageTotals Yesterday, UsageTotals Week, UsageTotals Month);
@@ -23,7 +23,7 @@ public sealed record UsageReport(int Days, string Date, UsageSummary Summary, do
     List<UsageDay> ByDay, List<UsageKind> ByKind, List<UsageModel> ByModel, double WastedCost, long WastedAttempts, List<UsageWaste> Wasted, List<UsageAttempt> Top);
 public sealed record UsageUtc(UsageTotals Daily, UsageTotals Weekly, UsageTotals Monthly);
 public sealed record SpendAlert(double DailyUsd, double MonthlyUsd);
-public sealed record Wakeup(long Id, int Deadline, long Due, string Reason, string Source, string Status, long Created, int Attempts = 0, string? Note = null, long NextTry = 0);
+public sealed record Wakeup(long Id, int Deadline, long Due, string Reason, string Source, string Status, long Created, int Attempts = 0, string? Note = null, long NextTry = 0, long Actor = 0);
 public sealed class RegistryConflict(string message) : InvalidOperationException(message);
 
 public sealed partial class BotStore
@@ -175,7 +175,7 @@ public sealed partial class BotStore
             SELECT l.id,l.time,l.chat,l.chat_type,l.topic,l.message,l.sender,l.direction,l.text,u.username,u.name
             FROM chat_log l LEFT JOIN seen_users u ON u.id=l.sender
             WHERE ($c IS NULL OR l.chat=$c) AND ($tp IS NULL OR l.topic=$tp) AND ($s IS NULL OR l.sender=$s)
-              AND ($q IS NULL OR l.text LIKE '%' || $q || '%') AND ($b IS NULL OR l.id<$b) AND ($v IS NULL OR (l.chat IN ($v,$g) AND l.direction NOT IN ('out-edit','delete')))
+              AND ($q IS NULL OR l.text LIKE '%' || $q || '%') AND ($b IS NULL OR l.id<$b) AND ($v IS NULL OR (l.chat IN ($v,$g)))
             ORDER BY l.id DESC LIMIT $n
             """, r => new LogRow(r.GetInt64(0), r.GetInt64(1), r.GetInt64(2), r.GetString(3), r.GetInt32(4), r.GetInt32(5), r.GetInt64(6),
                 r.GetString(7), r.GetString(8), r.IsDBNull(9) ? null : r.GetString(9), r.IsDBNull(10) ? null : r.GetString(10)),
@@ -238,11 +238,16 @@ public sealed partial class BotStore
     public void AddUsage(AiUsage u, DateTimeOffset? at = null)
     {
         lock (gate) Exec("""
-            INSERT INTO ai_usage(time,kind,tag,requested_model,model,attempt,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,cost,finish,ms)
-            VALUES($t,$k,$tag,$rm,$m,$a,$p,$c,$o,$r,$cost,$f,$ms)
+            INSERT INTO ai_usage(time,kind,tag,requested_model,model,attempt,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,cost,finish,ms,call_id,discard)
+            VALUES($t,$k,$tag,$rm,$m,$a,$p,$c,$o,$r,$cost,$f,$ms,$call,$discard)
             """, ("t", (at ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds()), ("k", u.Kind), ("tag", u.Tag), ("rm", u.RequestedModel), ("m", u.Model),
             ("a", u.Attempt), ("p", u.PromptTokens), ("c", u.CachedTokens), ("o", u.CompletionTokens), ("r", u.ReasoningTokens), ("cost", u.CostUsd),
-            ("f", u.Finish), ("ms", u.Ms));
+            ("f", u.Finish), ("ms", u.Ms), ("call", u.CallId), ("discard", u.Discard));
+    }
+    public void DiscardUsage(string callId, string reason)
+    {
+        lock (gate) Exec("UPDATE ai_usage SET discard=$r WHERE id=(SELECT id FROM ai_usage WHERE call_id=$c AND discard IS NULL ORDER BY id DESC LIMIT 1)",
+            ("c", callId), ("r", reason));
     }
     private const string UsageSums = "COALESCE(SUM(cost),0.0),COUNT(*),COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(cached_tokens),0)," +
         "COALESCE(SUM(completion_tokens),0),COALESCE(SUM(reasoning_tokens),0),COALESCE(SUM(cost IS NULL),0)";
@@ -282,16 +287,17 @@ public sealed partial class BotStore
                 if (full >= 3) forecast = UsageTotal(At(start), At(today)).Cost / full * DateTime.DaysInMonth(today.Year, today.Month);
             }
             var kinds = Query("""
-                SELECT kind,COALESCE(SUM(attempt=1),0),COUNT(*),COALESCE(SUM(cost),0.0),COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(cost IS NULL),0)
+                SELECT kind,COUNT(DISTINCT call_id)+COALESCE(SUM(call_id IS NULL AND attempt=1),0),COUNT(*),COALESCE(SUM(cost),0.0),COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(cost IS NULL),0)
                 FROM ai_usage WHERE time>=$f AND time<$t GROUP BY kind ORDER BY 4 DESC,1
                 """, r => (Kind: r.GetString(0), Calls: r.GetInt64(1), Attempts: r.GetInt64(2), Cost: r.GetDouble(3), Prompt: r.GetInt64(4), Cached: r.GetInt64(5), Missing: r.GetInt64(6)), f, t);
             var total = kinds.Sum(k => k.Cost);
             var models = Query($"SELECT COALESCE(model,requested_model) m,{UsageSums} FROM ai_usage WHERE time>=$f AND time<$t GROUP BY m ORDER BY 2 DESC,1",
                 r => new UsageModel(r.GetString(0), Sums(r, 1)), f, t);
             var wasted = Query("""
-                SELECT kind,COALESCE(SUM(finish IN ('length','max_tokens')),0),COALESCE(SUM(attempt>1),0),COUNT(*),COALESCE(SUM(cost),0.0) FROM ai_usage
-                WHERE time>=$f AND time<$t AND (finish IN ('length','max_tokens') OR attempt>1) GROUP BY kind ORDER BY 5 DESC,1
-                """, r => new UsageWaste(r.GetString(0), r.GetInt64(1), r.GetInt64(2), r.GetInt64(3), r.GetDouble(4)), f, t);
+                SELECT kind,COALESCE(discard,'length') reason,COUNT(*),COALESCE(SUM(cost),0.0) FROM ai_usage
+                WHERE time>=$f AND time<$t AND (discard IS NOT NULL OR (call_id IS NULL AND finish IN ('length','max_tokens')))
+                GROUP BY kind,reason ORDER BY 4 DESC,1,2
+                """, r => new UsageWaste(r.GetString(0), r.GetString(1), r.GetInt64(2), r.GetDouble(3)), f, t);
             var top = Query("""
                 SELECT time,kind,tag,COALESCE(model,requested_model),attempt,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,cost,finish,ms
                 FROM ai_usage WHERE time>=$f AND time<$t ORDER BY cost IS NULL,cost DESC,id DESC LIMIT 20
@@ -318,9 +324,9 @@ public sealed partial class BotStore
             return Convert.ToInt64(Scalar("SELECT last_insert_rowid()"));
         }
     }
-    private const string WakeupColumns = "id,deadline,due,reason,source,status,created,attempts,note,next_try";
+    private const string WakeupColumns = "id,deadline,due,reason,source,status,created,attempts,note,next_try,actor";
     private static Wakeup ReadWakeup(Microsoft.Data.Sqlite.SqliteDataReader r) => new(r.GetInt64(0), r.GetInt32(1), r.GetInt64(2), r.GetString(3), r.GetString(4),
-        r.GetString(5), r.GetInt64(6), r.GetInt32(7), r.IsDBNull(8) ? null : r.GetString(8), r.GetInt64(9));
+        r.GetString(5), r.GetInt64(6), r.GetInt32(7), r.IsDBNull(8) ? null : r.GetString(8), r.GetInt64(9), r.GetInt64(10));
     public List<Wakeup> Wakeups(int? deadline = null)
     {
         lock (gate) return Query($"SELECT {WakeupColumns} FROM wakeups WHERE ($d IS NULL OR deadline=$d) AND status<>'deleted' ORDER BY due", ReadWakeup, ("d", deadline));

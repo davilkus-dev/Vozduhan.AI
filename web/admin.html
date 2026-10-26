@@ -352,7 +352,7 @@ VIEWS.plan=async el=>{
   const groups={};for(const w of r.wakeups)(groups[w.deadline]??=[]).push(w);
   const wk=Object.entries(groups).sort((x,y)=>Math.min(...x[1].map(w=>w.due))-Math.min(...y[1].map(w=>w.due))).map(([id,ws])=>`<div class="card"><div class="row" style="justify-content:space-between"><h3 style="margin:0">${id==="0"?"📝 Отложенные посты":"⏰ "+esc(ws[0].deadlineTitle||"дедлайн #"+id)}</h3>
     ${id!=="0"?`<div class="row"><button class="b" data-add="${id}">＋ Напоминание</button><button class="b" data-re="${id}">🤖 Перепланировать</button></div>`:""}</div>
-    <table><tbody>${ws.map(w=>`<tr class="${w.status==="pending"?"":"off"}"><td style="white-space:nowrap">${dt(w.due)}</td><td>${SRC[w.source]||esc(w.source)}</td><td>${esc(w.reason)}${w.note?`<div class="faint small">${esc(w.note)}</div>`:""}${w.attempts>0?`<div class="faint small">попыток: ${w.attempts}</div>`:""}${item("",w)}</td><td>${w.status==="pending"?`<button class="b ic d" data-del="${w.id}" title="Удалить будильник">🗑</button>`:""}</td></tr>`).join("")}</tbody></table></div>`).join("");
+    <table><tbody>${ws.map(w=>`<tr class="${w.status==="pending"?"":"off"}"><td style="white-space:nowrap">${dt(w.due)}</td><td>${SRC[w.source]||esc(w.source)}</td><td>${esc(w.reason)}${w.note?`<div class="faint small">${esc(w.note)}</div>`:""}${w.attempts>0?`<div class="faint small">попыток: ${w.attempts}</div>`:""}${item("",w)}</td><td>${w.status==="pending"&&w.canDelete?`<button class="b ic d" data-del="${w.id}" title="Удалить будильник">🗑</button>`:""}</td></tr>`).join("")}</tbody></table></div>`).join("");
   const settings=""/*OWNER*/+`<details class="card"><summary style="cursor:pointer"><b>⚙️ Настройки инициативы</b> <span class="muted small">— сохраняются в базе и действуют сразу</span></summary>
     <div class="f"><label>Инициатива бота</label><input type="checkbox" id="a_en" ${a.enabled?"checked":""}>
     <label>Утро в «Сводку»</label><input type="time" id="a_sum" value="${a.summaryTime}">
@@ -572,10 +572,13 @@ VIEWS.ai=async el=>{
 /*OWNER*/const usd=v=>v==null?"—":v===0?"$0":"$"+(Math.abs(v)<1?v.toFixed(4):v.toFixed(2));
 const num=n=>(n||0).toLocaleString("ru-RU");
 const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
-const KUSE={chat:"Болтовня",plan:"Разбор сообщений редактора",deadline:"Разбор дедлайна",wakeplan:"План будильников",test:"Проверка модели",other:"Прочее",
-  "ambient-morning":"Утренний вброс","ambient-spontaneous":"Вброс днём","ambient-manual":"Пост по просьбе","ambient-wakeup":"Будильник","ambient-deadline":"Текст дедлайна",
-  "ambient-summary":"Сводка","ambient-eve":"Вечернее напоминание"};
-const kuse=k=>`${esc(KUSE[k]||k)} <span class="chip">${esc(k)}</span>`;
+const KUSE={chat:"ответ в чате",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
+  "ambient-deadline":"вводная поста дедлайна","ambient-wakeup":"напоминание","ambient-summary":"утренняя сводка","ambient-morning":"утро в чате",
+  "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост"};
+const kuse=k=>`<span title="${esc(k)}">${esc(KUSE[k]||k)}</span>`;
+const wasteReason=r=>({length:"обрыв по длине",empty:"пустой ответ",invalid_json:"битый JSON",think:"рассуждения в тексте",
+  "rejected:empty":"пустой ответ", "rejected:cjk":"иероглифы в тексте", "rejected:garbled":"битые символы", "rejected:not_russian":"ответ не по-русски",
+  "rejected:repeat":"зацикленные повторы", "rejected:too_long":"слишком длинный текст"}[r]||r);
 const toks=x=>`вход ${num(x.promptTokens)}${x.cachedTokens?` (кеш ${num(x.cachedTokens)})`:""} · выход ${num(x.completionTokens)}${x.reasoningTokens?` (рассужд. ${num(x.reasoningTokens)})`:""}`;
 VIEWS.usage=async el=>{
   const viewId=renderId;S.usageDays=S.usageDays||30;
@@ -600,7 +603,7 @@ VIEWS.usage=async el=>{
       <div class="row faint small" style="justify-content:space-between"><span>${fmtDate(r.byDay[0].date)}</span><span>${fmtDate(r.byDay[r.byDay.length-1].date)}</span></div></div>
     <div class="card"><h3>На что тратится</h3>${table(["Вид запроса","Вызовов","Попыток","Стоимость","Доля","За вызов","Кеш входа"],r.byKind.map(x=>`<tr><td>${kuse(x.kind)}</td><td>${num(x.calls)}</td><td>${num(x.attempts)}</td><td><b>${usd(x.cost)}</b>${x.costMissing?` <span class="faint small">без цены: ${x.costMissing}</span>`:""}</td><td>${pct(x.share)}</td><td>${usd(x.avgPerCall)}</td><td>${pct(x.cacheShare)}</td></tr>`).join(""),7)}</div>
     <div class="card"><h3>Модели</h3>${table(["Модель","Попыток","Токены","Стоимость"],r.byModel.map(x=>`<tr><td>${esc(x.model)}</td><td>${num(x.totals.attempts)}</td><td class="small">${toks(x.totals)}</td><td><b>${usd(x.totals.cost)}</b>${x.totals.costMissing?` <span class="faint small">без цены: ${x.totals.costMissing}</span>`:""}</td></tr>`).join(""),4)}</div>
-    <div class="card"><h3>Ушло зря: ${usd(r.wasted.cost)} на ${num(r.wasted.attempts)} попыток</h3><p class="muted small">Ответы, оборванные по лимиту токенов, и повторные попытки после них.</p>${table(["Вид запроса","Оборвано","Повторов","Попыток","Стоимость"],r.wasted.byKind.map(x=>`<tr><td>${kuse(x.kind)}</td><td>${num(x.cut)}</td><td>${num(x.retries)}</td><td>${num(x.attempts)}</td><td><b>${usd(x.cost)}</b></td></tr>`).join(""),5)}</div>
+    <div class="card"><h3>Ушло зря: ${usd(r.wasted.cost)} на ${num(r.wasted.attempts)} попыток</h3><p class="muted small">Ответы, которые код отклонил или не использовал.</p>${table(["Вид запроса","Причина","Попыток","Стоимость"],r.wasted.byKind.map(x=>`<tr><td>${kuse(x.kind)}</td><td>${esc(wasteReason(x.discard))}</td><td>${num(x.attempts)}</td><td><b>${usd(x.cost)}</b></td></tr>`).join(""),4)}</div>
     <div class="card"><h3>20 самых дорогих попыток</h3>${table(["Когда","Вид","Модель","Токены","Цена","Конец"],r.top.map(x=>`<tr><td>${time(x.time)}${x.attempt>1?` <span class="chip">попытка ${x.attempt}</span>`:""}<div class="faint small">${esc(x.tag)}</div></td><td>${kuse(x.kind)}</td><td class="small">${esc(x.model)}</td><td class="small">${toks(x)}</td><td><b>${usd(x.cost)}</b></td><td class="small">${esc(x.finish||"—")}</td></tr>`).join(""),6)}</div>`)+`
     <div class="card"><h3>💸 Предупреждения о перерасходе</h3><p class="muted small">Бот напишет тебе в личку один раз за день или за месяц, когда траты превысят порог. 0 — выключено.</p>
       <div class="row"><label class="small muted">За день, $ <input id="ua_d" type="number" min="0" max="100000" step="0.01" value="${r.alert.dailyUsd}" style="width:110px"></label>

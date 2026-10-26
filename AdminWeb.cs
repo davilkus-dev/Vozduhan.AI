@@ -107,7 +107,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
             log.LogWarning("Web admin request failed: {Error}", e.GetType().Name + ": " + e.Message);
-            try { await Send(response, 500, new { ok = false, error = "Внутренняя ошибка: " + e.Message }); } catch { }
+            try { await Send(response, 500, new { ok = false, error = "Внутренняя ошибка. Подробности в журнале сервиса." }); } catch { }
         }
     }
 
@@ -141,6 +141,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             case "/api/logout" when post:
                 store.DeleteWebToken(request.Cookies[Cookie]?.Value);
                 response.Headers.Add("Set-Cookie", $"{Cookie}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+                response.Headers.Add("Set-Cookie", $"{ViewCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
                 await Send(response, 200, new { ok = true });
                 return;
             case "/api/view" when post && (owner || preview):
@@ -292,7 +293,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                     wakeups = store.Wakeups().Where(w => owner || w.Deadline != 0).Where(w => w.Status == "pending" || w.Due > DateTimeOffset.UtcNow.AddDays(-14).ToUnixTimeSeconds()).Select(w =>
                     {
                         var d = deadlines.FirstOrDefault(x => x.Id == w.Deadline);
-                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status, w.Note, w.Attempts, key = "wake:" + w.Id, prep = P("wake:" + w.Id),
+                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status, w.Note, w.Attempts, canDelete = owner || w.Actor != config.OwnerId, key = "wake:" + w.Id, prep = P("wake:" + w.Id),
                             deadlineTitle = d is null ? null : $"#{d.Id} {config.R.SubjectName(d.SubjectId)} — {d.Work} ({d.Date}, {d.Period} пара)" };
                     }),
                     deliveries = store.PendingDeliveries().Select(x => new { x.Key, x.Due, x.Text,
@@ -313,6 +314,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                             var p = await worker.Warm(key, ct);
                             await Send(response, 200, new { ok = true, text = p!.Text, preview = worker.Preview(key, p.Text) });
                         }
+                        catch (AiTextRejectedException e) { await Send(response, 400, new { ok = false, error = BotWorker.Rejected(e) + " Нажми ещё раз" }); }
                         catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); }
                         return;
                     case "save":
@@ -371,7 +373,18 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 if (!DateTime.TryParse(body.Text("at"), out var at)) { await Send(response, 400, new { ok = false, error = "Неверное время" }); return; }
                 var utc = config.Utc(at);
                 if (utc <= DateTimeOffset.UtcNow) { await Send(response, 400, new { ok = false, error = "Время уже прошло" }); return; }
-                var reason = Conversation.Limit(body.Text("reason") ?? "", 1000);
+                if (deadline != 0)
+                {
+                    var d = store.AllDeadlines().FirstOrDefault(x => x.Id == deadline);
+                    if (d is null) { await Send(response, 400, new { ok = false, error = "Нет такого дедлайна" }); return; }
+                    var start = config.Utc(DateOnly.Parse(d.Date).ToDateTime(TimeOnly.Parse(d.Start)));
+                    if (d.Status != "active" || start <= DateTimeOffset.UtcNow)
+                    { await Send(response, 400, new { ok = false, error = "Дедлайн отменён или пара сдачи уже началась" }); return; }
+                    if (utc >= start) { await Send(response, 400, new { ok = false, error = "Будильник должен сработать раньше начала пары сдачи" }); return; }
+                }
+                var reason = body.Text("reason") ?? "";
+                var limit = deadline == 0 ? 1000 : 300;
+                if (reason.Length > limit) { await Send(response, 400, new { ok = false, error = $"Причина длиннее {limit} символов" }); return; }
                 if (deadline == 0 && reason.Length == 0) { await Send(response, 400, new { ok = false, error = "О чём написать?" }); return; }
                 await Send(response, 200, new { ok = true, id = store.AddWakeup(deadline, utc.ToUnixTimeSeconds(), reason.Length == 0 ? "ручное напоминание" : reason, deadline == 0 ? "post" : "manual", actor) });
                 return;
@@ -382,6 +395,8 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 var wakeup = store.Wakeups().FirstOrDefault(w => w.Id == id);
                 if (wakeup is null || (!owner && wakeup.Deadline == 0))
                 { await Send(response, 403, new { ok = false, error = "Нет доступа к этому посту" }); return; }
+                if (!owner && wakeup.Actor == config.OwnerId)
+                { await Send(response, 403, new { ok = false, error = "Этот будильник поставил разработчик" }); return; }
                 await Send(response, 200, new { ok = store.SetWakeup(id, "deleted") });
                 return;
             }
@@ -423,6 +438,8 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             {
                 var d = store.AllDeadlines().FirstOrDefault(x => x.Id == (body.Field("id").ValueKind == JsonValueKind.Number ? body.Field("id").GetInt32() : 0));
                 if (d is null) { await Send(response, 404, new { ok = false, error = "Нет такого дедлайна" }); return; }
+                if (d.Status != "active" || Deadlines.Ends(config, d) <= DateTimeOffset.UtcNow)
+                { await Send(response, 400, new { ok = false, error = "Дедлайн отменён или уже прошёл — текст не меняется" }); return; }
                 if (body.Field("expectedVersion").ValueKind != JsonValueKind.Number || body.Field("expectedVersion").GetInt32() != d.Version)
                 { await Send(response, 409, new { ok = false, error = "Дедлайн изменился. Обнови страницу и повтори." }); return; }
                 var given = Intro(body);

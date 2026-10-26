@@ -8,7 +8,7 @@ namespace Vozduhan.AI;
 
 public sealed record AiTrace(string Kind, string Tag, string Model, string System, string Request, string Response, long Ms, string? Error);
 public sealed record AiUsage(string Kind, string Tag, string RequestedModel, string? Model, int Attempt, long PromptTokens, long CachedTokens,
-    long CompletionTokens, long ReasoningTokens, double? CostUsd, string? Finish, long Ms);
+    long CompletionTokens, long ReasoningTokens, double? CostUsd, string? Finish, long Ms, string? CallId = null, string? Discard = null);
 public sealed record AiKeyInfo(double? Usage, double? UsageDaily, double? UsageWeekly, double? UsageMonthly, double? Limit, double? LimitRemaining);
 public sealed record PlanResult(string Intent, ParsedDeadline? Deadline, JsonElement[] Operations, string? Question, string? Idea = null);
 
@@ -19,15 +19,17 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     /// <summary>Receives every request/response for the admin log. Must not throw.</summary>
     public Action<AiTrace>? Trace { get; set; }
     public Action<AiUsage>? Usage { get; set; }
+    public Action<string, string>? DiscardUsage { get; set; }
     public const string Split = "||";
 
     /// <summary>
     /// One model call with adaptive effort: reasoning depth depends on the task kind (config.reasoningEffort), and an answer cut
     /// by the output limit (finish_reason=length, empty content or broken JSON) is regenerated with a doubled budget up to the ceiling.
     /// </summary>
-    public async Task<string> Complete(string system, string user, bool json, CancellationToken ct, string kind = "other", string tag = "", string? modelOverride = null)
+    public async Task<string> Complete(string system, string user, bool json, CancellationToken ct, string kind = "other", string tag = "", string? modelOverride = null, string? callId = null)
     {
         if (!Available) throw new InvalidOperationException("OpenRouter key is missing");
+        callId ??= Guid.NewGuid().ToString("N");
         var clock = Stopwatch.StartNew();
         string? result = null;
         Exception? failure = null;
@@ -42,7 +44,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             while (true)
             {
                 attempts++;
-                (string? content, string? finish) answer;
+                (string? Content, string? Finish, AiUsage Usage, bool HasChoices) answer;
                 try { answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token); }
                 catch (HttpRequestException e) when (e.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.NotFound)
                 {
@@ -60,8 +62,13 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
                     model = config.Model;
                     answer = await Attempt(model, system, user, json, effort, budget, false, (kind, tag, attempts), timeout.Token);
                 }
-                var (content, finish) = answer;
-                var cut = finish is "length" or "max_tokens" || string.IsNullOrEmpty(content) || (json && !ValidJson(content));
+                var (content, finish, usage, hasChoices) = answer;
+                var discard = finish is "length" or "max_tokens" ? "length" : string.IsNullOrEmpty(content) ? "empty"
+                    : json && !ValidJson(content) ? "invalid_json" : content.Contains("<think>", StringComparison.OrdinalIgnoreCase) ? "think" : null;
+                try { Usage?.Invoke(usage with { CallId = callId, Discard = discard }); }
+                catch { /* accounting must never break a reply */ }
+                if (!hasChoices) throw new InvalidDataException("OpenRouter returned no choices");
+                var cut = discard is "length" or "empty" or "invalid_json";
                 if (!cut) { result = content!; break; }
                 if (budget >= config.MaxOutputTokensCeiling || attempts >= 3)
                     throw new InvalidDataException(string.IsNullOrEmpty(content) ? "OpenRouter returned no visible content" : "OpenRouter output was cut off");
@@ -91,9 +98,11 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         var prompt = user;
         for (var attempt = 1; ; attempt++)
         {
-            var text = TextGuard.Normalize(await Complete(system, prompt, false, ct, kind, tag, modelOverride));
+            var callId = Guid.NewGuid().ToString("N");
+            var text = TextGuard.Normalize(await Complete(system, prompt, false, ct, kind, tag, modelOverride, callId));
             var reason = TextGuard.Check(text, user, maxChars);
             if (reason is null) return text;
+            try { DiscardUsage?.Invoke(callId, "rejected:" + reason); } catch { }
             Log?.LogWarning("AI text rejected: {Kind} {Tag}, {Reason}, attempt {Attempt}: {Head}", kind, tag, reason, attempt, text[..Math.Min(80, text.Length)]);
             if (attempt >= 2) return reason == "too_long" ? TextGuard.Fit(text, maxChars) : throw new AiTextRejectedException(reason);
             prompt = user + $"\n\nПрошлый ответ отклонён: {TextGuard.Explain(reason)}. Отвечай только по-русски, без иероглифов, не длиннее {maxChars} символов.";
@@ -103,7 +112,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     {
         try { using var _ = JsonDocument.Parse(text); return true; } catch (JsonException) { return false; }
     }
-    private async Task<(string? Content, string? Finish)> Attempt(string model, string system, string user, bool json, string effort, int budget, bool compat,
+    private async Task<(string? Content, string? Finish, AiUsage Usage, bool HasChoices)> Attempt(string model, string system, string user, bool json, string effort, int budget, bool compat,
         (string Kind, string Tag, int Number) call, CancellationToken ct)
     {
         await slots.WaitAsync(ct);
@@ -127,17 +136,13 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             if (!response.IsSuccessStatusCode) throw new HttpRequestException($"OpenRouter returned HTTP {(int)response.StatusCode}", null, response.StatusCode);
             using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
             var choices = doc.RootElement.Field("choices");
-            var finish = choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0 ? choices[0].Text("finish_reason") : null;
-            try
-            {
-                var u = doc.RootElement.Field("usage");
-                Usage?.Invoke(new(call.Kind, call.Tag, model, doc.RootElement.Text("model"), call.Number, Count(u.Field("prompt_tokens")),
-                    Count(u.Field("prompt_tokens_details").Field("cached_tokens")), Count(u.Field("completion_tokens")),
-                    Count(u.Field("completion_tokens_details").Field("reasoning_tokens")), Money(u.Field("cost")), finish, clock.ElapsedMilliseconds));
-            }
-            catch { /* accounting must never break a reply */ }
-            if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0) throw new InvalidDataException("OpenRouter returned no choices");
-            return (choices[0].Field("message").Text("content")?.Trim(), finish);
+            var hasChoices = choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0;
+            var finish = hasChoices ? choices[0].Text("finish_reason") : null;
+            var u = doc.RootElement.Field("usage");
+            var usage = new AiUsage(call.Kind, call.Tag, model, doc.RootElement.Text("model"), call.Number, Count(u.Field("prompt_tokens")),
+                Count(u.Field("prompt_tokens_details").Field("cached_tokens")), Count(u.Field("completion_tokens")),
+                Count(u.Field("completion_tokens_details").Field("reasoning_tokens")), Money(u.Field("cost")), finish, clock.ElapsedMilliseconds);
+            return (hasChoices ? choices[0].Field("message").Text("content")?.Trim() : null, finish, usage, hasChoices);
         }
         finally { slots.Release(); }
     }
@@ -276,7 +281,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         targetId=null и спроси, какой ID. Не выбирай наугад. Голое число в уточнении черновика может быть номером практики, а не ID.
         """;
 
-    public async Task<ParsedDeadline> Parse(string text, Draft? previous, IReadOnlyList<Deadline> deadlines, CancellationToken ct)
+    public async Task<ParsedDeadline> Parse(string text, Draft? previous, IReadOnlyList<Deadline> deadlines, CancellationToken ct, string tag = "")
     {
         var instruction = $$"""
             Извлеки учебный дедлайн из сообщения администратора на русском. Это не ответ в чат.
@@ -294,7 +299,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             existing_deadlines = deadlines.Where(d => d.Status == "active").TakeLast(50),
             focus_message = text
         });
-        var result = await Complete(instruction, user, true, ct, "deadline");
+        var result = await Complete(instruction, user, true, ct, "deadline", tag);
         return Json.Read<ParsedDeadline>(result);
     }
 
@@ -347,7 +352,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
 
     public const string Skip = "SKIP";
     /// <summary>The bot's own messages: morning, spontaneous drop, manual request, deadline wake-up, evening reminder lead.</summary>
-    public Task<string> Ambient(string kind, string adminContext, string context, bool split, CancellationToken ct)
+    public Task<string> Ambient(string kind, string adminContext, string context, bool split, CancellationToken ct, string tag = "")
     {
         var task = kind switch
         {
@@ -405,13 +410,13 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             Если обращаешься к конкретному человеку или хочешь его дёрнуть — обязательно тегни: пиши его telegram_username (например @R3searchh),
             а если юзернейма нет — вставь его mention_html. Просто имя без тега человек не увидит.
             """;
-        return CompleteText(ChatRules(config, split) + adminContext + "\n\n" + task + tags, context, ct, "ambient-" + kind, "",
+        return CompleteText(ChatRules(config, split) + adminContext + "\n\n" + task + tags, context, ct, "ambient-" + kind, tag,
             kind is "deadline" or "eve" or "summary" ? LeadMax : TextMax);
     }
 
     public sealed record WakeupPlan(DateTime At, string Reason);
     /// <summary>Lets the model choose when to remind about a deadline. The caller validates every point.</summary>
-    public async Task<List<WakeupPlan>> PlanWakeups(object context, CancellationToken ct)
+    public async Task<List<WakeupPlan>> PlanWakeups(object context, CancellationToken ct, string tag = "")
     {
         var result = await Complete("""
             Ты планируешь, когда тебе (боту группы) проснуться и напомнить в общем чате о дедлайне. Смотри на дату и время сдачи,
@@ -419,8 +424,10 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
             одногруппник: например за неделю, за 3 дня, вечером накануне, за пару часов, прямо перед парой. reason — конкретный повод, без нотаций.
             Далёкий дедлайн — больше точек, близкий — меньше. Не ставь две точки ближе 2 часов друг к другу, не буди ночью (с 23:30 до 08:00),
             все точки — строго в будущем и раньше начала пары сдачи.
+            sent_reminders — уже отправленные напоминания: не повторяй их поводы и время.
+            manual_reminders — поставленные вручную, держись от них не ближе 2 часов.
             Верни JSON {"wakeups":[{"at":"YYYY-MM-DD HH:mm","reason":"зачем (коротко, для себя)"}]} в местном времени.
-            """, Json.Write(context), true, ct, "wakeplan");
+            """, Json.Write(context), true, ct, "wakeplan", tag);
         using var doc = JsonDocument.Parse(result);
         var list = new List<WakeupPlan>();
         if (doc.RootElement.Field("wakeups").ValueKind != JsonValueKind.Array) return list;

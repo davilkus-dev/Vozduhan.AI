@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Vozduhan.AI;
 
 /// <summary>PREP: per-attempt token and cost accounting, the developer's spending tab and overspend warnings.</summary>
-static class UsageTests
+static partial class UsageTests
 {
     const string Key = "sk-or-v1-SECRETKEY123";
     static void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
@@ -23,16 +23,16 @@ static class UsageTests
         Json.Write(new { model, choices = new[] { new { message = new { content }, finish_reason = finish } }, usage });
     static OpenRouterClient Client(BotConfig c, Func<HttpRequestMessage, string, (HttpStatusCode, string)> f) =>
         new(new HttpClient(new Fake(f)) { BaseAddress = new Uri("https://openrouter.test/") }, c, Key);
-    sealed record Row(string Kind, string Tag, string RequestedModel, string? Model, int Attempt, long Prompt, long Cached, long Completion, long Reasoning, double? Cost, string? Finish, long Ms);
+    sealed record Row(string Kind, string Tag, string RequestedModel, string? Model, int Attempt, long Prompt, long Cached, long Completion, long Reasoning, double? Cost, string? Finish, long Ms, string? CallId, string? Discard);
     static List<Row> Rows(BotConfig c)
     {
         using var db = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + c.DataPath); db.Open();
         using var cmd = db.CreateCommand();
-        cmd.CommandText = "SELECT kind,tag,requested_model,model,attempt,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,cost,finish,ms FROM ai_usage ORDER BY id";
+        cmd.CommandText = "SELECT kind,tag,requested_model,model,attempt,prompt_tokens,cached_tokens,completion_tokens,reasoning_tokens,cost,finish,ms,call_id,discard FROM ai_usage ORDER BY id";
         using var r = cmd.ExecuteReader();
         var list = new List<Row>();
         while (r.Read()) list.Add(new(r.GetString(0), r.GetString(1), r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3), r.GetInt32(4), r.GetInt64(5), r.GetInt64(6),
-            r.GetInt64(7), r.GetInt64(8), r.IsDBNull(9) ? null : r.GetDouble(9), r.IsDBNull(10) ? null : r.GetString(10), r.GetInt64(11)));
+            r.GetInt64(7), r.GetInt64(8), r.IsDBNull(9) ? null : r.GetDouble(9), r.IsDBNull(10) ? null : r.GetString(10), r.GetInt64(11), r.IsDBNull(12) ? null : r.GetString(12), r.IsDBNull(13) ? null : r.GetString(13)));
         return list;
     }
     static async Task<bool> Until(Func<bool> done, int ms)
@@ -71,7 +71,7 @@ static class UsageTests
             Console.WriteLine("PASS usage: tokens, cache, reasoning, cost, actual and requested model stored; no usage block gives zeros and null cost");
         }
 
-        // 2. A cut answer and its retry: two rows, both wasted, one call.
+        // 2. A cut answer and its retry: two rows, only the cut answer wasted, one call.
         {
             var c = make("usage-retry.db"); c.ModelRouting = new();
             using var s = new BotStore(c);
@@ -82,11 +82,11 @@ static class UsageTests
             ai.Usage = u => s.AddUsage(u);
             Assert(await ai.Complete("sys", "user", false, ct, "ambient-morning") == "целый ответ", "Retry result wrong");
             var rows = Rows(c);
-            Assert(rows.Count == 2 && rows[0] is { Attempt: 1, Finish: "length" } && rows[1] is { Attempt: 2, Finish: "stop" }, "Retry rows wrong");
+            Assert(rows.Count == 2 && rows[0] is { Attempt: 1, Finish: "length", Discard: "length", CallId: not null } && rows[1] is { Attempt: 2, Finish: "stop", Discard: null } && rows[0].CallId == rows[1].CallId, "Retry rows wrong");
             var report = s.UsageReport(DateTimeOffset.UtcNow, 7);
-            Assert(Near(report.WastedCost, 0.03) && report.WastedAttempts == 2 && report.Wasted.Single() is { Kind: "ambient-morning", Cut: 1, Retries: 1 }, "Wasted wrong");
+            Assert(Near(report.WastedCost, 0.01) && report.WastedAttempts == 1 && report.Wasted.Single() is { Kind: "ambient-morning", Discard: "length", Attempts: 1 }, "Wasted wrong");
             Assert(report.ByKind.Single() is { Calls: 1, Attempts: 2 } k && Near(k.Cost, 0.03) && Near(k.AvgPerCall!.Value, 0.03), "byKind calls/attempts wrong");
-            Console.WriteLine("PASS usage: a cut answer and its retry are two attempts of one call, both counted as wasted");
+            Console.WriteLine("PASS usage: a cut answer and its retry are two attempts of one call, only the cut answer counted as wasted");
         }
 
         // 3. HTTP 500 without a body: no row. Compatibility retry after 400: a row only for the successful answer.
@@ -230,7 +230,7 @@ static class UsageTests
                 Assert(top.Count == 7 && string.Join(",", top.Take(6).Select(x => x.GetProperty("cost").GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture))) == "1,0.4,0.3,0.2,0.1,0.05" &&
                     !top[6].TryGetProperty("cost", out _) && top[0].GetProperty("kind").GetString() == "wakeplan" && top[1].GetProperty("attempt").GetInt32() == 2, "top wrong");
                 var wasted = report.GetProperty("wasted");
-                Assert(Near(wasted.GetProperty("cost").GetDouble(), 0.70) && wasted.GetProperty("attempts").GetInt64() == 2, "wasted wrong");
+                Assert(Near(wasted.GetProperty("cost").GetDouble(), 0.30) && wasted.GetProperty("attempts").GetInt64() == 1, "wasted wrong");
                 var fullDays = Expect(d => d >= today.AddDays(-7) && d < today).Cost;
                 Assert(Near(report.GetProperty("forecast").GetDouble(), fullDays / 7 * DateTime.DaysInMonth(today.Year, today.Month)), "forecast wrong");
                 Assert((await Get(owner, "usage?days=7")).GetProperty("byDay").GetArrayLength() == 7 && (await Get(owner, "usage?days=13")).GetProperty("byDay").GetArrayLength() == 30, "days param wrong");
@@ -320,7 +320,7 @@ static class UsageTests
             var (_, ai2, s2) = Start(); // restart: a new worker on the same database
             cost = 0.1; await ai2.Complete("s", "u", false, ct, "chat");
             await Task.Delay(300);
-            Assert(Warnings() == 1 && s2.Get("usage_alert_sent:day") == DateOnly.FromDateTime(c.LocalNow(DateTimeOffset.UtcNow)).ToString("yyyy-MM-dd"), "Restart sent the warning again");
+            Assert(Warnings() == 1 && s2.Get("usage_alert_sent:day") == DateOnly.FromDateTime(c.LocalNow(DateTimeOffset.UtcNow)).ToString("yyyy-MM-dd") + "|1", "Restart sent the warning again");
             s2.Dispose();
 
             var z = make("usage-alert-off.db"); z.ModelRouting = new();
@@ -364,6 +364,6 @@ static class UsageTests
             Assert(utc.Daily.Cost == 4 && utc.Weekly.Cost == 6 && utc.Monthly.Cost == 7, "UTC day/week (from Monday)/month wrong: " + utc);
             Console.WriteLine("PASS usage: migration creates ai_usage keeping old data; Maintain drops rows older than 400 days");
         }
-        return 9;
+        return 9 + await RunFix6(make);
     }
 }

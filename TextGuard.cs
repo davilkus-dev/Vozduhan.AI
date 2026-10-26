@@ -16,7 +16,7 @@ public static class TextGuard
     public const int RepeatCount = 3;
     public const double MinFitShare = 0.3;
 
-    public static string Normalize(string text) => Regex.Replace(Json.Unescape(text).Trim(), @"(?:\r?\n){3,}", "\n\n");
+    public static string Normalize(string text) => Regex.Replace(Json.Unescape(text.Replace("\r\n", "\n").Replace("\r", "\n")).Trim(), @"(?:\r?\n){3,}", "\n\n");
 
     public static string? Check(string text, string source, int maxChars)
     {
