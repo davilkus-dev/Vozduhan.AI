@@ -341,7 +341,7 @@ public sealed partial class BotWorker : BackgroundService
         return null;
     }
 
-    private async Task ChatGuarded(JsonElement m, string key, bool isPrivate, long actor, CancellationToken ct)
+    private async Task ChatGuarded(JsonElement m, string key, bool isPrivate, long actor, CancellationToken ct, RouteDecision? decision = null)
     {
         var stored = store.Post("answer:" + key) is not null;
         if (!stored && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - m.Number("date") > 600) return;
@@ -351,16 +351,18 @@ public sealed partial class BotWorker : BackgroundService
                 ? "На сегодня лимит болтовни со мной закончился. Расписание и дедлайны всё равно подскажу — спроси «что завтра?» или «какие дедлайны?»."
                 : "На сегодня лимит болтовни со мной закончился. Дедлайны и /today продолжают работать.", ct); return;
         }
-        await Chat(m, key, isPrivate, ct);
+        await Chat(m, key, isPrivate, ct, actor, decision);
     }
 
     private static string Tag(JsonElement m) => $"chat:{m.Field("chat").Number("id")}:{m.Number("message_id")}";
 
-    private async Task Chat(JsonElement m, string key, bool isPrivate, CancellationToken ct)
+    public const string WebExhausted = "🔎 <i>Поиск на сегодня исчерпан — ответил без него.</i>";
+    private async Task Chat(JsonElement m, string key, bool isPrivate, CancellationToken ct, long actor = 0, RouteDecision? decision = null)
     {
         var chat = m.Field("chat").Number("id"); var id = (int)m.Number("message_id");
         var topic = m.TopicId();
         var answerKey = "answer:" + key;
+        var tailKey = "tail:" + key;
         var answer = store.Post(answerKey)?.Text;
         if (answer is null && !config.Features.Router) await React(chat, id, ct);
         var started = DateTimeOffset.UtcNow;
@@ -368,24 +370,54 @@ public sealed partial class BotWorker : BackgroundService
         {
             using var typing = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var indicator = KeepTyping(chat, topic, typing.Token);
+            var tail = "";
             try
             {
                 await digest.Prepare(Related(m), "digest", ct);
-                answer = await ai.Chat(conversation.AdminContext(isPrivate), conversation.Context(m, isPrivate), Tag(m), config.SplitReplies, ct);
+                var features = config.Features;
+                WebCall? web = null; string? webNote = null;
+                if (features.WebSearch && decision?.Web is { Length: > 0 } query)
+                {
+                    if (store.WebBudget(actor, actor == config.OwnerId, started, key, features.WebSearchDailyLimit, features.WebSearchPerUserDaily)) web = new(query);
+                    else
+                    {
+                        webNote = "Поиск в интернете на сегодня исчерпан: ответь без него, из того, что знаешь, и не выдавай догадки за свежие данные.";
+                        tail = WebExhausted;
+                    }
+                }
+                if (features.WriterDiet)
+                {
+                    var (trusted, user) = conversation.Writer(m, isPrivate, decision?.Blocks, webNote);
+                    answer = await ai.Chat(trusted, user, Tag(m), config.SplitReplies, ct, web);
+                }
+                else answer = await ai.Chat(conversation.AdminContext(isPrivate), conversation.Context(m, isPrivate, webNote), Tag(m), config.SplitReplies, ct, web);
+                if (web is { Sources.Count: > 0 }) tail = OpenRouterClient.SourcesHtml(web.Sources);
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
                 log.LogWarning("AI chat failed: {Error}", Failure(e));
                 answer = config.Features.Router ? NoAiAnswer
                     : "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны и /today от этого не пропали.";
+                tail = "";
             }
             finally { typing.Cancel(); await indicator; }
+            // Sources and the «search exhausted» mark are built by code, kept next to the answer for a replay after a restart.
+            if (tail.Length > 0) store.SavePost(tailKey, 0, tail);
             store.SavePost(answerKey, 0, answer);
         }
         var parts = config.SplitReplies ? OpenRouterClient.Parts(answer) : [answer.Replace("\n" + OpenRouterClient.Split + "\n", "\n")];
-        var first = await SendParts(chat, topic, parts, id, (DateTimeOffset.UtcNow - started).TotalMilliseconds, ct, i => key + ":part:" + i);
+        var formatted = false;
+        if (store.Post(tailKey)?.Text is { Length: > 0 } code)
+        {
+            // The model's text is converted first, so the links the code adds are never touched by the markdown rules.
+            parts = parts.Select(TelegramHtml.FromMarkdown).ToList();
+            parts[^1] += "\n\n" + code;
+            formatted = true;
+        }
+        var first = await SendParts(chat, topic, parts, id, (DateTimeOffset.UtcNow - started).TotalMilliseconds, ct, i => key + ":part:" + i, formatted);
         store.SavePost(key, first ?? 0, "");
         store.ForgetPost(answerKey);
+        store.ForgetPost(tailKey);
         for (var i = 0; i < parts.Count; i++) store.ForgetPost(key + ":part:" + i);
     }
 

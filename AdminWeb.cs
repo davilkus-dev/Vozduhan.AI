@@ -632,7 +632,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Bytes(response, 200, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
                 {
                     registryVersion = config.RegistryVersion, members = r.Members, subjects = r.Subjects, periods = r.Periods, lessons = r.Lessons,
-                    scheduleChanges = r.Changes, r.WeekOneMonday, r.TermEnd, r.DefaultCampus, r.Knowledge
+                    scheduleChanges = r.Changes, r.WeekOneMonday, r.TermEnd, r.DefaultCampus, r.Knowledge, r.KnowledgeBlocks
                 }, options)));
                 return;
             }

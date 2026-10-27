@@ -28,7 +28,10 @@ public static class RegistryOps
         change_remove {changeId}
         period_set {number, start: ЧЧ:ММ, end: ЧЧ:ММ}; period_remove {number}
         settings_set {weekOneMonday?, termEnd? ("" — без конца), defaultCampus?}
-        knowledge_set {text}; knowledge_append {text}
+        knowledge_set {key?, text}; knowledge_append {key?, text} — кусок знаний по ключу (без key — general_info), set заменяет текст, append дописывает
+        knowledge_block_set {key, text?, hint?, always?} — создать или изменить кусок знаний: key латиницей (local_memes, easter_eggs, group_info…),
+          hint — когда этот кусок нужен боту (видит маршрутизатор), always — отдавать в каждый ответ
+        knowledge_block_remove {key}
         """;
 
     public static (Registry Result, List<string> Lines) ApplyAll(Registry current, IEnumerable<JsonElement> ops, long ownerId, bool actorIsOwner)
@@ -57,6 +60,17 @@ public static class RegistryOps
     public static bool IsSecret(string line) => line.StartsWith("🤫") || line.StartsWith("🧠");
     public static List<string> ForViewer(IEnumerable<string> lines, bool owner) => lines.Where(l => owner || !IsSecret(l)).ToList();
 
+    static string KnowledgeKey(JsonElement op, bool required = false)
+    {
+        var key = (S(op, "key") ?? "").Trim().ToLowerInvariant();
+        if (key.Length == 0)
+        {
+            if (required) throw new InvalidOperationException("Укажи ключ куска знаний (key).");
+            return KnowledgeBlock.General;
+        }
+        if (!System.Text.RegularExpressions.Regex.IsMatch(key, "^[a-z0-9_]{1,40}$")) throw new InvalidOperationException($"Ключ куска знаний «{key}» — латиница, цифры и _.");
+        return key;
+    }
     static string? S(JsonElement e, string k) => e.Field(k).ValueKind switch
     {
         JsonValueKind.String => e.Field(k).GetString()?.Trim(),
@@ -308,13 +322,39 @@ public static class RegistryOps
                 return "⚙️ " + string.Join("; ", parts);
             }
             case "knowledge_set":
-                r.Knowledge = S(op, "text") ?? "";
-                return $"🧠 Текст знаний заменён ({r.Knowledge.Length} символов)";
+            {
+                var key = KnowledgeKey(op);
+                var block = r.Block(key) ?? new KnowledgeBlock(key);
+                r.SetBlock(block with { Text = (S(op, "text") ?? "").Trim() });
+                return $"🧠 Знания [{key}] заменены ({r.KnowledgeText(key).Length} символов)";
+            }
             case "knowledge_append":
             {
+                var key = KnowledgeKey(op);
                 var text = Req(op, "text", "текст");
-                r.Knowledge = string.IsNullOrWhiteSpace(r.Knowledge) ? text : r.Knowledge.TrimEnd() + "\n" + text;
-                return "🧠 В знания добавлено: «" + Conversation.Limit(text, 200) + "»";
+                var block = r.Block(key) ?? new KnowledgeBlock(key);
+                r.SetBlock(block with { Text = string.IsNullOrWhiteSpace(block.Text) ? text : block.Text.TrimEnd() + "\n" + text });
+                return $"🧠 В знания [{key}] добавлено: «" + Conversation.Limit(text, 200) + "»";
+            }
+            case "knowledge_block_set":
+            {
+                var key = KnowledgeKey(op, required: true);
+                var old = r.Block(key);
+                var block = (old ?? new KnowledgeBlock(key)) with
+                {
+                    Text = Has(op, "text") ? (S(op, "text") ?? "").Trim() : old?.Text ?? "",
+                    Hint = Has(op, "hint") ? S(op, "hint") : old?.Hint,
+                    Always = B(op, "always") ?? old?.Always ?? false
+                };
+                r.SetBlock(block);
+                return $"🧠 Кусок знаний [{key}] " + (old is null ? "создан" : "изменён") + $" ({block.Text.Length} символов" + (block.Always ? ", всегда" : "") + ")";
+            }
+            case "knowledge_block_remove":
+            {
+                var key = KnowledgeKey(op, required: true);
+                if (r.Block(key) is null) throw new InvalidOperationException($"Нет куска знаний [{key}].");
+                r.KnowledgeBlocks = r.KnowledgeBlocks.Where(b => b.Key != key).ToArray();
+                return $"🧠 Кусок знаний [{key}] удалён";
             }
             default:
                 throw new InvalidOperationException($"Неизвестная операция «{name}».");
@@ -379,6 +419,15 @@ public static class RegistryOps
         if (a.TermEnd != b.TermEnd) lines.Add("⚙️ Конец семестра: " + (b.TermEnd ?? "не задан"));
         if (a.DefaultCampus != b.DefaultCampus) lines.Add("⚙️ Корпус по умолчанию: " + b.DefaultCampus);
         if (a.Knowledge != b.Knowledge) lines.Add($"🧠 Текст знаний изменён ({a.Knowledge.Length} → {b.Knowledge.Length} символов)");
+        foreach (var k in b.KnowledgeBlocks)
+        {
+            var old = a.Block(k.Key);
+            if (old is null) lines.Add($"🧠 Новый кусок знаний [{k.Key}] ({k.Text.Length} символов)");
+            else if (old != k) lines.Add($"🧠 Кусок знаний [{k.Key}] изменён" + (old.Text != k.Text ? $" ({old.Text.Length} → {k.Text.Length} символов)" : ""));
+        }
+        foreach (var k in a.KnowledgeBlocks.Where(k => b.Block(k.Key) is null)) lines.Add($"🧠 Кусок знаний [{k.Key}] удалён");
+        if (a.KnowledgeBlocks.Length == b.KnowledgeBlocks.Length && a.KnowledgeBlocks.All(k => b.Block(k.Key) is not null) &&
+            !a.KnowledgeBlocks.Select(k => k.Key).SequenceEqual(b.KnowledgeBlocks.Select(k => k.Key))) lines.Add("🧠 Порядок кусков знаний изменён");
         return lines;
     }
 }

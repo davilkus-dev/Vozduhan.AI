@@ -12,6 +12,10 @@ public sealed record RouteDecision(string? Reaction, string Mode, string? Capabi
 {
     /// <summary>Clarify only: up to four answers as buttons; each, merged with Args, is a complete call of Capability.</summary>
     public IReadOnlyList<RouteOption>? Options { get; init; }
+    /// <summary>Writer only, with WriterDiet: the context blocks the Router chose (known ids only). null — no choice, the Writer gets everything.</summary>
+    public IReadOnlyList<string>? Blocks { get; init; }
+    /// <summary>Writer only, with WebSearch: the search query (checked: 1..200 characters).</summary>
+    public string? Web { get; init; }
 }
 
 public sealed partial class BotWorker
@@ -69,7 +73,7 @@ public sealed partial class BotWorker
             default:
                 // Invalid twice: exactly the behaviour before the Router (editors' planner, everybody else's chat).
                 if (decision.Source == "fallback" && editor) { await AdminDialog(m, key, actor, full, ct); return; }
-                await ChatGuarded(m, key, isPrivate, actor, ct); return;
+                await ChatGuarded(m, key, isPrivate, actor, ct, decision); return;
         }
     }
 
@@ -86,7 +90,8 @@ public sealed partial class BotWorker
         var role = Catalog.Role(actor);
         var allowed = Catalog.For(role, place);
         var reactions = RouterReactions();
-        var input = RouterInput(m, actor, role, place, joined, allowed, reactions, slot);
+        var blocks = config.Features.WriterDiet ? conversation.BlockCatalog(place == Capabilities.Dm) : null;
+        var input = RouterInput(m, actor, role, place, joined, allowed, reactions, slot, blocks);
         var today = Today();
         string? note = null;
         for (var attempt = 1; attempt <= 2; attempt++)
@@ -105,7 +110,7 @@ public sealed partial class BotWorker
                 log.LogWarning("Router unavailable: {Error}", Failure(e));
                 return Keywords(full, place == Capabilities.Dm && config.CanEdit(actor)) ?? new(null, "unavailable", null, null, null, "OpenRouter недоступен", "keywords");
             }
-            if (ParseRoute(answer, allowed, reactions, today, out var error) is { } decision) return decision;
+            if (ParseRoute(answer, allowed, reactions, today, out var error, blocks?.Select(b => b.Id).ToHashSet(), config.Features.WebSearch) is { } decision) return decision;
             try { ai.DiscardUsage?.Invoke(callId, "rejected:route"); } catch { }
             log.LogWarning("Router answer rejected: {Error}, attempt {Attempt}", error, attempt);
             note = $"Прошлый ответ отклонён: {error}. Исправь и верни только JSON по схеме.";
@@ -114,7 +119,9 @@ public sealed partial class BotWorker
     }
 
     /// <summary>The model's JSON checked by code: enum, capability allowed for this role and place, its args, question length. Bad emoji is dropped.</summary>
-    public static RouteDecision? ParseRoute(string json, IReadOnlyList<Capability> allowed, IReadOnlyCollection<string> reactions, DateOnly today, out string? error)
+    /// <summary>blockIds: the catalog offered to the Router (null — diet off, blocks ignored); web: the search is on.</summary>
+    public static RouteDecision? ParseRoute(string json, IReadOnlyList<Capability> allowed, IReadOnlyCollection<string> reactions, DateOnly today, out string? error,
+        IReadOnlySet<string>? blockIds = null, bool web = false)
     {
         error = null;
         JsonElement root;
@@ -143,7 +150,19 @@ public sealed partial class BotWorker
         }
         else if (mode == "react_only" && reaction is null)
             reaction = reactions.Contains("👍") ? "👍" : reactions.FirstOrDefault(); // never silently ignore a person
-        return new(reaction, mode, capability, args, question, Conversation.Limit(Str("reason") ?? "", 200), "router") { Options = options };
+        List<string>? blocks = null; string? query = null;
+        if (mode == "writer" && blockIds is not null && root.Field("blocks").ValueKind == JsonValueKind.Array)
+            // Unknown ids are thrown away, not an error: the Writer simply gets less.
+            blocks = root.Field("blocks").EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!.Trim())
+                .Where(blockIds.Contains).Distinct().ToList();
+        if (mode == "writer" && web && root.Field("web").ValueKind == JsonValueKind.Object)
+        {
+            var q = root.Field("web").Field("query");
+            query = q.ValueKind == JsonValueKind.String ? System.Text.RegularExpressions.Regex.Replace(q.GetString()!, @"\s+", " ").Trim() : null;
+            if (string.IsNullOrEmpty(query) || query.Length > OpenRouterClient.WebQueryMax)
+            { error = $"web.query — строка поискового запроса от 1 до {OpenRouterClient.WebQueryMax} символов"; return null; }
+        }
+        return new(reaction, mode, capability, args, question, Conversation.Limit(Str("reason") ?? "", 200), "router") { Options = options, Blocks = blocks, Web = query };
     }
 
     /// <summary>
@@ -218,7 +237,7 @@ public sealed partial class BotWorker
 
     /// <summary>A compact input: the message, what it replies to, six short lines of history, role and place, a calendar, the filtered catalog.</summary>
     private string RouterInput(JsonElement m, long actor, string role, string place, string? joined, IReadOnlyList<Capability> allowed, string[] reactions,
-        PendingSlot? slot = null)
+        PendingSlot? slot = null, List<(string Id, string About)>? blocks = null)
     {
         var r = config.R;
         var local = config.LocalNow(DateTimeOffset.UtcNow);
@@ -257,6 +276,7 @@ public sealed partial class BotWorker
             replied_to = reply.ValueKind == JsonValueKind.Object ? $"{Who(reply.Field("from"))}: {Conversation.Limit(MediaDigest.Text(reply, store), 300)}" : null,
             message = new { author = Who(m.Field("from")), text = Conversation.Limit((joined is null ? "" : joined + "\n") + MediaDigest.Text(m, store), 1500) },
             capabilities = allowed.Select(c => $"{c.Id} [{c.Mode}]" + (c.Args.Length > 0 ? "(" + string.Join("; ", c.Args.Select(Arg)) + ")" : "") + " — " + c.Description),
+            context_blocks = blocks?.Select(b => $"{b.Id} — {b.About}"),
             allowed_reactions = reactions
         });
     }

@@ -50,6 +50,18 @@ public sealed record Subject(string Id, string Name, string[]? Aliases = null)
     public string? Room { get; init; }
 }
 
+/// <summary>
+/// One piece of the owner's knowledge for the bot («general_info», «local_memes», «easter_eggs»…). Key: latin, digits, _.
+/// Hint tells the Router when the piece is useful (the Router never sees the text). Always: sent to the Writer on every answer.
+/// </summary>
+public sealed record KnowledgeBlock(string Key, string Text = "")
+{
+    public string? Hint { get; init; }
+    public bool Always { get; init; }
+    public const string General = "general_info";
+    public const int TextMax = 30000, HintMax = 300, TotalMax = 100000;
+}
+
 public sealed record Period(int Number, string Start, string End);
 
 /// <summary>A recurring weekly lesson. dayOfWeek: 1 = Monday … 7 = Sunday; weeks: all / odd / even.</summary>
@@ -114,6 +126,13 @@ public sealed class FeatureSettings
     public bool DigestVideo { get; set; }
     /// <summary>A cheap model reacts at once and picks: a ready answer from the catalog, an action, a question, only a reaction, or the Writer.</summary>
     public bool Router { get; set; }
+    /// <summary>The Writer gets only the context blocks the Router picked; the system prompt is laid out for the provider's prompt cache.</summary>
+    public bool WriterDiet { get; set; }
+    /// <summary>The Router may ask for a web search (OpenRouter web plugin) for questions about the outside world.</summary>
+    public bool WebSearch { get; set; }
+    public int WebSearchDailyLimit { get; set; } = 20;
+    /// <summary>Per person per local day; the developer has no personal limit (the daily one still counts).</summary>
+    public int WebSearchPerUserDaily { get; set; } = 3;
 }
 
 /// <summary>Model choice editable from the web admin (owner). Any OpenRouter model id works.</summary>
@@ -145,9 +164,22 @@ public sealed class Registry
     public string WeekOneMonday { get; set; } = "2026-08-31";
     public string? TermEnd { get; set; }
     public string DefaultCampus { get; set; } = "";
+    /// <summary>Legacy single knowledge text. Normalize moves it into the «general_info» block; after that it stays empty.</summary>
     public string Knowledge { get; set; } = "";
+    /// <summary>The owner's knowledge in pieces, in the order the owner keeps them.</summary>
+    public KnowledgeBlock[] KnowledgeBlocks { get; set; } = [];
 
     public static readonly string[] Kinds = ["lecture", "practice", "lab"];
+    public const int MemberNoteMax = 4000;
+    public KnowledgeBlock? Block(string key) => KnowledgeBlocks.FirstOrDefault(b => b.Key == key);
+    /// <summary>Text of one knowledge piece ("" if there is none).</summary>
+    public string KnowledgeText(string key = KnowledgeBlock.General) => Block(key)?.Text ?? "";
+    /// <summary>Puts or replaces one piece, keeping its place in the list (a new one goes to the end).</summary>
+    public void SetBlock(KnowledgeBlock block)
+    {
+        var i = Array.FindIndex(KnowledgeBlocks, b => b.Key == block.Key);
+        KnowledgeBlocks = i < 0 ? [.. KnowledgeBlocks, block] : KnowledgeBlocks.Select((b, j) => j == i ? block : b).ToArray();
+    }
     public static readonly string[] ChangeTypes = ["add", "cancel", "modify", "dayoff"];
 
     public Registry Clone() => Json.Read<Registry>(Json.Write(this));
@@ -172,6 +204,22 @@ public sealed class Registry
         Periods = Periods.OrderBy(p => p.Number).ToArray();
         Subjects = Subjects.Select(s => s with { Aliases = (s.Aliases ?? []).Select(a => a.Trim()).Where(a => a.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray() }).ToArray();
+        // Migration of the single knowledge text: it becomes (the start of) the «general_info» piece. Old versions in the
+        // history keep their text and are migrated the same way when read, so undo and restore still work.
+        KnowledgeBlocks ??= [];
+        KnowledgeBlocks = KnowledgeBlocks.Where(b => b is not null).Select(b => b with
+        {
+            Key = (b.Key ?? "").Trim().ToLowerInvariant(), Text = (b.Text ?? "").Trim(),
+            Hint = string.IsNullOrWhiteSpace(b.Hint) ? null : b.Hint.Trim()
+        }).ToArray();
+        if (!string.IsNullOrWhiteSpace(Knowledge))
+        {
+            var general = Block(KnowledgeBlock.General);
+            SetBlock(general is null ? new KnowledgeBlock(KnowledgeBlock.General, Knowledge.Trim())
+                : general with { Text = string.IsNullOrWhiteSpace(general.Text) ? Knowledge.Trim() : Knowledge.Trim() + "\n" + general.Text });
+            if (general is null) KnowledgeBlocks = [KnowledgeBlocks[^1], .. KnowledgeBlocks[..^1]];
+        }
+        Knowledge = "";
         return this;
     }
     private static T[] NumberRows<T>(T[] rows, Func<T, string?> get, Func<T, string, T> set, string prefix)
@@ -193,7 +241,7 @@ public sealed class Registry
         subjects = Subjects.Where(s => (s.Aliases ?? []).Length > 0 || !string.IsNullOrWhiteSpace(s.AdminComment))
             .OrderBy(s => s.Id).Select(s => new { s.Id, s.Aliases, s.AdminComment }),
         members = Members.Where(m => !string.IsNullOrWhiteSpace(m.AdminNote)).OrderBy(m => m.Key).Select(m => new { m.Key, m.AdminNote }),
-        Knowledge
+        Knowledge, KnowledgeBlocks
     });
     public Registry Redacted()
     {
@@ -201,6 +249,7 @@ public sealed class Registry
         r.Subjects = r.Subjects.Select(s => s with { Aliases = [], AdminComment = null }).ToArray();
         r.Members = r.Members.Select(m => m with { AdminNote = null }).ToArray();
         r.Knowledge = "";
+        r.KnowledgeBlocks = [];
         return r;
     }
     /// <summary>For a save by the head: secret fields are always taken from the current version.</summary>
@@ -209,6 +258,7 @@ public sealed class Registry
         Subjects = Subjects.Select(s => current.Subject(s.Id) is { } old ? s with { Aliases = old.Aliases, AdminComment = old.AdminComment } : s with { Aliases = [], AdminComment = null }).ToArray();
         Members = Members.Select(m => m with { AdminNote = current.Members.FirstOrDefault(o => o.Key == m.Key)?.AdminNote }).ToArray();
         Knowledge = current.Knowledge;
+        KnowledgeBlocks = current.KnowledgeBlocks;
         return this;
     }
 
@@ -252,7 +302,15 @@ public sealed class Registry
             Fail("weekOneMonday должен быть понедельником первой (нечётной) недели в формате YYYY-MM-DD.");
         if (TermEnd is not null && !ValidDate(TermEnd)) Fail("Конец семестра — дата YYYY-MM-DD или пусто.");
         if (Knowledge.Length > 30000) Fail("Текст знаний длиннее 30000 символов.");
-        if (Members.Any(m => m.AdminNote?.Length > 1500)) Fail("Заметка о человеке длиннее 1500 символов.");
+        foreach (var b in KnowledgeBlocks)
+        {
+            if (!Regex.IsMatch(b.Key ?? "", "^[a-z0-9_]{1,40}$")) Fail($"Ключ куска знаний «{b.Key}» — только латиница в нижнем регистре, цифры и _, до 40 символов.");
+            if (b.Text.Length > KnowledgeBlock.TextMax) Fail($"Кусок знаний {b.Key} длиннее {KnowledgeBlock.TextMax} символов.");
+            if (b.Hint?.Length > KnowledgeBlock.HintMax) Fail($"Подсказка у куска знаний {b.Key} длиннее {KnowledgeBlock.HintMax} символов.");
+        }
+        if (KnowledgeBlocks.Select(b => b.Key).Distinct().Count() != KnowledgeBlocks.Length) Fail("Ключи кусков знаний повторяются.");
+        if (KnowledgeBlocks.Sum(b => b.Text.Length) > KnowledgeBlock.TotalMax) Fail($"Все знания вместе длиннее {KnowledgeBlock.TotalMax} символов.");
+        if (Members.Any(m => m.AdminNote?.Length > MemberNoteMax)) Fail($"Заметка о человеке длиннее {MemberNoteMax} символов.");
 
         foreach (var l in Lessons)
         {
@@ -364,6 +422,7 @@ public sealed class BotConfig
     public string? TermEnd { get; set; }
     public string DefaultCampus { get; set; } = "";
     public string Knowledge { get; set; } = "";
+    public KnowledgeBlock[] KnowledgeBlocks { get; set; } = [];
 
     private Registry? current;
     /// <summary>Live registry. Replaced atomically on every confirmed edit; take one snapshot per operation.</summary>
@@ -375,7 +434,7 @@ public sealed class BotConfig
         var seed = new Registry
         {
             Members = Members, Subjects = Subjects, Periods = Periods, Lessons = Lessons, Changes = ScheduleChanges,
-            WeekOneMonday = WeekOneMonday, TermEnd = TermEnd, DefaultCampus = DefaultCampus, Knowledge = Knowledge
+            WeekOneMonday = WeekOneMonday, TermEnd = TermEnd, DefaultCampus = DefaultCampus, Knowledge = Knowledge, KnowledgeBlocks = KnowledgeBlocks
         }.Clone();
         if (previous is not null)
         {

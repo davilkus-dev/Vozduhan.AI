@@ -223,6 +223,25 @@ public sealed partial class BotStore : IDisposable
             return true;
         }
     }
+    /// <summary>
+    /// One web search for the answer «key»: the day's total and the person's share (the developer has none) in the group's local day.
+    /// The same answer asked again (restart) does not spend twice.
+    /// </summary>
+    public bool WebBudget(long actor, bool noPersonalLimit, DateTimeOffset now, string key, int daily, int perUser)
+    {
+        lock (gate)
+        {
+            if (Get("web_used:" + key) is not null) return true;
+            var day = Config.LocalNow(now).ToString("yyyy-MM-dd");
+            int Used(string k) => int.TryParse(Get(k), out var n) ? n : 0;
+            var total = Used($"web_budget:{day}"); var mine = Used($"web_budget:{day}:{actor}");
+            if (total >= daily || (!noPersonalLimit && mine >= perUser)) return false;
+            Set($"web_budget:{day}", (total + 1).ToString());
+            Set($"web_budget:{day}:{actor}", (mine + 1).ToString());
+            Set("web_used:" + key, day);
+            return true;
+        }
+    }
     public bool DigestBudget(DateTimeOffset now, int limit)
     {
         lock (gate)

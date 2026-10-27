@@ -389,11 +389,14 @@ VIEWS.plan=async el=>{
   const rs=$("#a_reset");if(rs)rs.onclick=async()=>{await api("ambient",{reset:true});toast("Вернул настройки из конфига");render()};
   const FEAT=[["coalesce","Склейка: на несколько сообщений подряд — один ответ"],["mediaDigest","Media Digest: фото, стикеры и видео — описанием для бота"],
     ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"],
-    ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"]];
+    ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"],
+    ["writerDiet","Диета: ответчику — только нужные куски данных и знаний (нужен маршрутизатор)"],["webSearch","Веб-поиск по решению маршрутизатора"]];
   if($("#f_body"))api("features").then(x=>{if(viewId!==renderId||!x.ok)return;const f=x.features;
     $("#f_body").innerHTML=FEAT.map(([k,t])=>`<label>${t}</label><input type="checkbox" id="f_${k}" ${f[k]?"checked":""}>`).join("")+
-      `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`;
-    $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
+      `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`+
+      `<label>Поисков в сутки на всех</label><input type="number" id="f_wd" min="0" max="10000" value="${f.webSearchDailyLimit}">`+
+      `<label>Поисков в сутки на человека (разработчик без лимита)</label><input type="number" id="f_wu" min="0" max="10000" value="${f.webSearchPerUserDaily}">`;
+    $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value,webSearchDailyLimit:+$("#f_wd").value,webSearchPerUserDaily:+$("#f_wu").value};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
       const r=await api("features",{settings});if(r.ok)toast("Новые функции сохранены");else info("Ошибка",`<p>${esc(r.error)}</p>`)}});
   /*END*/
   el.querySelectorAll("[data-re]").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="Думаю…";const x=await api("wakeup/replan",{deadline:+b.dataset.re});if(x.ok)toast("ИИ поставил будильников: "+x.count);else info("Ошибка",`<p>${esc(x.error)}</p>`);render()});
@@ -428,7 +431,7 @@ VIEWS.members=el=>{
   <td><div class="row" style="flex-wrap:nowrap"><button class="b ic" data-e="${m.i}">✏️</button>${m.active?`<button class="b d" data-off="${m.i}">Убрать</button>`:`<button class="b" data-on="${m.i}">Вернуть</button>`}</div></td></tr>`).join("")}</tbody></table></div>`;
   const edit=async i=>{const m=i>=0?S.draft.members[i]:{active:true,role:"member",listNumber:Math.max(0,...act.map(x=>x.listNumber||0))+1};
     const fields=[{k:"listNumber",label:"№ по списку",type:"number"},{k:"fullName",label:"ФИО"},{k:"shortName",label:"Как звать"},{k:"username",label:"Username"},{k:"userId",label:"Telegram ID",type:"number"},{k:"telegramName",label:"Имя в Telegram"},{k:"email",label:"Почта"},{k:"note",label:"Тех. заметка",ph:"почему ушёл и т.п."}];
-/*OWNER*/    if(OWNER())fields.push({k:"adminNote",label:"Заметка для бота",type:"textarea",rows:3,own:true,ph:"Лёха вечно про видеокарты, опять купил б/у 3060"},{k:"role",label:"Роль",type:"select",options:[["member","участник"],["head","староста"]]});/*END*/
+/*OWNER*/    if(OWNER())fields.push({k:"adminNote",label:"Кто такой и мемы про него (до 4000 символов, отдельный кусок для бота)",type:"textarea",rows:8,own:true,ph:"Лёха вечно про видеокарты, опять купил б/у 3060"},{k:"role",label:"Роль",type:"select",options:[["member","участник"],["head","староста"]]});/*END*/
     const v=await form(i>=0?m.fullName:"Новый участник",fields,m,OWNER()?"":'<p class="muted small">Назначить старосту может только разработчик.</p>');
     if(!v)return;v.username=(v.username||"").replace(/^@/,"");v.listNumber=v.listNumber||0;
     if(!OWNER()){v.adminNote=m.adminNote;v.role=m.role}
@@ -440,10 +443,24 @@ VIEWS.members=el=>{
 
 /*OWNER*/// ---------- knowledge (owner) ----------
 VIEWS.knowledge=el=>{
-  el.innerHTML=page("Знания для бота","Попадает в системный промпт: вуз и корпуса, традиции и мемы (ПТУ МИРЭА, штаны-лестница…), правила баллов и практик, примеры тона. Видишь только ты.")+
-  `<div class="card"><textarea id="kn" style="min-height:58vh" placeholder="Пиши как есть — бот прочитает.">${esc(S.draft.knowledge)}</textarea><div class="faint small" id="kc" style="margin-top:6px"></div></div>`;
-  const t=$("#kn"),c=$("#kc");const upd=()=>c.textContent=t.value.length+" / 30000 символов";upd();
-  t.oninput=()=>{S.draft.knowledge=t.value;upd();$("#bar").classList.toggle("show",!!dirty())}};
+  const K=S.draft.knowledgeBlocks=S.draft.knowledgeBlocks||[];
+  const total=K.reduce((n,b)=>n+(b.text||"").length,0);
+  el.innerHTML=page("Знания для бота","Знания по кусочкам: у каждого свой ключ (general_info, local_memes, easter_eggs, group_info…). Без «диеты» бот получает все куски; с «диетой» маршрутизатор сам берёт нужные по подсказке — текст куска он не видит. Мемы и описание конкретного человека — во вкладке «Группа». Видишь только ты.",`<button class="b p" id="addK">＋ Кусок</button>`)+
+  `<div class="faint small" style="margin:-6px 0 10px">${K.length} кусков · ${total} / 100000 символов</div>`+
+  (K.map((b,i)=>`<div class="card"><div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:nowrap"><div><b>${esc(b.key)}</b>${b.always?' <span class="chip">всегда</span>':""}<div class="faint small">${b.hint?esc(b.hint):"без подсказки для маршрутизатора"} · ${(b.text||"").length} символов</div></div>
+    <div class="row" style="flex-wrap:nowrap"><button class="b ic" data-up="${i}" ${i===0?"disabled":""}>↑</button><button class="b ic" data-e="${i}">✏️</button><button class="b d" data-del="${i}">Удалить</button></div></div>
+    <div class="muted small" style="margin-top:8px;white-space:pre-wrap">${esc((b.text||"").slice(0,400))}${(b.text||"").length>400?"…":""}</div></div>`).join("")||'<div class="card empty">Пока пусто</div>');
+  const edit=async i=>{const b=i>=0?K[i]:{key:"",text:"",always:false};
+    const v=await form(i>=0?b.key:"Новый кусок знаний",[{k:"key",label:"Ключ (латиница, цифры, _)",ph:"local_memes"},
+      {k:"hint",label:"Подсказка маршрутизатору: когда нужен этот кусок",ph:"мемы группы — бери для шуток и прожарки"},
+      {k:"always",label:"Отдавать в каждый ответ",type:"checkbox"},{k:"text",label:"Текст",type:"textarea",rows:16,ph:"Пиши как есть — бот прочитает."}],b);
+    if(!v)return;v.key=(v.key||"").trim().toLowerCase();v.text=v.text||"";v.hint=v.hint||null;
+    if(!/^[a-z0-9_]{1,40}$/.test(v.key))return info("Не тот ключ","<p>Только латиница в нижнем регистре, цифры и _, до 40 символов.</p>");
+    if(K.some((x,j)=>j!==i&&x.key===v.key))return info("Такой ключ уже есть",`<p>${esc(v.key)}</p>`);
+    if(i>=0)K[i]={...b,...v};else K.push(v);touch()};
+  $("#addK").onclick=()=>edit(-1);el.querySelectorAll("[data-e]").forEach(x=>x.onclick=()=>edit(+x.dataset.e));
+  el.querySelectorAll("[data-del]").forEach(x=>x.onclick=()=>{K.splice(+x.dataset.del,1);touch()});
+  el.querySelectorAll("[data-up]").forEach(x=>x.onclick=()=>{const i=+x.dataset.up;if(i>0){[K[i-1],K[i]]=[K[i],K[i-1]];touch()}})};
 
 /*END*/
 // ---------- settings ----------
@@ -588,7 +605,7 @@ VIEWS.ai=async el=>{
 /*OWNER*/const usd=v=>v==null?"—":v===0?"$0":"$"+(Math.abs(v)<1?v.toFixed(4):v.toFixed(2));
 const num=n=>(n||0).toLocaleString("ru-RU");
 const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
-const KUSE={chat:"ответ в чате",router:"Маршрутизатор",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
+const KUSE={chat:"ответ в чате","chat-web":"Ответ с поиском",router:"Маршрутизатор",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
   "ambient-deadline":"вводная поста дедлайна","ambient-wakeup":"напоминание","ambient-summary":"утренняя сводка","ambient-morning":"утро в чате",
   "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост"};
 const kuse=k=>`<span title="${esc(k)}">${esc(KUSE[k]||k)}</span>`;

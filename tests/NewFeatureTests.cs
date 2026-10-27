@@ -138,7 +138,7 @@ static class NewFeatureTests
             using var s = new BotStore(c);
             var v1 = s.RegistryVersion();
             s.CommitRegistry(1, "test", null, cur => RegistryOps.ApplyAll(cur, [Op(new { op = "knowledge_set", text = "ПТУ МИРЭА" })], c.OwnerId, true));
-            Assert(c.R.Knowledge == "ПТУ МИРЭА", "Knowledge not set");
+            Assert(c.R.KnowledgeText() == "ПТУ МИРЭА", "Knowledge not set");
             var prev = s.PreviousRegistryVersion()!.Value;
             var target = s.RegistryAt(prev)!;
             s.SaveRegistryDraft(new RegistryDraft("head", 2, s.RegistryVersion(), "restore", [], ["x"], "/undo", prev));
@@ -146,7 +146,7 @@ static class NewFeatureTests
             catch (InvalidOperationException) { }
             s.SaveRegistryDraft(new RegistryDraft("tok", 1, s.RegistryVersion(), "restore", [], ["x"], "/undo", prev));
             s.ConfirmRegistryDraft(1, "tok");
-            Assert(c.R.Knowledge == "" && prev == v1, "Undo failed");
+            Assert(c.R.KnowledgeText() == "" && prev == v1, "Undo failed");
             try { s.CommitRegistry(1, "web", v1, cur => (cur.Clone(), ["x"])); throw new Exception("Stale save accepted"); }
             catch (RegistryConflict) { }
             try { s.ConfirmRegistryDraft(1, "tok"); throw new Exception("Draft applied twice"); }
@@ -684,7 +684,7 @@ static class NewFeatureTests
                 var save = await browser.PostAsync("api/registry", new StringContent(Json.Write(new { baseVersion = version, registry }), Encoding.UTF8, "application/json"));
                 Assert(save.IsSuccessStatusCode && c.R.Lessons.Single(l => l.SubjectId == "java").Room == "Г-999", "Web save failed");
                 Assert(c.R.Subject("java")!.AdminComment == "СЕКРЕТ-КОММЕНТ" && c.R.Subject("java")!.Aliases!.Contains("СЕКРЕТ-СЛЕНГ") &&
-                    c.R.Members.Single(m => m.UserId == 3).AdminNote == "СЕКРЕТ-ЗАМЕТКА\nСЕКРЕТ-ВТОРАЯ-СТРОКА" && c.R.Knowledge == "СЕКРЕТ-ЗНАНИЯ", "Head save wiped owner secrets");
+                    c.R.Members.Single(m => m.UserId == 3).AdminNote == "СЕКРЕТ-ЗАМЕТКА\nСЕКРЕТ-ВТОРАЯ-СТРОКА" && c.R.KnowledgeText() == "СЕКРЕТ-ЗНАНИЯ", "Head save wiped owner secrets");
                 Assert(!(await browser.GetStringAsync("api/export")).Contains("СЕКРЕТ"), "Export leaks secrets to the head");
                 var stale = await browser.PostAsync("api/registry", new StringContent(Json.Write(new { baseVersion = version, registry }), Encoding.UTF8, "application/json"));
                 Assert(stale.StatusCode == HttpStatusCode.Conflict, "Stale web save accepted");
