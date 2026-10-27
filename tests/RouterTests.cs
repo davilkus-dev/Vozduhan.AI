@@ -9,7 +9,7 @@ using Vozduhan.AI;
 static class RouterTests
 {
     static void Assert(bool condition, string message) { if (!condition) throw new Exception(message); }
-    sealed class Handler(Func<HttpRequestMessage, string, Task<(HttpStatusCode Code, object Body)>> f) : HttpMessageHandler
+    internal sealed class Handler(Func<HttpRequestMessage, string, Task<(HttpStatusCode Code, object Body)>> f) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -17,12 +17,12 @@ static class RouterTests
             return new(code) { Content = new StringContent(Json.Write(body), Encoding.UTF8, "application/json") };
         }
     }
-    static JsonElement El(object o) => JsonSerializer.SerializeToElement(o, Json.Options);
-    static object Answer(string content) => new { choices = new[] { new { message = new { content }, finish_reason = "stop" } },
+    internal static JsonElement El(object o) => JsonSerializer.SerializeToElement(o, Json.Options);
+    internal static object Answer(string content) => new { choices = new[] { new { message = new { content }, finish_reason = "stop" } },
         usage = new { prompt_tokens = 100, completion_tokens = 10, cost = 0.0001 } };
 
     /// <summary>Worker over fake APIs. Seq keeps the order of every Telegram method and AI kind; AI answers are chosen per kind.</summary>
-    sealed class Env : IDisposable
+    internal sealed class Env : IDisposable
     {
         public BotConfig C = null!; public BotStore S = null!; public BotWorker W = null!;
         public readonly List<string> Seq = [];
@@ -85,19 +85,19 @@ static class RouterTests
             return e;
         }
     }
-    static object Dm(long actor, int id, string text) => new
+    internal static object Dm(long actor, int id, string text) => new
     {
         message_id = id, date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), chat = new { id = actor, type = "private" },
         from = new { id = actor, first_name = "Имя" }, text
     };
-    static object Group(long actor, int id, string text) => new
+    internal static object Group(long actor, int id, string text) => new
     {
         message_id = id, date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), chat = new { id = -100123, type = "supergroup" }, message_thread_id = 10,
         from = new { id = actor, first_name = "Имя" }, text = "@vozduhanAIbot " + text, entities = new[] { new { type = "mention", offset = 0, length = 14 } }
     };
-    static string Route(string mode, string? capability = null, object? args = null, string? reaction = null, string? question = null) =>
+    internal static string Route(string mode, string? capability = null, object? args = null, string? reaction = null, string? question = null) =>
         Json.Write(new { reaction, mode, capability, args, question, reason = "тест" });
-    static string Ru(DateOnly d) => d.ToString("yyyy-MM-dd");
+    internal static string Ru(DateOnly d) => d.ToString("yyyy-MM-dd");
 
     public static async Task<int> Run(Func<string, BotConfig> make)
     {
@@ -107,7 +107,7 @@ static class RouterTests
 
         // D1. Catalog: rights at execution, place, arguments.
         {
-            using var e = Env.Make(make, "caps.db");
+            using var e = Env.Make(make, "caps.db", router: false); // slash commands below exist only with the Router off (block 4)
             var cat = e.W.Catalog;
             var m = El(Dm(3, 1, "добавь пару"));
             var member = await cat.Execute(3, Capabilities.Dm, "edit_registry", none, m, "reply:3:1", "добавь пару", CancellationToken.None);
@@ -129,7 +129,7 @@ static class RouterTests
             Assert(cat.For("member", Capabilities.Group).All(c => c.Roles.Contains("member")) && !cat.For("head", Capabilities.Dm).Any(c => c.Id is "post_idea" or "where") &&
                 cat.For("developer", Capabilities.Dm).Any(c => c.Id == "post_idea") && !cat.For("developer", Capabilities.Group).Any(c => c.Places.SequenceEqual(Capabilities.DmOnly)), "Catalog filter wrong");
 
-            // Slash commands run through the catalog: same answers as before.
+            // Router off: slash commands run through the catalog, same answers as before.
             e.Clear();
             await e.Process(new { message_id = 10, date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), chat = new { id = -100123, type = "supergroup" },
                 message_thread_id = 10, from = new { id = 3, first_name = "Имя" }, text = "/web@vozduhanAIbot", entities = new[] { new { type = "bot_command", offset = 0, length = 18 } } });
@@ -139,7 +139,7 @@ static class RouterTests
             await e.Process(Dm(2, 12, "/help"));
             Assert(e.LastText().Contains("/undo") && !e.LastText().Contains("/post") && !e.LastText().Contains("/where"), "Head help not built from the catalog by role");
             await e.Process(Dm(1, 13, "/help"));
-            Assert(e.LastText().Contains("/post") && e.LastText().Contains("удали дедлайн"), "Developer help incomplete");
+            Assert(e.LastText().Contains("/post") && e.LastText().Contains("/where"), "Developer help incomplete");
             await e.Process(Dm(3, 14, "/date"));
             Assert(e.LastText().Contains("Формат"), "/date without a date lost its hint");
             await e.Process(Dm(3, 15, "/deadline siaod | №1 | 2026-11-30 | 6"));

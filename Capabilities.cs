@@ -23,6 +23,8 @@ public sealed record Capability(string Id, string Title, string Description, str
     public string? Help { get; init; }
     /// <summary>Reachable by a slash command, so listed in help even without the Router.</summary>
     public bool Slash { get; init; } = true;
+    /// <summary>Help without commands (Router on): how to ask for it in plain words; null — not listed.</summary>
+    public string? Say { get; init; }
 }
 
 public enum Refusal { None, Unknown, Role, Place, Args }
@@ -58,8 +60,11 @@ public sealed class Capabilities(BotConfig config, IReadOnlyList<Capability> all
         return new(Refusal.None, await cap.Handler(new(actor, role, place, values, message, key, text), ct));
     }
 
-    /// <summary>Validates arguments against the description: known names, types, required ones, enum options. Null and blank count as absent.</summary>
-    public static bool TryArgs(Capability cap, JsonElement args, DateOnly today, out Dictionary<string, object> values, out string? error)
+    /// <summary>
+    /// Validates arguments against the description: known names, types, required ones, enum options. Null and blank count as absent.
+    /// Partial — only what is given (the known part of a clarification), required ones may still be missing.
+    /// </summary>
+    public static bool TryArgs(Capability cap, JsonElement args, DateOnly today, out Dictionary<string, object> values, out string? error, bool partial = false)
     {
         values = new();
         error = null;
@@ -88,8 +93,18 @@ public sealed class Capabilities(BotConfig config, IReadOnlyList<Capability> all
                 values[p.Name] = parsed;
             }
         var given = values;
-        if (cap.Args.FirstOrDefault(a => a.Required && !given.ContainsKey(a.Name)) is { } missing) { error = $"не хватает {missing.Name}"; return false; }
+        if (!partial && cap.Args.FirstOrDefault(a => a.Required && !given.ContainsKey(a.Name)) is { } missing) { error = $"не хватает {missing.Name}"; return false; }
         return true;
+    }
+
+    /// <summary>Known args of a clarification with the chosen option's args on top (the option wins). Non-objects count as empty.</summary>
+    public static JsonElement Merge(JsonElement? known, JsonElement? chosen)
+    {
+        var all = new Dictionary<string, JsonElement>();
+        foreach (var part in new[] { known, chosen })
+            if (part is { ValueKind: JsonValueKind.Object } o)
+                foreach (var p in o.EnumerateObject()) all[p.Name] = p.Value.Clone();
+        return JsonSerializer.SerializeToElement(all, Json.Options);
     }
 }
 
@@ -114,67 +129,68 @@ public sealed partial class BotWorker
                 {
                     var d = (DateOnly)c.Args["date"]; var today = Today();
                     return Done(ScheduleHtml.Day(config.R, d, d == today ? "Сегодня" : d == today.AddDays(1) ? "Завтра" : null));
-                }) { Section = "schedule", Help = "/today — пары сегодня\n/tomorrow — пары завтра\n/date 31.10 — пары на дату" },
+                }) { Section = "schedule", Help = "/today — пары сегодня\n/tomorrow — пары завтра\n/date 31.10 — пары на дату", Say = "пары на день — «что сегодня?», «что завтра?», «какие пары 31.10?»" },
             new("next_lesson", "Следующая пара", "какая пара сейчас и какая следующая", all, anywhere, [], render,
                 (_, _) => Done(ScheduleHtml.Next(config.R, config.LocalNow(DateTimeOffset.UtcNow))))
-                { Section = "schedule", Help = "/next — какая пара следующая" },
+                { Section = "schedule", Help = "/next — какая пара следующая", Say = "следующая пара — «какая сейчас пара?», «что дальше?»" },
             new("schedule_week", "Неделя", "расписание на текущую или следующую неделю", all, anywhere,
                 [new("next", "bool", Note: "true — следующая неделя")], render, (c, _) =>
                 {
                     var today = Today();
-                    return Done(ScheduleHtml.Week(config.R, c.Args.TryGetValue("next", out var n) && (bool)n ? today.AddDays(7) : today, today));
-                }) { Section = "schedule", Help = "/week — неделя (<code>/week next</code> — следующая)" },
+                    return Done(ScheduleHtml.Week(config.R, c.Args.TryGetValue("next", out var n) && (bool)n ? today.AddDays(7) : today, today, !config.Features.Router));
+                }) { Section = "schedule", Help = "/week — неделя (<code>/week next</code> — следующая)", Say = "неделя целиком — «расписание на неделю», «что на следующей неделе?»" },
             new("deadlines_list", "Дедлайны", "список ближайших подтверждённых сдач", all, anywhere, [], render, (_, _) => Done(DeadlinesHtml()))
-                { Help = "/deadlines — ближайшие сдачи" },
+                { Help = "/deadlines — ближайшие сдачи", Say = "ближайшие сдачи — «какие дедлайны?», «что сдаём?»" },
             new("subjects", "Предметы", "предметы и кто их ведёт", all, anywhere, [], render,
                 (c, _) => Done(SubjectsHtml(c.Place == Capabilities.Dm && c.Role != "member", c.Place == Capabilities.Dm && c.Role == "developer")))
-                { Help = "/subjects — предметы и преподаватели" },
+                { Help = "/subjects — предметы и преподаватели", Say = "предметы и преподаватели — «кто ведёт матан?»" },
             new("roster", "Список группы", "список группы по номерам", all, anywhere, [], render,
                 (c, _) => Done(RosterHtml(c.Place == Capabilities.Dm && c.Role != "member")))
-                { Help = "/roster — список группы" },
+                { Help = "/roster — список группы", Say = "список группы — «кто у нас в группе?»" },
             new("help", "Что я умею", "что умеет бот", all, anywhere, [], render, (c, _) => Done(Help(c.Role, c.Place))),
 
             new("web_link", "Веб-админка", "одноразовая ссылка на веб-админку", editors, dm, [], action, (c, _) => Done(H(WebLink(c.Actor))))
-                { Section = "editor", Help = "/web — веб-админка (через VPN)" },
+                { Section = "editor", Help = "/web — веб-админка (через VPN)", Say = "веб-админка (через VPN) — «дай ссылку на админку»" },
             new("edit_deadline", "Изменить дедлайн", "добавить, изменить, перенести или отменить сдачу (текст сообщения разберёт планировщик и покажет карточку)",
                 editors, dm, [], action, async (c, ct) =>
                 {
-                    if (c.Text.StartsWith('/')) await ManageDeadline(c.Message, c.Key, ct);
+                    if (c.Text.StartsWith('/') && !config.Features.Router) await ManageDeadline(c.Message, c.Key, ct);
                     else await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct);
                     return null;
-                }) { Section = "editor", Help = "<code>/deadline id | работа | YYYY-MM-DD | пара [| кабинет]</code> — дедлайн без ИИ\n/edit ID текст · /move ID дата [пара] · /cancel ID" },
+                }) { Section = "editor", Help = "<code>/deadline id | работа | YYYY-MM-DD | пара [| кабинет]</code> — дедлайн без ИИ\n/edit ID текст · /move ID дата [пара] · /cancel ID", Say = "дедлайны — «сиаод практика №7 в пятницу», «перенеси #12 на среду», «отмени #12»" },
             new("edit_registry", "Изменить реестр", "изменить расписание (разово или постоянно), список группы, предметы, звонки (планировщик покажет карточку)",
-                editors, dm, [], action, async (c, ct) => { await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct); return null; }) { Section = "editor" },
+                editors, dm, [], action, async (c, ct) => { await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct); return null; }) { Section = "editor", Say = "расписание и список — «31-го матан лекция 6-й парой дистанционно», «Бутова отчислили»" },
             new("delete_deadline", "Удалить дедлайн", "удалить ошибочно созданный дедлайн вместе с его постами (по ID, с подтверждением кнопкой)",
                 editors, dm, [new("id", "int", true, Note: "ID дедлайна, #N")], action, DeleteDeadlineCard)
-                { Section = "editor", Slash = false, Help = "«удали дедлайн #12» — убрать ошибочный дедлайн вместе с постами (с подтверждением)" },
+                { Section = "editor", Slash = false, Help = "«удали дедлайн #12» — убрать ошибочный дедлайн вместе с постами (с подтверждением)", Say = "ошибочный дедлайн — «удали дедлайн #12» (уберу вместе с постами, после подтверждения)" },
             new("undo", "Откат", "откатить последнее изменение реестра (с подтверждением)", editors, dm, [], action,
                 async (c, ct) => { await Undo(c.Message, c.Key, c.Actor, ct); return null; })
-                { Section = "editor", Help = "/undo — откатить последнее изменение" },
+                { Section = "editor", Help = "/undo — откатить последнее изменение", Say = "откат — «откати последнее изменение»" },
             new("discard_drafts", "Убрать черновики", "выбросить неподтверждённые черновики дедлайна и реестра", editors, dm, [], action, (c, _) =>
                 {
                     store.DiscardRegistryDraft(c.Actor);
                     store.Delete($"planner_question:{c.Actor}");
                     if (store.Draft(c.Actor) is { } d) store.Discard(c.Actor, d.Token);
                     return Done("Черновики убраны.");
-                }) { Section = "editor", Help = "/discard — убрать черновики" },
+                }) { Section = "editor", Help = "/discard — убрать черновики", Say = "черновики — «выкинь черновики»" },
 
             new("post_idea", "Пост в Воздуханство", "написать от бота сообщение в общий чат (превью перед отправкой)", dev, dm,
                 [new("idea", "string", Note: "о чём написать")], action, async (c, ct) =>
                 {
                     await PostPreview(c.Message, c.Key, c.Actor, c.Args.TryGetValue("idea", out var idea) ? (string)idea : null, ct);
                     return null;
-                }) { Section = "developer", Help = "/post [идея] — я напишу в Воздуханство" },
+                }) { Section = "developer", Help = "/post [идея] — я напишу в Воздуханство", Say = "пост от меня — «напиши в Воздуханство про …» (сначала покажу превью)" },
             new("where", "IDs", "технические ID группы, тем и версия реестра", dev, dm, [], render, (c, _) =>
                 Done(H($"Твой ID: {c.Actor}\nРазрешённая группа: {config.GroupId}\nВоздуханство: {config.ChatTopicId}\nДедлайны: {config.DeadlinesTopicId}\nВерсия реестра: {store.RegistryVersion()}")))
-                { Section = "developer", Help = "/where — IDs" },
+                { Section = "developer", Help = "/where — IDs", Say = "технические ID — «покажи айдишники»" },
         ];
     }
 
     /// <summary>Help from the catalog: only what this role may do here.</summary>
     private string Help(string role, string place)
     {
-        var caps = Catalog.For(role, place).Where(c => c.Help is not null && (c.Slash || config.Features.Router)).ToList();
+        if (config.Features.Router) return SayHelp(role, place);
+        var caps = Catalog.For(role, place).Where(c => c.Help is not null && c.Slash).ToList();
         string Lines(string section) => string.Join("\n", caps.Where(c => c.Section == section).Select(c => c.Help));
         var help = "👋 <b>Что я умею</b>\n\n🗓 <b>Расписание</b>\n" + Lines("schedule") + "\n\n📌 <b>Учёба</b>\n" + Lines("study") +
             "\n\n💬 А ещё можно просто спросить: «где матан?», «что завтра?». В Воздуханстве — через @упоминание или ответом на моё сообщение, в личке — как угодно.";
@@ -184,6 +200,26 @@ public sealed partial class BotWorker
         if (Lines("developer") is { Length: > 0 } developer) help += "\n\n👑 <b>Только разработчик</b>\n" + developer;
         return help;
     }
+
+    /// <summary>Help without commands: from the catalog, what this role may do here, each with phrases to ask it by.</summary>
+    private string SayHelp(string role, string place)
+    {
+        var caps = Catalog.For(role, place).Where(c => c.Say is not null).ToList();
+        string Lines(string section) => string.Join("\n", caps.Where(c => c.Section == section).Select(c => "• " + c.Say));
+        var help = "👋 <b>Что я умею</b>\n\nКоманды не нужны — пиши обычными словами. " +
+            (place == Capabilities.Group ? "Здесь — через @упоминание или ответом на моё сообщение." : "В личке — как угодно, в Воздуханстве — через @упоминание или ответом на моё сообщение.");
+        foreach (var (section, title) in new[] { ("schedule", "🗓 <b>Расписание</b>"), ("study", "📌 <b>Учёба</b>"), ("editor", "🛠 <b>Изменения</b>"), ("developer", "👑 <b>Только разработчик</b>") })
+            if (Lines(section) is { Length: > 0 } lines) help += "\n\n" + title + "\n" + lines;
+        if (caps.Any(c => c.Section == "editor"))
+            help += "\n\nПеред любым изменением покажу карточку с кнопками — сохраню только после подтверждения. Если что-то непонятно, переспрошу.";
+        return help + "\n\nА ещё можно просто поболтать 🙂";
+    }
+
+    /// <summary>The DM answer to «/start» without commands: who I am and what I do, in prose, no command list.</summary>
+    private static string Greeting(string role) =>
+        "Привет! Я бот нашей группы: подскажу расписание с учётом чётных недель и замен, напомню о дедлайнах и могу просто поболтать." +
+        (role is "head" or "developer" ? " А ещё через меня можно менять дедлайны и расписание — тоже обычным текстом, перед сохранением покажу карточку." : "") +
+        "\n\nКоманды не нужны — просто спроси, например «что завтра?» или «какие дедлайны?».";
 
     /// <summary>Slash commands stay until block 4, but run through the catalog.</summary>
     private async Task SlashCommand(JsonElement m, string key, long actor, string place, string command, string[] words, string text, CancellationToken ct)
@@ -233,7 +269,7 @@ public sealed partial class BotWorker
     {
         var id = (int)c.Args["id"];
         var d = store.AllDeadlines().FirstOrDefault(x => x.Id == id && x.Status != "deleted");
-        if (d is null) return $"Дедлайна #{id} нет (или он уже удалён). Список — /deadlines.";
+        if (d is null) return $"Дедлайна #{id} нет (или он уже удалён). " + (config.Features.Router ? "Список — спроси «какие дедлайны?»." : "Список — /deadlines.");
         var posts = (store.Post("deadline:" + id) is null ? 0 : 1) + store.Posts($"change:{id}:").Count(p => !p.Key.Contains(":part:"));
         var text = $"🗑 <b>Удалить дедлайн #{d.Id}?</b>\n\n{H(Deadlines.Facts(config, d))}\n\n" +
             $"Он пропадёт из списков и сводок, его посты в «Дедлайнах» ({posts}) и будильники уберу. ID и история останутся.\n" +

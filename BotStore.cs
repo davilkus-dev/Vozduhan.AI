@@ -68,6 +68,12 @@ public sealed partial class BotStore : IDisposable
             CREATE INDEX IF NOT EXISTS ai_usage_kind ON ai_usage(kind,time);
             CREATE TABLE IF NOT EXISTS media_digest(file_unique_id TEXT PRIMARY KEY, kind TEXT NOT NULL, summary TEXT NOT NULL,
                 transcript TEXT NULL, created INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS pending_slots(id INTEGER PRIMARY KEY AUTOINCREMENT, actor INTEGER NOT NULL, chat INTEGER NOT NULL,
+                topic INTEGER NOT NULL, capability TEXT NOT NULL, args TEXT NOT NULL, options TEXT NOT NULL, question TEXT NOT NULL,
+                created INTEGER NOT NULL, expires INTEGER NOT NULL, state TEXT NOT NULL, source TEXT NOT NULL, payload TEXT NOT NULL,
+                message INTEGER NOT NULL DEFAULT 0, choice INTEGER NULL);
+            CREATE INDEX IF NOT EXISTS pending_slots_actor ON pending_slots(actor,chat,state);
+            CREATE UNIQUE INDEX IF NOT EXISTS pending_slots_source ON pending_slots(source);
             PRAGMA user_version=2;
             """);
         AddColumn("wakeups", "attempts", "INTEGER NOT NULL DEFAULT 0");
@@ -333,12 +339,12 @@ public sealed partial class BotStore : IDisposable
             var all = AllDeadlines();
             var old = draft.Action == "create" ? null : all.FirstOrDefault(d => d.Id == draft.TargetId && d.Status != "deleted");
             if (draft.Action != "create" && (old is null || old.Version != draft.ExpectedVersion))
-                throw new InvalidOperationException("Этот дедлайн уже изменился. Открой его заново через /edit.");
+                throw new InvalidOperationException(Config.Features.Router ? "Этот дедлайн уже изменился — открой его заново." : "Этот дедлайн уже изменился. Открой его заново через /edit.");
             if (draft.Action != "cancel" && Config.Utc(DateOnly.Parse(draft.Date!).ToDateTime(TimeOnly.Parse(draft.End!))) <= now)
                 throw new InvalidOperationException("Время сдачи уже прошло. Создай новую карточку.");
             var duplicate = all.Any(d => d.Id != draft.TargetId && d.Status == "active" && d.SubjectId == draft.SubjectId &&
                 d.Date == draft.Date && d.Period == draft.Period && string.Equals(d.Work, draft.Work, StringComparison.OrdinalIgnoreCase));
-            if (draft.Action != "cancel" && duplicate) throw new InvalidOperationException("Такой дедлайн уже существует: смотри /deadlines.");
+            if (draft.Action != "cancel" && duplicate) throw new InvalidOperationException(Config.Features.Router ? "Такой дедлайн уже существует: он есть в списке дедлайнов." : "Такой дедлайн уже существует: смотри /deadlines.");
             var id = old?.Id ?? 0;
             if (id == 0)
             {
@@ -482,6 +488,8 @@ public sealed partial class BotStore : IDisposable
             // Router decisions are kept two days for debugging (kv "route:{chat}:{message}" with an expiry inside).
             Exec("DELETE FROM kv WHERE key LIKE 'route:%' AND (CASE WHEN json_valid(value) THEN COALESCE(json_extract(value,'$.expires'),0) ELSE 0 END)<$s",
                 ("s", now.ToUnixTimeSeconds()));
+            // Unanswered clarifications: marked, not deleted (the rows stay as history).
+            Exec("UPDATE pending_slots SET state='expired' WHERE state='active' AND expires<$s", ("s", now.ToUnixTimeSeconds()));
             var day = now.ToString("yyyy-MM-dd");
             if (Get("backup_day") == day) return;
             var folder = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Config.DataPath))!, "backups");

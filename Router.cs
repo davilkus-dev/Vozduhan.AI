@@ -8,7 +8,11 @@ namespace Vozduhan.AI;
 /// What to do with one message. Mode: render | action | writer | clarify | react_only, plus «unavailable» (AI down, no keyword matched).
 /// Source: router (the model), keywords (AI down, matched by code), fallback (invalid twice: behave as before the Router).
 /// </summary>
-public sealed record RouteDecision(string? Reaction, string Mode, string? Capability, JsonElement? Args, string? Question, string Reason, string Source);
+public sealed record RouteDecision(string? Reaction, string Mode, string? Capability, JsonElement? Args, string? Question, string Reason, string Source)
+{
+    /// <summary>Clarify only: up to four answers as buttons; each, merged with Args, is a complete call of Capability.</summary>
+    public IReadOnlyList<RouteOption>? Options { get; init; }
+}
 
 public sealed partial class BotWorker
 {
@@ -21,7 +25,7 @@ public sealed partial class BotWorker
     private string[] RouterReactions() => config.Reactions.Select(Emoji).Where(TelegramClient.ReactionEmoji.Contains).Distinct().ToArray();
 
     /// <summary>One message with the Router on: decide (one cheap call), react at once, then the chosen mode.</summary>
-    private async Task Routed(JsonElement m, string key, long actor, bool isPrivate, string? joined, CancellationToken ct)
+    private async Task Routed(JsonElement m, string key, long actor, bool isPrivate, string? joined, bool addressed, CancellationToken ct)
     {
         var chat = m.Field("chat").Number("id"); var id = (int)m.Number("message_id");
         var place = isPrivate ? Capabilities.Dm : Capabilities.Group;
@@ -35,9 +39,15 @@ public sealed partial class BotWorker
         var decision = stored;
         if (decision is null)
         {
+            // The person's open question in this chat goes to the Router with the message: a text answer may fill it.
+            var slot = store.ActiveSlot(actor, chat, DateTimeOffset.UtcNow) is { } open && open.Topic == m.TopicId() ? open : null;
             await digest.Prepare(Related(m), "digest", ct);
-            decision = await Route(m, actor, place, joined, full, ct);
+            decision = await Route(m, actor, place, joined, full, slot, ct);
+            var fills = slot is not null && decision.Capability == slot.Capability && decision.Mode is "render" or "action" or "clarify";
+            // Not addressed to the bot (only let through for the open question) and not an answer to it: stay out of the conversation.
+            if (!addressed && !fills) decision = new(null, "ignore", null, null, null, "не боту и не ответ на вопрос", decision.Source);
             store.Set(RouteKey(chat, id), Json.Write(new { decision, expires = DateTimeOffset.UtcNow.Add(RouteKeep).ToUnixTimeSeconds() }));
+            if (slot is not null && decision.Mode != "clarify" && store.CloseSlot(slot.Id, fills ? "answered" : "closed")) await DropButtons(slot, ct);
         }
         if (decision.Reaction is { } emoji)
             try { await telegram.React(chat, id, emoji, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
@@ -49,13 +59,12 @@ public sealed partial class BotWorker
                 else if (result.Html is not null) await Respond(m, key, result.Html, ct, html: true);
                 return;
             case "clarify":
-                await Respond(m, key, decision.Question!, ct); return;
-            case "react_only":
+                await Clarify(m, key, actor, decision, ct); return;
+            case "react_only" or "ignore":
                 store.SavePost(key, 0, ""); return;
             case "unavailable":
-                await Respond(m, key, editor
-                    ? "Не смог разобрать сообщение через ИИ — ничего не изменено. Попробуй ещё раз, используй команды /deadline, /move, /cancel, /today или веб-админку (/web) — они работают без нейронки."
-                    : "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны и /today от этого не пропали.", ct);
+                // No AI and no commands: an editor's change goes through the web admin; schedule and deadlines were already tried by keywords.
+                await Respond(m, key, editor ? NoAiEdit(actor) : NoAiAnswer, ct);
                 return;
             default:
                 // Invalid twice: exactly the behaviour before the Router (editors' planner, everybody else's chat).
@@ -72,12 +81,12 @@ public sealed partial class BotWorker
         catch (JsonException) { return null; }
     }
 
-    private async Task<RouteDecision> Route(JsonElement m, long actor, string place, string? joined, string full, CancellationToken ct)
+    private async Task<RouteDecision> Route(JsonElement m, long actor, string place, string? joined, string full, PendingSlot? slot, CancellationToken ct)
     {
         var role = Catalog.Role(actor);
         var allowed = Catalog.For(role, place);
         var reactions = RouterReactions();
-        var input = RouterInput(m, actor, role, place, joined, allowed, reactions);
+        var input = RouterInput(m, actor, role, place, joined, allowed, reactions, slot);
         var today = Today();
         string? note = null;
         for (var attempt = 1; attempt <= 2; attempt++)
@@ -94,7 +103,7 @@ public sealed partial class BotWorker
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
                 log.LogWarning("Router unavailable: {Error}", Failure(e));
-                return Keywords(full) ?? new(null, "unavailable", null, null, null, "OpenRouter недоступен", "keywords");
+                return Keywords(full, place == Capabilities.Dm && config.CanEdit(actor)) ?? new(null, "unavailable", null, null, null, "OpenRouter недоступен", "keywords");
             }
             if (ParseRoute(answer, allowed, reactions, today, out var error) is { } decision) return decision;
             try { ai.DiscardUsage?.Invoke(callId, "rejected:route"); } catch { }
@@ -116,7 +125,7 @@ public sealed partial class BotWorker
         var mode = Str("mode");
         if (mode is null || !RouteModes.Contains(mode)) { error = "mode должен быть одним из: " + string.Join(", ", RouteModes); return null; }
         var reaction = Str("reaction") is { } r && reactions.Contains(Emoji(r)) ? Emoji(r) : null;
-        string? capability = null; JsonElement? args = null; string? question = null;
+        string? capability = null; JsonElement? args = null; string? question = null; List<RouteOption>? options = null;
         if (mode is "render" or "action")
         {
             var cap = allowed.FirstOrDefault(c => c.Id == Str("capability"));
@@ -130,19 +139,74 @@ public sealed partial class BotWorker
             question = Str("question");
             if (string.IsNullOrEmpty(question) || question.Length > RouteQuestionMax || TextGuard.Check(question, "", RouteQuestionMax) is not null)
             { error = $"для clarify нужен короткий вопрос по-русски до {RouteQuestionMax} символов"; return null; }
+            if (!ParseOptions(root, allowed, today, out capability, out args, out options, out error)) return null;
         }
         else if (mode == "react_only" && reaction is null)
             reaction = reactions.Contains("👍") ? "👍" : reactions.FirstOrDefault(); // never silently ignore a person
-        return new(reaction, mode, capability, args, question, Conversation.Limit(Str("reason") ?? "", 200), "router");
+        return new(reaction, mode, capability, args, question, Conversation.Limit(Str("reason") ?? "", 200), "router") { Options = options };
     }
 
-    /// <summary>AI is down: the obvious schedule and deadline questions are answered by code.</summary>
-    private RouteDecision? Keywords(string text)
+    /// <summary>
+    /// Clarify for an action: capability from the allowed list, the known args (may be incomplete), up to four options —
+    /// a short label each, and with the known args a complete, valid call. No capability — a plain question (no options then).
+    /// </summary>
+    private static bool ParseOptions(JsonElement root, IReadOnlyList<Capability> allowed, DateOnly today,
+        out string? capability, out JsonElement? args, out List<RouteOption>? options, out string? error)
+    {
+        capability = null; args = null; options = null; error = null;
+        var id = root.Field("capability").ValueKind == JsonValueKind.String ? root.Field("capability").GetString()!.Trim() : null;
+        var list = root.Field("options");
+        var hasOptions = list.ValueKind == JsonValueKind.Array && list.GetArrayLength() > 0;
+        if (list.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.Array)) { error = "options должен быть массивом"; return false; }
+        if (string.IsNullOrEmpty(id))
+        {
+            if (hasOptions) { error = "для options нужна capability"; return false; }
+            return true;
+        }
+        var cap = allowed.FirstOrDefault(c => c.Id == id);
+        if (cap is null) { error = $"capability «{id}» нет в списке capabilities"; return false; }
+        var known = root.Field("args");
+        if (!Capabilities.TryArgs(cap, known, today, out _, out var argError, partial: true)) { error = "args: " + argError; return false; }
+        capability = cap.Id;
+        args = known.ValueKind == JsonValueKind.Object ? known.Clone() : null;
+        if (!hasOptions) return true;
+        if (list.GetArrayLength() > SlotOptionsMax) { error = $"options — не больше {SlotOptionsMax}"; return false; }
+        options = [];
+        var i = 0;
+        foreach (var o in list.EnumerateArray())
+        {
+            var label = o.ValueKind == JsonValueKind.Object && o.Field("label").ValueKind == JsonValueKind.String ? o.Field("label").GetString()!.Trim() : "";
+            if (label.Length is 0 or > SlotLabelMax || TextGuard.Check(label, "", SlotLabelMax) is not null)
+            { error = $"options[{i}].label — короткая подпись кнопки по-русски до {SlotLabelMax} символов"; return false; }
+            var extra = o.Field("args");
+            if (extra.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.Object)) { error = $"options[{i}].args должен быть объектом"; return false; }
+            if (!Capabilities.TryArgs(cap, Capabilities.Merge(args, extra), today, out _, out argError)) { error = $"options[{i}].args: {argError}"; return false; }
+            options.Add(new(label, extra.ValueKind == JsonValueKind.Object ? extra.Clone() : null));
+            i++;
+        }
+        if (options.Select(x => x.Label).Distinct().Count() != options.Count) { error = "у options одинаковые подписи"; return false; }
+        return true;
+    }
+
+    /// <summary>
+    /// AI is down: the obvious schedule and deadline questions are answered by code (old command words too).
+    /// An editor's request to change something is not answered with a list: it gets the web admin link instead (null here).
+    /// </summary>
+    private RouteDecision? Keywords(string text, bool editor = false)
     {
         var t = text.ToLowerInvariant().Replace('ё', 'е');
         var today = Today();
         RouteDecision R(string id, object? args = null) =>
             new(null, Capabilities.Render, id, args is null ? null : JsonSerializer.SerializeToElement(args, Json.Options), null, "ИИ недоступен, ключевые слова", "keywords");
+        if (editor && Regex.IsMatch(t, @"перенес|перенос|добав|измен|поменя|отмен|удал|сдвин|замен|исправ|отчисл|убер|постав")) return null;
+        switch (Regex.Match(t, @"^/([a-z]+)").Groups[1].Value)
+        {
+            case "today": return R("schedule_day", new { date = today.ToString("yyyy-MM-dd") });
+            case "tomorrow": return R("schedule_day", new { date = today.AddDays(1).ToString("yyyy-MM-dd") });
+            case "next": return R("next_lesson");
+            case "week": return R("schedule_week", new { next = t.Contains("next") || t.Contains("след") });
+            case "deadlines": return R("deadlines_list");
+        }
         if (Regex.IsMatch(t, @"дедлайн|сдач|сдават")) return R("deadlines_list");
         if (Regex.IsMatch(t, @"следующ\w*\s+пар|пар\w*\s+следующ|какая\s+(?:сейчас\s+)?пара")) return R("next_lesson");
         if (t.Contains("недел")) return R("schedule_week", new { next = t.Contains("следующ") });
@@ -153,7 +217,8 @@ public sealed partial class BotWorker
     }
 
     /// <summary>A compact input: the message, what it replies to, six short lines of history, role and place, a calendar, the filtered catalog.</summary>
-    private string RouterInput(JsonElement m, long actor, string role, string place, string? joined, IReadOnlyList<Capability> allowed, string[] reactions)
+    private string RouterInput(JsonElement m, long actor, string role, string place, string? joined, IReadOnlyList<Capability> allowed, string[] reactions,
+        PendingSlot? slot = null)
     {
         var r = config.R;
         var local = config.LocalNow(DateTimeOffset.UtcNow);
@@ -183,6 +248,11 @@ public sealed partial class BotWorker
                 $"{d:yyyy-MM-dd} {Schedule.DayShort[Schedule.Dow(d)].ToLowerInvariant()}" + (i switch { 0 => " (сегодня)", 1 => " (завтра)", 2 => " (послезавтра)", _ => "" }) +
                 (d.DayOfWeek == DayOfWeek.Monday || i == 0 ? ", " + Week(d) : "")),
             pending = pending.Count > 0 ? pending : null,
+            pending_question = slot is null ? null : new
+            {
+                question = slot.Question, capability = slot.Capability, args = slot.KnownArgs,
+                options = slot.Choices.Select(o => new { label = o.Label, args = o.Args })
+            },
             recent,
             replied_to = reply.ValueKind == JsonValueKind.Object ? $"{Who(reply.Field("from"))}: {Conversation.Limit(MediaDigest.Text(reply, store), 300)}" : null,
             message = new { author = Who(m.Field("from")), text = Conversation.Limit((joined is null ? "" : joined + "\n") + MediaDigest.Text(m, store), 1500) },

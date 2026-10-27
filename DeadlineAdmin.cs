@@ -16,7 +16,8 @@ public sealed partial class BotWorker
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
             log.LogWarning("Planner failed: {Error}", Failure(e));
-            await Respond(m, key, "Не смог разобрать сообщение через ИИ — ничего не изменено. Попробуй ещё раз, используй команды " +
+            await Respond(m, key, config.Features.Router ? NoAiEdit(actor)
+                : "Не смог разобрать сообщение через ИИ — ничего не изменено. Попробуй ещё раз, используй команды " +
                 "/deadline, /move, /cancel, /today или веб-админку (/web) — они работают без нейронки.", ct);
             return;
         }
@@ -88,6 +89,11 @@ public sealed partial class BotWorker
         return $"{config.Web.PublicUrl.TrimEnd('/')}/login?t={token}\n\nСсылка одноразовая, действует 30 минут: открой и нажми «Войти». Открывай на устройстве, подключённом к VPN.";
     }
 
+    /// <summary>No AI and no commands: an editor's change goes through the web admin (plain text, the link included).</summary>
+    private string NoAiEdit(long actor) => "Нейронка недоступна — ничего не изменено. Изменения можно внести в веб-админке:\n" + WebLink(actor);
+    /// <summary>No AI, Router mode: what still works without it, with no commands named.</summary>
+    private const string NoAiAnswer = "Сейчас не достучался до нейронки. Попробуй чуть позже — расписание и дедлайны подскажу и без неё: спроси «что завтра?» или «какие дедлайны?».";
+
     /// <summary>The other editor learns about every registry change made by the owner or the head.</summary>
     internal async Task NotifyEditors(long actor, int version, IEnumerable<string> lines, string where, CancellationToken ct)
     {
@@ -108,7 +114,8 @@ public sealed partial class BotWorker
     {
         var actor = m.Field("from").Number("id");
         var text = m.Text("text") ?? m.Text("caption") ?? "";
-        var command = text.StartsWith('/') ? text.Split(' ', '\n')[0].Split('@')[0].ToLowerInvariant() : "";
+        // With the Router there are no commands: «/move 3 …» is just text for the parser.
+        var command = text.StartsWith('/') && !config.Features.Router ? text.Split(' ', '\n')[0].Split('@')[0].ToLowerInvariant() : "";
         var previous = store.Draft(actor);
         if (command == "/discard")
         {
@@ -170,13 +177,15 @@ public sealed partial class BotWorker
         catch (InvalidOperationException e) { await Respond(m, responseKey, e.Message, ct); }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
-            await Respond(m, responseKey, "Не смог разобрать сообщение через ИИ. Черновик не опубликован. Попробуй ещё раз или используй /deadline, /move, /cancel — они работают без OpenRouter.", ct);
+            await Respond(m, responseKey, config.Features.Router ? NoAiEdit(actor)
+                : "Не смог разобрать сообщение через ИИ. Черновик не опубликован. Попробуй ещё раз или используй /deadline, /move, /cancel — они работают без OpenRouter.", ct);
         }
     }
 
     private async Task ProcessCallback(JsonElement cb, CancellationToken ct)
     {
         var actor = cb.Field("from").Number("id");
+        if ((cb.Text("data") ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)) { await SlotCallback(cb, actor, ct); return; }
         if (!config.CanEdit(actor) || cb.Field("message").Field("chat").Number("id") != actor) return;
         var data = (cb.Text("data") ?? "").Split(':', 2);
         if (data.Length == 2 && data[0] is "apost" or "achat" or "aredo" or "ano")

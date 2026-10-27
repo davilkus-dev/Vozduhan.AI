@@ -91,6 +91,7 @@ public sealed partial class BotWorker : BackgroundService
     {
         while (!ct.IsCancellationRequested)
         {
+            await SyncCommands(ct);
             try
             {
                 var offset = long.TryParse(store.Get("offset"), out var n) ? n : 0;
@@ -109,7 +110,7 @@ public sealed partial class BotWorker : BackgroundService
                     var chatId = cb.ValueKind == JsonValueKind.Object ? cb.Field("message").Field("chat").Number("id") : m.Field("chat").Number("id");
                     if (cb.ValueKind == JsonValueKind.Object)
                     {
-                        allowed = config.CanEdit(actor) && cb.Field("message").Field("chat").Number("id") == actor;
+                        allowed = CallbackAllowed(config, actor, chatId, cb.Text("data"));
                         priority = 2;
                     }
                     else
@@ -144,6 +145,14 @@ public sealed partial class BotWorker : BackgroundService
             }
         }
     }
+    /// <summary>
+    /// Which button presses are queued: clarification buttons («slot:») for everybody in the roster, in the group and in DM
+    /// (the author check is in SlotCallback); every other button only for editors in their DM, as before.
+    /// </summary>
+    public static bool CallbackAllowed(BotConfig config, long actor, long chat, string? data) =>
+        (data ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)
+            ? config.AllowedUser(actor) && (chat == actor || chat == config.GroupId)
+            : config.CanEdit(actor) && chat == actor;
     private static bool HasContent(JsonElement m) => new[] { "text", "caption", "photo", "video", "voice", "audio", "document", "sticker", "animation", "poll", "contact", "location", "venue", "dice", "video_note", "game", "checklist", "paid_media", "live_photo", "story" }
         .Any(key => m.Field(key).ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null));
 
@@ -237,7 +246,8 @@ public sealed partial class BotWorker : BackgroundService
         int? newest;
         while (true)
         {
-            var later = store.Around(chat, topic, actor, afterId: id).Where(x => !(JsonSerializer.Deserialize<JsonElement>(x.Payload).Text("text") ?? "").StartsWith('/')).ToList();
+            var later = store.Around(chat, topic, actor, afterId: id)
+                .Where(x => config.Features.Router || !(JsonSerializer.Deserialize<JsonElement>(x.Payload).Text("text") ?? "").StartsWith('/')).ToList();
             newest = later.Count > 0 ? later[^1].Id : null;
             var wait = Math.Min(later.Select(x => x.Arrived).Append(arrived).Max() + (long)CoalesceQuiet.TotalMilliseconds,
                 arrived + (long)CoalesceMax.TotalMilliseconds) - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -292,11 +302,15 @@ public sealed partial class BotWorker : BackgroundService
         }
         var editor = config.CanEdit(actor);
         var joined = store.Post($"coalesce:{chat}:{id}")?.Text;
-        // Commands are answered deterministically through the catalog; in the group they never reveal editor/owner data.
-        if (!isPrivate && !Conversation.CallsBot(m, botId, username) && joined is null) return;
-        if (command.Length > 0) { await SlashCommand(m, responseKey, actor, isPrivate ? Capabilities.Dm : Capabilities.Group, command, words, text, ct); return; }
+        var router = config.Features.Router;
+        // In the group a message to someone else is ignored, unless its author owes the bot an answer to a pending question.
+        var addressed = isPrivate || Conversation.CallsBot(m, botId, username) || joined is not null;
+        if (!addressed && !(router && store.ActiveSlot(actor, chat, DateTimeOffset.UtcNow) is { } open && open.Topic == topic)) return;
+        // Without the Router commands are answered deterministically through the catalog; with it there are no commands, only text.
+        if (command.Length > 0 && !router) { await SlashCommand(m, responseKey, actor, isPrivate ? Capabilities.Dm : Capabilities.Group, command, words, text, ct); return; }
+        if (command == "/start" && isPrivate) { await Respond(m, responseKey, Greeting(Catalog.Role(actor)), ct); return; }
         if (await Coalesced(m, responseKey, actor, text, ct)) return;
-        if (config.Features.Router) { await Routed(m, responseKey, actor, isPrivate, joined, ct); return; }
+        if (router) { await Routed(m, responseKey, actor, isPrivate, joined, addressed, ct); return; }
         if (isPrivate && editor) { await AdminDialog(m, responseKey, actor, joined is null ? text : joined + "\n" + text, ct); return; }
         await ChatGuarded(m, responseKey, isPrivate, actor, ct);
     }
@@ -333,7 +347,9 @@ public sealed partial class BotWorker : BackgroundService
         if (!stored && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - m.Number("date") > 600) return;
         if (!stored && actor != config.OwnerId && !store.ChatBudget(actor, DateTimeOffset.UtcNow))
         {
-            await Respond(m, key, "На сегодня лимит болтовни со мной закончился. Дедлайны и /today продолжают работать.", ct); return;
+            await Respond(m, key, config.Features.Router
+                ? "На сегодня лимит болтовни со мной закончился. Расписание и дедлайны всё равно подскажу — спроси «что завтра?» или «какие дедлайны?»."
+                : "На сегодня лимит болтовни со мной закончился. Дедлайны и /today продолжают работать.", ct); return;
         }
         await Chat(m, key, isPrivate, ct);
     }
@@ -360,7 +376,8 @@ public sealed partial class BotWorker : BackgroundService
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
                 log.LogWarning("AI chat failed: {Error}", Failure(e));
-                answer = "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны и /today от этого не пропали.";
+                answer = config.Features.Router ? NoAiAnswer
+                    : "Сейчас не достучался до нейронки. Попробуй чуть позже — сохранённые дедлайны и /today от этого не пропали.";
             }
             finally { typing.Cancel(); await indicator; }
             store.SavePost(answerKey, 0, answer);

@@ -492,7 +492,7 @@ public static class Deadlines
         var missing = new List<string>();
         var note = p.Note ?? previous?.Note ?? target?.Note;
         if (note?.Length > 400) missing.Add("Сократи публичное примечание до 400 символов.");
-        if (action != "create" && target is null) missing.Add("Укажи ID дедлайна из /deadlines.");
+        if (action != "create" && target is null) missing.Add(c.Features.Router ? "Укажи номер дедлайна (#N из списка дедлайнов)." : "Укажи ID дедлайна из /deadlines.");
         var subjectId = p.SubjectId ?? previous?.SubjectId ?? target?.SubjectId;
         var subject = r.Subject(subjectId);
         if (subject is null) missing.Add("Какой предмет? Он должен быть в реестре предметов.");

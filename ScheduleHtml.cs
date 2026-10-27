@@ -60,7 +60,7 @@ public static class ScheduleHtml
         return sb.ToString();
     }
 
-    public static string Week(Registry r, DateOnly anyDay, DateOnly today)
+    public static string Week(Registry r, DateOnly anyDay, DateOnly today, bool commands = true)
     {
         var monday = anyDay.AddDays(1 - Schedule.Dow(anyDay));
         var sb = new StringBuilder($"🗓 <b>Неделя {monday:dd.MM}–{monday.AddDays(6):dd.MM}</b>\n<i>{WeekInfo(r, monday)}</i>");
@@ -84,7 +84,7 @@ public static class ScheduleHtml
             })));
             sb.Append("</blockquote>");
         }
-        sb.Append("\n<i>Подробно на день: /today, /tomorrow, /date 31.10</i>");
+        sb.Append(commands ? "\n<i>Подробно на день: /today, /tomorrow, /date 31.10</i>" : "\n<i>Подробно на день — спроси «что в среду?»</i>");
         return sb.ToString();
     }
 
