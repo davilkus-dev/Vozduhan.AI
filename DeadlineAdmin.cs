@@ -184,6 +184,7 @@ public sealed partial class BotWorker
             if (actor == config.OwnerId) await PostCallback(cb, data[0], data[1], ct);
             return;
         }
+        if (data.Length == 2 && data[0] is "ddel" or "dkeep") { await DeleteCallback(cb, actor, data[0], data[1], ct); return; }
         if (data.Length != 2 || data[0] is not ("save" or "drop" or "rok" or "rno")) return;
         var messageId = (int)cb.Field("message").Number("message_id");
         if (data[0] is "rok" or "rno")

@@ -112,6 +112,8 @@ public sealed class FeatureSettings
     public bool DigestAll { get; set; }
     /// <summary>Videos, circles and GIFs are described by several frames (needs ffmpeg) instead of one preview.</summary>
     public bool DigestVideo { get; set; }
+    /// <summary>A cheap model reacts at once and picks: a ready answer from the catalog, an action, a question, only a reaction, or the Writer.</summary>
+    public bool Router { get; set; }
 }
 
 /// <summary>Model choice editable from the web admin (owner). Any OpenRouter model id works.</summary>
@@ -318,7 +320,7 @@ public sealed class BotConfig
     /// </summary>
     public Dictionary<string, string> ModelRouting { get; set; } = new()
     {
-        ["plan"] = "z-ai/glm-5.3", ["deadline"] = "z-ai/glm-5.3", ["wakeplan"] = "z-ai/glm-5.3"
+        ["plan"] = "z-ai/glm-5.3", ["deadline"] = "z-ai/glm-5.3", ["wakeplan"] = "z-ai/glm-5.3", ["router"] = "z-ai/glm-5.3-flash"
     };
     public AiSettings AiSnapshot() => new() { Model = Model, ModelRouting = new(ModelRouting), ReasoningEffort = new(ReasoningEffort) };
     public void ApplyAi(AiSettings a)
@@ -341,9 +343,10 @@ public sealed class BotConfig
     /// <summary>The ambient block as written in the config file (for "reset to config" in the admin).</summary>
     [JsonIgnore] public AmbientSettings? FileAmbient { get; set; }
     [JsonIgnore] public FeatureSettings Features { get; set; } = new();
-    /// <summary>Chance of an instant 👀/👍/👌 reaction before a chat answer.</summary>
+    /// <summary>Chance of an instant 👀/👍/👌 reaction before a chat answer (without the Router).</summary>
     public double ReactionChance { get; set; } = 0.7;
-    public string[] Reactions { get; set; } = ["👀", "👍", "👌"];
+    /// <summary>Reactions the Router may choose from. Without the Router only 👀/👍/👌 of them are put at random.</summary>
+    public string[] Reactions { get; set; } = ["👀", "👍", "👌", "😁", "🔥", "🤔", "🫡", "❤", "😢", "🤡"];
     /// <summary>Chat answers may come as 1–3 separate messages. Never applies to deadline posts or admin cards.</summary>
     public bool SplitReplies { get; set; } = true;
     public double TypingCharsPerSecond { get; set; } = 18;

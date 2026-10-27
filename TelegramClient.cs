@@ -117,6 +117,14 @@ public sealed class TelegramClient(HttpClient http, string token)
         }
         return buffer.ToArray();
     }
+    /// <summary>Emoji Telegram accepts as a message reaction (ReactionTypeEmoji); anything else is rejected by the API.</summary>
+    public static readonly HashSet<string> ReactionEmoji =
+    [
+        "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳",
+        "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃",
+        "🙈", "😇", "😨", "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎", "👾", "🤷‍♂", "🤷",
+        "🤷‍♀", "😡"
+    ];
     public Task<JsonElement> React(long chat, int id, string emoji, CancellationToken ct) => Call("setMessageReaction",
         new { chat_id = chat, message_id = id, reaction = new[] { new { type = "emoji", emoji } } }, ct);
 }

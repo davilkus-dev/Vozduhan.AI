@@ -479,6 +479,9 @@ public sealed partial class BotStore : IDisposable
             Exec("DELETE FROM ai_log WHERE time<$s", ("s", now.AddDays(-Config.AiLogDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM ai_usage WHERE time<$s", ("s", now.AddDays(-UsageDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM media_digest WHERE created<$s", ("s", now.AddDays(-DigestDays).ToUnixTimeSeconds()));
+            // Router decisions are kept two days for debugging (kv "route:{chat}:{message}" with an expiry inside).
+            Exec("DELETE FROM kv WHERE key LIKE 'route:%' AND (CASE WHEN json_valid(value) THEN COALESCE(json_extract(value,'$.expires'),0) ELSE 0 END)<$s",
+                ("s", now.ToUnixTimeSeconds()));
             var day = now.ToString("yyyy-MM-dd");
             if (Get("backup_day") == day) return;
             var folder = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Config.DataPath))!, "backups");

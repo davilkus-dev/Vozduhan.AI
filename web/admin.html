@@ -388,7 +388,8 @@ VIEWS.plan=async el=>{
     if(x.ok){toast("Настройки сохранены");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)};
   const rs=$("#a_reset");if(rs)rs.onclick=async()=>{await api("ambient",{reset:true});toast("Вернул настройки из конфига");render()};
   const FEAT=[["coalesce","Склейка: на несколько сообщений подряд — один ответ"],["mediaDigest","Media Digest: фото, стикеры и видео — описанием для бота"],
-    ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"]];
+    ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"],
+    ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"]];
   if($("#f_body"))api("features").then(x=>{if(viewId!==renderId||!x.ok)return;const f=x.features;
     $("#f_body").innerHTML=FEAT.map(([k,t])=>`<label>${t}</label><input type="checkbox" id="f_${k}" ${f[k]?"checked":""}>`).join("")+
       `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`;
@@ -561,7 +562,7 @@ VIEWS.log=async el=>{
 /*OWNER*/async function showAi(id){const viewId=renderId;const r=await api("ai?id="+id);if(viewId!==renderId)return;const a=r.rows?.[0];if(!a)return;
   let req=a.request;try{req=JSON.stringify(JSON.parse(a.request),null,2)}catch{}
   info(`ИИ · ${a.kind} · ${a.ms} мс`,`<p class="faint small">${esc(a.model)} · ${time(a.time)} · ${esc(a.tag)}</p>${a.error?`<p style="color:var(--bad)">${esc(a.error)}</p>`:""}<h3>Ответ</h3><pre>${esc(a.response)}</pre><h3>Данные запроса</h3><pre>${esc(req)}</pre><h3>Системный промпт</h3><pre>${esc(a.system)}</pre>`)}
-const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"],["digest","Описание медиа (нужна модель с картинками и аудио)"]];
+const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"],["digest","Описание медиа (нужна модель с картинками и аудио)"],["router","Маршрутизатор: реакция и выбор действия (самая дешёвая)"]];
 const SUGGEST=["google/gemini-3.8-flash","deepseek/deepseek-v4.1-flash","z-ai/glm-5.3","z-ai/glm-5.3-flash"];
 VIEWS.ai=async el=>{
   const viewId=renderId;el.innerHTML=page("Нейронки и запросы","Какая модель что делает — и промпт, данные и ответ каждого запроса, чтобы ловить баги. Логи хранятся aiLogDays дней.")+
@@ -587,13 +588,13 @@ VIEWS.ai=async el=>{
 /*OWNER*/const usd=v=>v==null?"—":v===0?"$0":"$"+(Math.abs(v)<1?v.toFixed(4):v.toFixed(2));
 const num=n=>(n||0).toLocaleString("ru-RU");
 const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
-const KUSE={chat:"ответ в чате",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
+const KUSE={chat:"ответ в чате",router:"Маршрутизатор",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
   "ambient-deadline":"вводная поста дедлайна","ambient-wakeup":"напоминание","ambient-summary":"утренняя сводка","ambient-morning":"утро в чате",
   "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост"};
 const kuse=k=>`<span title="${esc(k)}">${esc(KUSE[k]||k)}</span>`;
 const wasteReason=r=>({length:"обрыв по длине",empty:"пустой ответ",invalid_json:"битый JSON",think:"рассуждения в тексте",
   "rejected:empty":"пустой ответ", "rejected:cjk":"иероглифы в тексте", "rejected:garbled":"битые символы", "rejected:not_russian":"ответ не по-русски",
-  "rejected:repeat":"зацикленные повторы", "rejected:too_long":"слишком длинный текст"}[r]||r);
+  "rejected:repeat":"зацикленные повторы", "rejected:route":"маршрутизатор не по схеме", "rejected:too_long":"слишком длинный текст"}[r]||r);
 const toks=x=>`вход ${num(x.promptTokens)}${x.cachedTokens?` (кеш ${num(x.cachedTokens)})`:""} · выход ${num(x.completionTokens)}${x.reasoningTokens?` (рассужд. ${num(x.reasoningTokens)})`:""}`;
 VIEWS.usage=async el=>{
   const viewId=renderId;S.usageDays=S.usageDays||30;
