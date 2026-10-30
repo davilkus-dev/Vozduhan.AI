@@ -135,6 +135,14 @@ public sealed class FeatureSettings
     public int WebSearchPerUserDaily { get; set; } = 3;
     /// <summary>How each kind of the bot's own posts goes out (summary, morning, spont, eve, wakeup, post): auto_preview (default), manual, auto.</summary>
     public Dictionary<string, string> PublicationModes { get; set; } = new();
+    /// <summary>Stickers from the developer's DM and files from the web admin, described in the background.</summary>
+    public bool MediaLibrary { get; set; }
+    /// <summary>Sometimes a fitting sticker, picture or GIF from the library goes after an answer (needs MediaLibrary).</summary>
+    public bool MediaPicker { get; set; }
+    public double PickerChance { get; set; } = 0.25;
+    public int PickerCooldownMinutes { get; set; } = 10;
+    public int PickerDailyLimit { get; set; } = 30;
+    public bool PickerInPrivate { get; set; }
 }
 
 /// <summary>Model choice editable from the web admin (owner). Any OpenRouter model id works.</summary>

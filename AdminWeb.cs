@@ -113,6 +113,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
 
     private async Task Api(string path, HttpListenerRequest request, HttpListenerResponse response, long actor, bool preview, CancellationToken ct)
     {
+        if (path == "/api/media" || path.StartsWith("/api/media/", StringComparison.Ordinal)) { await Media(path, request, response, actor, ct); return; }
         var q = request.QueryString;
         var post = request.HttpMethod == "POST";
         JsonElement body = default;
@@ -486,7 +487,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             case "/api/features":
             {
                 if (Features(body.Field("settings"), config.Features) is not { } next)
-                { await Send(response, 400, new { ok = false, error = "Неверные настройки: флаги — true/false, числа — целые от 0 до 10000" }); return; }
+                { await Send(response, 400, new { ok = false, error = "Неверные настройки: флаги — true/false, числа — целые от 0 до 10000, шанс — от 0 до 1" }); return; }
                 config.Features = next;
                 store.Set("feature_settings", Json.Write(next));
                 await Send(response, 200, new { ok = true, features = next });
@@ -653,9 +654,124 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                      p.Value.EnumerateObject().All(x => BotWorker.PublicationKinds.Contains(x.Name) && x.Value.ValueKind == JsonValueKind.String && BotWorker.PublicationModes.Contains(x.Value.GetString())))
                 f.SetValue(next, p.Value.EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetString()!));
             else if (f.PropertyType == typeof(int) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt32(out var n) && n is >= 0 and <= 10000) f.SetValue(next, n);
+            else if (f.PropertyType == typeof(double) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetDouble(out var d) && d is >= 0 and <= 1) f.SetValue(next, d);
             else return null;
         }
         return next;
+    }
+
+    /// <summary>The media library: developer only (the head and «view as head» get 403), uploads as multipart up to 20 MB.</summary>
+    private async Task Media(string path, HttpListenerRequest request, HttpListenerResponse response, long actor, CancellationToken ct)
+    {
+        if (actor != config.OwnerId) { await Send(response, 403, new { ok = false, error = "Медиатека — только для разработчика" }); return; }
+        var post = request.HttpMethod == "POST";
+        var preview = System.Text.RegularExpressions.Regex.Match(path, @"^/api/media/(\d+)/preview$");
+        if (!post && path == "/api/media")
+        {
+            var kind = request.QueryString["kind"] is { Length: > 0 } k ? k : null;
+            await Send(response, 200, new
+            {
+                ok = true, search = store.MediaFts ? "fts5" : "like",
+                items = store.MediaList(request.QueryString["q"], kind).Select(x => new
+                {
+                    x.Id, x.Kind, x.Title, x.Description, x.Tags, x.Emoji, set = x.Set, x.Enabled, x.Uses, x.LastUsed, x.Created,
+                    video = BotWorker.PreviewSource(x).Video
+                })
+            });
+            return;
+        }
+        if (!post && preview.Success)
+        {
+            if (!long.TryParse(preview.Groups[1].Value, out var id) || store.Media(id) is not { } item || await worker.MediaPreview(item, ct) is not { } file)
+            { await Send(response, 404, new { ok = false, error = "Превью недоступно" }); return; }
+            await Bytes(response, 200, file.Type, file.Data);
+            return;
+        }
+        if (post && path == "/api/media/upload")
+        {
+            const long max = BotWorker.MediaMaxBytes + 64 * 1024;
+            if (request.ContentLength64 > max) { await Send(response, 413, new { ok = false, error = "Файл больше 20 МБ" }); return; }
+            string? boundary = null;
+            try { boundary = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(request.ContentType ?? "").Parameters.FirstOrDefault(p => p.Name == "boundary")?.Value?.Trim('"'); }
+            catch (FormatException) { }
+            if (string.IsNullOrEmpty(boundary)) { await Send(response, 400, new { ok = false, error = "Нужен multipart/form-data с полем file" }); return; }
+            using var buffer = new MemoryStream();
+            var chunk = new byte[81920];
+            int read;
+            while ((read = await request.InputStream.ReadAsync(chunk, ct)) > 0)
+            {
+                if (buffer.Length + read > max) { await Send(response, 413, new { ok = false, error = "Файл больше 20 МБ" }); return; }
+                buffer.Write(chunk, 0, read);
+            }
+            var part = Multipart(buffer.ToArray(), boundary).FirstOrDefault(x => x.Name == "file" && x.FileName is { Length: > 0 });
+            if (part.FileName is null) { await Send(response, 400, new { ok = false, error = "Нужен multipart/form-data с полем file" }); return; }
+            var (status, result) = await worker.MediaUpload(part.Data, part.FileName, actor, ct);
+            await Send(response, status, result);
+            return;
+        }
+        if (post && path is "/api/media/update" or "/api/media/delete")
+        {
+            if (request.ContentLength64 > 64 * 1024) { await Send(response, 413, new { ok = false, error = "Слишком большой запрос" }); return; }
+            using var reader = new StreamReader(request.InputStream, Encoding.UTF8);
+            JsonElement body;
+            try { body = JsonDocument.Parse(await reader.ReadToEndAsync(ct)).RootElement.Clone(); }
+            catch (JsonException) { await Send(response, 400, new { ok = false, error = "Нужен JSON" }); return; }
+            var id = body.Field("id").ValueKind == JsonValueKind.Number && body.Field("id").TryGetInt64(out var n) ? n : 0;
+            if (path == "/api/media/delete")
+            {
+                if (!store.MediaDelete(id)) { await Send(response, 404, new { ok = false, error = "Такого медиа нет" }); return; }
+                await Send(response, 200, new { ok = true });
+                return;
+            }
+            string? Str(string name, int maxLength, out bool bad)
+            {
+                var v = body.Field(name);
+                bad = v.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.String) || v.ValueKind == JsonValueKind.String && v.GetString()!.Trim().Length > maxLength;
+                return v.ValueKind == JsonValueKind.String ? v.GetString()!.Trim() : null;
+            }
+            var (title, description, tags) = (Str("title", 100, out var b1), Str("description", 500, out var b2), Str("tags", 200, out var b3));
+            var enabled = body.Field("enabled").ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => (bool?)null };
+            if (b1 || b2 || b3 || body.Field("enabled").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.True or JsonValueKind.False))
+            { await Send(response, 400, new { ok = false, error = "Название до 100 символов, описание до 500, теги до 200, enabled — true/false" }); return; }
+            if (!store.MediaUpdate(id, title, description, tags, enabled)) { await Send(response, 404, new { ok = false, error = "Такого медиа нет" }); return; }
+            await Send(response, 200, new { ok = true });
+            return;
+        }
+        await Send(response, 404, new { ok = false, error = "Неизвестный запрос" });
+    }
+
+    /// <summary>Parts of a multipart/form-data body: field name, file name (null for plain fields) and bytes.</summary>
+    internal static List<(string Name, string? FileName, byte[] Data)> Multipart(byte[] body, string boundary)
+    {
+        var parts = new List<(string, string?, byte[])>();
+        var span = body.AsSpan();
+        var first = Encoding.ASCII.GetBytes("--" + boundary);
+        var next = Encoding.ASCII.GetBytes("\r\n--" + boundary);
+        var pos = span.IndexOf(first);
+        if (pos < 0) return parts;
+        pos += first.Length;
+        while (pos + 2 <= span.Length && !span[pos..].StartsWith("--"u8))
+        {
+            var start = pos + 2; // CRLF after the boundary
+            var end = span[start..].IndexOf(next);
+            if (end < 0) break;
+            var part = span.Slice(start, end);
+            var split = part.IndexOf("\r\n\r\n"u8);
+            if (split >= 0)
+            {
+                var headers = Encoding.UTF8.GetString(part[..split]);
+                // name="x" or name=x; a non-ASCII file name may come as filename*=utf-8''… (RFC 5987) next to an encoded filename="…".
+                string? Param(string key)
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(headers, $@"(?i)content-disposition:[^\r\n]*?;\s*{key}=(?:""([^""]*)""|([^;\s]+))");
+                    return m.Success ? m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value : null;
+                }
+                var star = Param(@"filename\*") is { } encoded && encoded.StartsWith("utf-8''", StringComparison.OrdinalIgnoreCase) ? Uri.UnescapeDataString(encoded[7..]) : null;
+                if (Param("name") is { } name) parts.Add((name, star ?? Param("filename"), part[(split + 4)..].ToArray()));
+            }
+            pos = start + end + next.Length;
+        }
+        return parts;
     }
 
     private const string NoAi ="ИИ не ответил. Можно сохранить со стандартной фразой или написать вводную вручную.";

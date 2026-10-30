@@ -74,7 +74,7 @@ public sealed partial class BotWorker
     public const string SlotStale = "Вопрос устарел";
 
     /// <summary>Router clarify: the question; for a capability also a slot, with one button per option and «Отмена».</summary>
-    private async Task Clarify(JsonElement m, string key, long actor, RouteDecision d, CancellationToken ct)
+    private async Task Clarify(JsonElement m, string key, long actor, RouteDecision d, CancellationToken ct, string cancel = "Отмена")
     {
         if (d.Capability is null) { await Respond(m, key, d.Question!, ct); return; }
         var options = d.Options ?? [];
@@ -84,7 +84,7 @@ public sealed partial class BotWorker
         object? keyboard = options.Count == 0 ? null : new
         {
             inline_keyboard = options.Select((o, i) => new[] { new { text = o.Label, callback_data = $"{SlotPrefix}{slot.Id}:{i}" } })
-                .Append([new { text = "Отмена", callback_data = $"{SlotPrefix}{slot.Id}:x" }]).ToArray()
+                .Append([new { text = cancel, callback_data = $"{SlotPrefix}{slot.Id}:x" }]).ToArray()
         };
         await Respond(m, key, d.Question!, ct, keyboard);
         if (store.Post(key) is { MessageId: > 0 } sent) store.SlotMessage(slot.Id, sent.MessageId);

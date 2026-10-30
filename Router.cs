@@ -16,11 +16,13 @@ public sealed record RouteDecision(string? Reaction, string Mode, string? Capabi
     public IReadOnlyList<string>? Blocks { get; init; }
     /// <summary>Writer only, with WebSearch: the search query (checked: 1..200 characters).</summary>
     public string? Web { get; init; }
+    /// <summary>Writer and react_only, with MediaPicker: a mood or topic for a sticker or picture (checked: 1..60 characters).</summary>
+    public string? MediaHint { get; init; }
 }
 
 public sealed partial class BotWorker
 {
-    public const int RouteQuestionMax = 300, RouteRecent = 6, RouteRecentChars = 200;
+    public const int RouteQuestionMax = 300, RouteRecent = 6, RouteRecentChars = 200, MediaHintMax = 60;
     public static readonly string[] RouteModes = ["render", "action", "writer", "clarify", "react_only"];
     private static readonly TimeSpan RouteKeep = TimeSpan.FromDays(2);
 
@@ -65,7 +67,10 @@ public sealed partial class BotWorker
             case "clarify":
                 await Clarify(m, key, actor, decision, ct); return;
             case "react_only" or "ignore":
-                store.SavePost(key, 0, ""); return;
+                if (decision is { Mode: "react_only", MediaHint: { } hint }) await Pick(m, key, null, hint, ct);
+                store.SavePost(key, 0, "");
+                ForgetPick(key);
+                return;
             case "unavailable":
                 // No AI and no commands: an editor's change goes through the web admin; schedule and deadlines were already tried by keywords.
                 await Respond(m, key, editor ? NoAiEdit(actor) : NoAiAnswer, ct);
@@ -110,7 +115,8 @@ public sealed partial class BotWorker
                 log.LogWarning("Router unavailable: {Error}", Failure(e));
                 return Keywords(full, place == Capabilities.Dm && config.CanEdit(actor)) ?? new(null, "unavailable", null, null, null, "OpenRouter недоступен", "keywords");
             }
-            if (ParseRoute(answer, allowed, reactions, today, out var error, blocks?.Select(b => b.Id).ToHashSet(), config.Features.WebSearch) is { } decision) return decision;
+            if (ParseRoute(answer, allowed, reactions, today, out var error, blocks?.Select(b => b.Id).ToHashSet(), config.Features.WebSearch,
+                    config.Features is { MediaLibrary: true, MediaPicker: true }) is { } decision) return decision;
             try { ai.DiscardUsage?.Invoke(callId, "rejected:route"); } catch { }
             log.LogWarning("Router answer rejected: {Error}, attempt {Attempt}", error, attempt);
             note = $"Прошлый ответ отклонён: {error}. Исправь и верни только JSON по схеме.";
@@ -119,9 +125,9 @@ public sealed partial class BotWorker
     }
 
     /// <summary>The model's JSON checked by code: enum, capability allowed for this role and place, its args, question length. Bad emoji is dropped.</summary>
-    /// <summary>blockIds: the catalog offered to the Router (null — diet off, blocks ignored); web: the search is on.</summary>
+    /// <summary>blockIds: the catalog offered to the Router (null — diet off, blocks ignored); web: the search is on; media: the Picker is on.</summary>
     public static RouteDecision? ParseRoute(string json, IReadOnlyList<Capability> allowed, IReadOnlyCollection<string> reactions, DateOnly today, out string? error,
-        IReadOnlySet<string>? blockIds = null, bool web = false)
+        IReadOnlySet<string>? blockIds = null, bool web = false, bool media = false)
     {
         error = null;
         JsonElement root;
@@ -162,7 +168,9 @@ public sealed partial class BotWorker
             if (string.IsNullOrEmpty(query) || query.Length > OpenRouterClient.WebQueryMax)
             { error = $"web.query — строка поискового запроса от 1 до {OpenRouterClient.WebQueryMax} символов"; return null; }
         }
-        return new(reaction, mode, capability, args, question, Conversation.Limit(Str("reason") ?? "", 200), "router") { Options = options, Blocks = blocks, Web = query };
+        // A bad hint is dropped, not an error: there is simply no media then.
+        var hint = media && mode is "writer" or "react_only" && Str("media_hint") is { Length: > 0 and <= MediaHintMax } h && TextGuard.Check(h, "", MediaHintMax) is null ? h : null;
+        return new(reaction, mode, capability, args, question, Conversation.Limit(Str("reason") ?? "", 200), "router") { Options = options, Blocks = blocks, Web = query, MediaHint = hint };
     }
 
     /// <summary>

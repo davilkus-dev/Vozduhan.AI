@@ -117,6 +117,8 @@ ul.lines li{margin:3px 0}
 .ub{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:flex-end;cursor:pointer}
 .ub i{display:block;width:100%;background:var(--accent);border-radius:3px 3px 0 0;opacity:.75}
 .ub.t i{background:var(--accent2)}.ub:hover i,.ub.on i{opacity:1;outline:2px solid var(--accent-soft)}
+.mg{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.mg .card{margin:0}.mg .off{opacity:.55}
+.mg img,.mg video{display:block;width:100%;height:160px;object-fit:contain;background:var(--panel2);border-radius:10px;margin-bottom:8px}
 @media (max-width:900px){
   .app{grid-template-columns:minmax(0,1fr)}
   aside{position:sticky;top:0;height:auto;z-index:10;flex-direction:row;align-items:center;padding:8px 10px;border-right:0;border-bottom:1px solid var(--line);gap:8px}
@@ -223,7 +225,7 @@ window.onbeforeunload=e=>{if(dirty()){e.preventDefault();e.returnValue=""}};
 // ---------- navigation ----------
 const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["plan","🛎","План бота"],["-"],
   ["subjects","🎓","Предметы"],["members","👥","Группа"],/*OWNER*/["knowledge","🧠","Знания",true],/*END*/["settings","🔔","Звонки и семестр"],["-"],
-  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],["usage","💸","Расходы",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
+  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],["usage","💸","Расходы",true],["media","🖼","Медиатека",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
 function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
   $("#nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{S.tab=b.dataset.k;render();window.scrollTo(0,0)})}
 let renderId=0;
@@ -393,7 +395,9 @@ VIEWS.plan=async el=>{
   const FEAT=[["coalesce","Склейка: на несколько сообщений подряд — один ответ"],["mediaDigest","Media Digest: фото, стикеры и видео — описанием для бота"],
     ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"],
     ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"],
-    ["writerDiet","Диета: ответчику — только нужные куски данных и знаний (нужен маршрутизатор)"],["webSearch","Веб-поиск по решению маршрутизатора"]];
+    ["writerDiet","Диета: ответчику — только нужные куски данных и знаний (нужен маршрутизатор)"],["webSearch","Веб-поиск по решению маршрутизатора"],
+    ["mediaLibrary","Медиатека: стикеры из лички разработчика и файлы из админки"],["mediaPicker","Подбор медиа: иногда стикер или картинка после ответа (нужна медиатека)"],
+    ["pickerInPrivate","Подбор медиа и в личке"]];
   const PKINDS=[["summary","Утро в «Сводку»"],["morning","Утро в Воздуханство"],["spont","Вбросы"],["eve","Напоминание накануне"],["wakeup","Будильники к дедлайнам"],["post","Отложенные посты"]];
   const PMODES=[["auto_preview","превью за 30 мин, без ответа — уходит"],["manual","только после ✅"],["auto","без превью"]];
   if($("#f_body"))api("features").then(x=>{if(viewId!==renderId||!x.ok)return;const f=x.features;
@@ -401,8 +405,12 @@ VIEWS.plan=async el=>{
       `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`+
       `<label>Поисков в сутки на всех</label><input type="number" id="f_wd" min="0" max="10000" value="${f.webSearchDailyLimit}">`+
       `<label>Поисков в сутки на человека (разработчик без лимита)</label><input type="number" id="f_wu" min="0" max="10000" value="${f.webSearchPerUserDaily}">`+
+      `<label>Подбор медиа: шанс после ответа, %</label><input type="number" id="f_pc" min="0" max="100" value="${Math.round(f.pickerChance*100)}">`+
+      `<label>Подбор медиа: пауза в чате, минут</label><input type="number" id="f_pm" min="0" max="10000" value="${f.pickerCooldownMinutes}">`+
+      `<label>Подборов медиа в сутки, максимум</label><input type="number" id="f_pd" min="0" max="10000" value="${f.pickerDailyLimit}">`+
       PKINDS.map(([k,t])=>`<label>${t}</label><select id="pm_${k}">${PMODES.map(([m,mt])=>`<option value="${m}" ${(f.publicationModes||{})[k]===m||(!(f.publicationModes||{})[k]&&m==="auto_preview")?"selected":""}>${mt}</option>`).join("")}</select>`).join("");
     $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value,webSearchDailyLimit:+$("#f_wd").value,webSearchPerUserDaily:+$("#f_wu").value,
+      pickerChance:+$("#f_pc").value/100,pickerCooldownMinutes:+$("#f_pm").value,pickerDailyLimit:+$("#f_pd").value,
       publicationModes:Object.fromEntries(PKINDS.map(([k])=>[k,$("#pm_"+k).value]))};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
       const r=await api("features",{settings});if(r.ok)toast("Новые функции сохранены");else info("Ошибка",`<p>${esc(r.error)}</p>`)}});
   /*END*/
@@ -586,7 +594,7 @@ VIEWS.log=async el=>{
 /*OWNER*/async function showAi(id){const viewId=renderId;const r=await api("ai?id="+id);if(viewId!==renderId)return;const a=r.rows?.[0];if(!a)return;
   let req=a.request;try{req=JSON.stringify(JSON.parse(a.request),null,2)}catch{}
   info(`ИИ · ${a.kind} · ${a.ms} мс`,`<p class="faint small">${esc(a.model)} · ${time(a.time)} · ${esc(a.tag)}</p>${a.error?`<p style="color:var(--bad)">${esc(a.error)}</p>`:""}<h3>Ответ</h3><pre>${esc(a.response)}</pre><h3>Данные запроса</h3><pre>${esc(req)}</pre><h3>Системный промпт</h3><pre>${esc(a.system)}</pre>`)}
-const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"],["digest","Описание медиа (нужна модель с картинками и аудио)"],["router","Маршрутизатор: реакция и выбор действия (самая дешёвая)"]];
+const KINDS=[["chat","Болтовня в чате и личке"],["ambient","Посты бота: сводка, вбросы, дедлайны, будильники"],["plan","Разбор сообщений редактора (что он хочет)"],["deadline","Разбор дедлайна из текста"],["wakeplan","План будильников к дедлайнам"],["digest","Описание медиа (нужна модель с картинками и аудио)"],["router","Маршрутизатор: реакция и выбор действия (самая дешёвая)"],["picker","Подбор медиа к ответу (дешёвая)"]];
 const SUGGEST=["google/gemini-3.8-flash","deepseek/deepseek-v4.1-flash","z-ai/glm-5.3","z-ai/glm-5.3-flash"];
 VIEWS.ai=async el=>{
   const viewId=renderId;el.innerHTML=page("Нейронки и запросы","Какая модель что делает — и промпт, данные и ответ каждого запроса, чтобы ловить баги. Логи хранятся aiLogDays дней.")+
@@ -612,13 +620,13 @@ VIEWS.ai=async el=>{
 /*OWNER*/const usd=v=>v==null?"—":v===0?"$0":"$"+(Math.abs(v)<1?v.toFixed(4):v.toFixed(2));
 const num=n=>(n||0).toLocaleString("ru-RU");
 const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
-const KUSE={chat:"ответ в чате","chat-web":"Ответ с поиском",router:"Маршрутизатор",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",
+const KUSE={chat:"ответ в чате","chat-web":"Ответ с поиском",router:"Маршрутизатор",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",picker:"Подбор медиа",
   "ambient-deadline":"вводная поста дедлайна","ambient-wakeup":"напоминание","ambient-summary":"утренняя сводка","ambient-morning":"утро в чате",
   "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост"};
 const kuse=k=>`<span title="${esc(k)}">${esc(KUSE[k]||k)}</span>`;
 const wasteReason=r=>({length:"обрыв по длине",empty:"пустой ответ",invalid_json:"битый JSON",think:"рассуждения в тексте",
   "rejected:empty":"пустой ответ", "rejected:cjk":"иероглифы в тексте", "rejected:garbled":"битые символы", "rejected:not_russian":"ответ не по-русски",
-  "rejected:repeat":"зацикленные повторы", "rejected:route":"маршрутизатор не по схеме", "rejected:too_long":"слишком длинный текст"}[r]||r);
+  "rejected:repeat":"зацикленные повторы", "rejected:route":"маршрутизатор не по схеме","rejected:picker":"подбор медиа не из списка", "rejected:too_long":"слишком длинный текст"}[r]||r);
 const toks=x=>`вход ${num(x.promptTokens)}${x.cachedTokens?` (кеш ${num(x.cachedTokens)})`:""} · выход ${num(x.completionTokens)}${x.reasoningTokens?` (рассужд. ${num(x.reasoningTokens)})`:""}`;
 VIEWS.usage=async el=>{
   const viewId=renderId;S.usageDays=S.usageDays||30;
@@ -651,6 +659,37 @@ VIEWS.usage=async el=>{
   const cap=$("#ucap");el.querySelectorAll(".ub").forEach(b=>b.onmouseenter=b.onclick=()=>{cap.textContent=dayText(r.byDay[+b.dataset.i]);el.querySelectorAll(".ub.on").forEach(x=>x.classList.remove("on"));b.classList.add("on")});
   $("#ua_s").onclick=async()=>{const x=await api("usage/alert",{dailyUsd:Number($("#ua_d").value||0),monthlyUsd:Number($("#ua_m").value||0)});
     if(x.ok)toast("Пороги сохранены");else info("Ошибка",`<p>${esc(x.error)}</p>`)}};
+// ---------- media library ----------
+const MKIND={sticker:"стикер",photo:"картинка",animation:"GIF",video:"видео"};
+VIEWS.media=async el=>{
+  const viewId=renderId;S.mq=S.mq||"";S.mk=S.mk||"";
+  el.innerHTML=page("Медиатека","Стикеры (пришли стикер боту в личку — предложит добавить его или весь набор), картинки, GIF и видео. С «Подбором медиа» бот иногда кидает их после ответа. Бот выбирает по описанию.",
+    `<input type="file" id="mf" accept=".jpg,.jpeg,.png,.webp,.gif,.mp4" style="display:none"><button class="b p" id="mu">＋ Загрузить файл</button>`)+
+    `<div class="card row"><input id="mq" placeholder="поиск по описанию, тегам, эмодзи" value="${esc(S.mq)}" style="flex:1 1 220px"><select id="mk">${[["","все виды"],...Object.entries(MKIND)].map(([k,t])=>`<option value="${k}" ${S.mk===k?"selected":""}>${t}</option>`).join("")}</select><button class="b" id="ms">Найти</button></div><div id="ml"><div class="card empty">Загрузка…</div></div>`;
+  $("#ms").onclick=()=>{S.mq=$("#mq").value.trim();S.mk=$("#mk").value;render()};$("#mq").onkeydown=e=>{if(e.key==="Enter")$("#ms").click()};
+  $("#mu").onclick=()=>$("#mf").click();
+  $("#mf").onchange=async()=>{const f=$("#mf").files[0];if(!f)return;if(f.size>20*1024*1024)return info("Слишком большой файл","<p>До 20 МБ.</p>");
+    const fd=new FormData();fd.append("file",f);$("#mu").disabled=true;$("#mu").textContent="Загружаю…";
+    const x=await fetch("/api/media/upload",{method:"POST",headers:{"X-Vozduhan":"1"},body:fd}).then(r=>r.json()).catch(()=>({ok:false,error:"Нет ответа от сервера"}));
+    if(x.ok)toast(x.existing?"Этот файл уже в медиатеке":"Загружено — опишу в фоне");else info("Не загрузилось",`<p>${esc(x.error)}</p>`);render()};
+  const r=await api(`media?q=${encodeURIComponent(S.mq)}&kind=${S.mk}`);if(viewId!==renderId)return;
+  if(!r.ok)return void($("#ml").innerHTML=`<div class="card">${esc(r.error)}</div>`);
+  $("#ml").innerHTML=r.items.length?`<div class="mg">${r.items.map(m=>`<div class="card${m.enabled?"":" off"}">
+    ${m.video?`<video src="/api/media/${m.id}/preview" muted loop playsinline preload="metadata"></video>`:`<img src="/api/media/${m.id}/preview" loading="lazy" alt="">`}
+    <div class="row small"><span class="chip">${MKIND[m.kind]||esc(m.kind)}</span>${m.emoji?esc(m.emoji):""}<span class="faint">использований: ${m.uses}</span></div>
+    ${m.title?`<b>${esc(m.title)}</b>`:""}<p class="small">${m.description==null?'<span class="faint">ждёт описания…</span>':esc(m.description)||'<span class="faint">без описания</span>'}</p>
+    ${m.tags?`<p class="small muted">${esc(m.tags)}</p>`:""}
+    <div class="row"><button class="b" data-me="${m.id}">Изменить</button><button class="b" data-mt="${m.id}">${m.enabled?"Выключить":"Включить"}</button><button class="b" data-md="${m.id}">Удалить</button></div></div>`).join("")}</div>`
+    :`<div class="card empty">${S.mq||S.mk?"Ничего не нашлось":"Пока пусто"}</div>`;
+  el.querySelectorAll("video").forEach(v=>{v.onmouseenter=()=>v.play().catch(()=>{});v.onmouseleave=()=>v.pause()});
+  const item=id=>r.items.find(m=>m.id===+id);
+  const upd=async(body,ok)=>{const x=await api("media/update",body);if(x.ok){toast(ok);render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)};
+  el.querySelectorAll("[data-me]").forEach(b=>b.onclick=async()=>{const m=item(b.dataset.me);
+    const v=await form("Медиа #"+m.id,[{k:"title",label:"Название"},{k:"description",label:"Описание — по нему бот подбирает медиа",type:"textarea"},{k:"tags",label:"Теги"}],m);
+    if(!v)return;const body={id:m.id,title:v.title||"",tags:v.tags||""};if(v.description!=null||m.description!=null)body.description=v.description||"";upd(body,"Сохранено")});
+  el.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{const m=item(b.dataset.mt);upd({id:m.id,enabled:!m.enabled},m.enabled?"Выключено":"Включено")});
+  el.querySelectorAll("[data-md]").forEach(b=>b.onclick=async()=>{const i=await menu("Удалить медиа #"+b.dataset.md+"?",[{t:"Удалить",cls:"p"}],'<p class="muted">Бот перестанет его использовать. Запись останется в базе.</p>');
+    if(i!==0)return;const x=await api("media/delete",{id:+b.dataset.md});if(x.ok){toast("Удалено");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)})};
 /*END*/
 // ---------- seen users ----------
 VIEWS.seen=async el=>{

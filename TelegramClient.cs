@@ -46,8 +46,27 @@ public sealed class TelegramClient(HttpClient http, string token)
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(method == "getUpdates" ? 65 : 25));
         using var response = await http.PostAsJsonAsync($"./bot{token}/{method}", data, Json.Options, timeout.Token);
+        return await Result(method, data, response, timeout.Token);
+    }
+
+    /// <summary>A file upload (multipart/form-data): the file under «field», the other fields as text.</summary>
+    public async Task<JsonElement> Upload(string method, IReadOnlyDictionary<string, string> fields, string field, byte[] file, string fileName, CancellationToken ct)
+    {
+        var remaining = Interlocked.Read(ref blockedUntil) - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (remaining > 0) throw new TelegramError(method, 429, "Local Telegram rate-limit cooldown", (int)Math.Ceiling(remaining / 1000d));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(120));
+        using var form = new MultipartFormDataContent();
+        foreach (var (k, v) in fields) form.Add(new StringContent(v), k);
+        form.Add(new ByteArrayContent(file), field, fileName);
+        using var response = await http.PostAsync($"./bot{token}/{method}", form, timeout.Token);
+        return await Result(method, fields, response, timeout.Token);
+    }
+
+    private async Task<JsonElement> Result(string method, object data, HttpResponseMessage response, CancellationToken ct)
+    {
         JsonDocument document;
-        try { document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(timeout.Token), cancellationToken: timeout.Token); }
+        try { document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct); }
         catch (JsonException)
         {
             if (!response.IsSuccessStatusCode)
@@ -105,6 +124,17 @@ public sealed class TelegramClient(HttpClient http, string token)
     public Task<JsonElement> Typing(long chat, int topic, CancellationToken ct) =>
         Call("sendChatAction", new { chat_id = chat, message_thread_id = topic > 1 ? (int?)topic : null, action = "typing" }, ct);
     public Task<JsonElement> GetFile(string fileId, CancellationToken ct) => Call("getFile", new { file_id = fileId }, ct);
+    public Task<JsonElement> StickerSet(string name, CancellationToken ct) => Call("getStickerSet", new { name }, ct);
+    /// <summary>Upload methods by media kind: sticker, photo, animation, video.</summary>
+    public static string MediaMethod(string kind) => kind switch { "sticker" => "sendSticker", "photo" => "sendPhoto", "animation" => "sendAnimation", _ => "sendVideo" };
+    /// <summary>A library item by its file_id, as a reply.</summary>
+    public Task<JsonElement> SendMedia(long chat, int topic, string kind, string fileId, int? reply, CancellationToken ct)
+    {
+        var data = new Dictionary<string, object> { ["chat_id"] = chat, [kind is "photo" or "animation" or "sticker" ? kind : "video"] = fileId };
+        if (topic > 1) data["message_thread_id"] = topic;
+        if (reply.HasValue) data["reply_parameters"] = new { message_id = reply.Value, allow_sending_without_reply = true };
+        return Call(MediaMethod(kind), data, ct);
+    }
     /// <summary>Downloads a file by its getFile path; null when it is larger than max bytes.</summary>
     public async Task<byte[]?> Download(string path, long max, CancellationToken ct)
     {

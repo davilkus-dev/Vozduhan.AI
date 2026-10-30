@@ -186,6 +186,8 @@ public sealed partial class BotWorker
             new("where", "IDs", "технические ID группы, тем и версия реестра", dev, dm, [], render, (c, _) =>
                 Done(H($"Твой ID: {c.Actor}\nРазрешённая группа: {config.GroupId}\nВоздуханство: {config.ChatTopicId}\nДедлайны: {config.DeadlinesTopicId}\nВерсия реестра: {store.RegistryVersion()}")))
                 { Section = "developer", Help = "/where — IDs", Say = "технические ID — «покажи айдишники»" },
+            new("media_add", "В медиатеку", "добавить присланный стикер или весь его набор в медиатеку", dev, dm,
+                [new("scope", "enum", true, ["one", "set"], "one — этот стикер, set — весь набор")], action, AddMedia) { Section = "developer", Slash = false },
         ];
     }
 

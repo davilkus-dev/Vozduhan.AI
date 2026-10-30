@@ -38,6 +38,7 @@ public sealed partial class BotWorker : BackgroundService
         ai.Trace ??= t => store.AiLog(t.Kind, t.Tag, t.Model, t.System, t.Request, t.Response, t.Ms, t.Error);
         ai.Usage ??= u => { store.AddUsage(u); SpendCheck(); };
         ai.DiscardUsage ??= store.DiscardUsage;
+        log.LogInformation(store.MediaFts ? "Media library search: FTS5" : "Media library search: SQLite has no FTS5, using substring search");
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -65,7 +66,8 @@ public sealed partial class BotWorker : BackgroundService
             Supervise("callbacks", () => ProcessLoop(2, ct), ct),
             Supervise("publisher", () => PublishLoop(ct), ct),
             Supervise("ambient", () => AmbientLoop(ct), ct),
-            Supervise("wakeplan", () => PlanLoop(ct), ct)]));
+            Supervise("wakeplan", () => PlanLoop(ct), ct),
+            Supervise("media", () => MediaLoop(ct), ct)]));
     }
 
     private async Task Supervise(string name, Func<Task> run, CancellationToken ct)
@@ -303,6 +305,8 @@ public sealed partial class BotWorker : BackgroundService
         }
         if (isPrivate && actor == config.OwnerId && store.ActiveSlot(actor, chat, DateTimeOffset.UtcNow) is { Capability: PublicationEdit } edit)
         { await PublicationEditText(m, responseKey, edit, text, ct); return; }
+        if (isPrivate && actor == config.OwnerId && config.Features.MediaLibrary && m.Field("sticker").ValueKind == JsonValueKind.Object)
+        { await OfferSticker(m, responseKey, actor, ct); return; }
         var editor = config.CanEdit(actor);
         var joined = store.Post($"coalesce:{chat}:{id}")?.Text;
         var router = config.Features.Router;
@@ -432,7 +436,9 @@ public sealed partial class BotWorker : BackgroundService
                     catch (TelegramError e) when (e.Code is 400 or 403) { log.LogWarning("Pin rejected: {Error}", e.Description); }
             }
             catch (TelegramError e) when (e.Code == 400) { log.LogWarning("Poll rejected: {Error}", e.Description); }
+        if (text.Length > 0 && !answer.StartsWith(NoAiPrefix, StringComparison.Ordinal)) await Pick(m, key, text, decision?.MediaHint, ct);
         store.SavePost(key, first ?? 0, "");
+        ForgetPick(key);
         store.ForgetPost(key + ":poll");
         store.ForgetPost(answerKey);
         store.ForgetPost(tailKey);

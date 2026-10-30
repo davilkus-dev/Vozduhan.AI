@@ -433,6 +433,7 @@ try
     count += await RouterTests.Run(f => Config(f));
     count += await CommandlessTests.Run(f => Config(f));
     count += await WriterDietTests.Run(f => Config(f));
+    count += await MediaTests.Run(f => Config(f));
     Console.WriteLine($"All {count} checks passed. No real Telegram or OpenRouter calls.");
 }
 finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(temp, true); }

@@ -86,6 +86,7 @@ public sealed partial class BotStore : IDisposable
         AddColumn("messages", "arrived", "INTEGER NOT NULL DEFAULT 0");
         Exec("CREATE INDEX IF NOT EXISTS inbox_chat ON inbox(chat,state)");
         InitPublications();
+        InitMedia();
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");
@@ -505,6 +506,7 @@ public sealed partial class BotStore : IDisposable
             Exec("DELETE FROM ai_log WHERE time<$s", ("s", now.AddDays(-Config.AiLogDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM ai_usage WHERE time<$s", ("s", now.AddDays(-UsageDays).ToUnixTimeSeconds()));
             Exec("DELETE FROM media_digest WHERE created<$s", ("s", now.AddDays(-DigestDays).ToUnixTimeSeconds()));
+            Exec("DELETE FROM media_uses WHERE time<$s", ("s", now.AddDays(-2).ToUnixTimeSeconds()));
             // Router decisions are kept two days for debugging (kv "route:{chat}:{message}" with an expiry inside).
             Exec("DELETE FROM kv WHERE key LIKE 'route:%' AND (CASE WHEN json_valid(value) THEN COALESCE(json_extract(value,'$.expires'),0) ELSE 0 END)<$s",
                 ("s", now.ToUnixTimeSeconds()));

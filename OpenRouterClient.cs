@@ -492,8 +492,14 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         знать не может: новости, курсы валют, погода, события, цены, правила и документы вуза на его сайте, свежие версии программ.
         Расписание, пары, дедлайны, люди группы и всё из context_blocks в вебе НЕ ищутся. Болтовня, шутки, мнения — без web.
         """;
+    private const string MediaRules = """
+
+        media_hint — только для mode=writer и react_only: настроение или тема, к которым бот мог бы кинуть стикер, мем или гифку из своей
+        медиатеки («ржака», «усталость перед парой», «победа», «кринж»), до 60 символов, или null. Факты, расписание, серьёзные вопросы — null.
+        """;
     /// <summary>The Router's system prompt: the same for every message while the feature flags stay the same.</summary>
-    public static string RouterSystem(FeatureSettings f) => RouterRules + (f.WriterDiet ? DietRules : "") + (f.WebSearch ? WebRules : "");
+    public static string RouterSystem(FeatureSettings f) => RouterRules + (f.WriterDiet ? DietRules : "") + (f.WebSearch ? WebRules : "") +
+        (f is { MediaLibrary: true, MediaPicker: true } ? MediaRules : "");
 
     public const string Skip = "SKIP";
     /// <summary>The bot's own messages: morning, spontaneous drop, manual request, deadline wake-up, evening reminder lead.</summary>

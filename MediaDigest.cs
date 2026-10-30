@@ -71,10 +71,11 @@ public sealed class MediaDigest(BotConfig config, BotStore store, TelegramClient
     public Task Prepare(IEnumerable<JsonElement> messages, string kind, CancellationToken ct) =>
         Task.WhenAll(messages.Select(m => Describe(m, kind, ct)));
 
-    public Task Describe(JsonElement m, string kind, CancellationToken ct)
+    /// <summary>force: the media library asks regardless of the MediaDigest flag.</summary>
+    public Task Describe(JsonElement m, string kind, CancellationToken ct, bool force = false)
     {
         var f = config.Features;
-        if (!f.MediaDigest || Find(m) is not { } x || x.UniqueId.Length == 0 || x.Kind == "document" || (x.Kind == "voice" && !f.DigestVoice) ||
+        if (!(f.MediaDigest || force) || Find(m) is not { } x || x.UniqueId.Length == 0 || x.Kind == "document" || (x.Kind == "voice" && !f.DigestVoice) ||
             store.Digest(x.UniqueId) is not null) return Task.CompletedTask;
         var tag = $"chat:{m.Field("chat").Number("id")}:{m.Number("message_id")}";
         var job = running.GetOrAdd(x.UniqueId, _ => new(() => Run(x, kind, tag, ct)));
