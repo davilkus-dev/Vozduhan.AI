@@ -274,7 +274,7 @@ public sealed class Registry
             var who = string.IsNullOrWhiteSpace(m.FullName) ? $"запись №{m.ListNumber}" : m.FullName;
             if (string.IsNullOrWhiteSpace(m.FullName) || string.IsNullOrWhiteSpace(m.ShortName)) Fail($"У участника {who} должны быть ФИО и краткое имя.");
             if (m.UserId is <= 0) Fail($"Telegram ID у {who} должен быть положительным числом или пустым.");
-            if (m.Role is not ("member" or "head")) Fail($"Неизвестная роль у {who}: {m.Role}.");
+            if (m.Role is not ("member" or "head" or "admin")) Fail($"Неизвестная роль у {who}: {m.Role}.");
             if (m.Role == "head" && (m.UserId is null || !m.Active)) Fail($"Староста ({who}) должен быть активным и с Telegram ID.");
             if (m.ListNumber < 0) Fail($"Номер по списку у {who} не может быть отрицательным.");
         }
@@ -466,7 +466,7 @@ public sealed class BotConfig
         DateTime.SpecifyKind(local, DateTimeKind.Unspecified), Zone));
     public Member? FindMember(long id) => R.Active(id);
     public bool AllowedUser(long id) => id > 0 && (id == OwnerId || FindMember(id) is not null);
-    public bool CanEdit(long id) => id > 0 && (id == OwnerId || FindMember(id)?.Role == "head");
+    public bool CanEdit(long id) => id > 0 && (id == OwnerId || FindMember(id)?.Role is "head" or "admin");
     public bool AiTopic(int id) => id == DeadlinesTopicId || OtherAiTopicIds.Contains(id);
     public string Role(long id) => id == OwnerId ? "developer" : FindMember(id)?.Role ?? "unknown";
 

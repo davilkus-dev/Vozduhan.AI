@@ -38,7 +38,7 @@ public sealed class Capabilities(BotConfig config, IReadOnlyList<Capability> all
 {
     public const string Group = "group", Dm = "dm";
     public const string Render = "render", Action = "action";
-    public static readonly string[] Everyone = ["member", "head", "developer"], Editors = ["head", "developer"], Developer = ["developer"];
+    public static readonly string[] Everyone = ["member", "head", "admin", "developer"], Editors = ["head", "admin", "developer"], Developer = ["developer"];
     public static readonly string[] Anywhere = [Group, Dm], DmOnly = [Dm];
     public const int StringMax = 1000;
 
@@ -152,21 +152,21 @@ public sealed partial class BotWorker
             new("web_link", "Веб-админка", "одноразовая ссылка на веб-админку", editors, dm, [], action, (c, _) => Done(H(WebLink(c.Actor))))
                 { Section = "editor", Help = "/web — веб-админка (через VPN)", Say = "веб-админка (через VPN) — «дай ссылку на админку»" },
             new("edit_deadline", "Изменить дедлайн", "добавить, изменить, перенести или отменить сдачу (текст сообщения разберёт планировщик и покажет карточку)",
-                editors, dm, [], action, async (c, ct) =>
+                editors, anywhere, [], action, async (c, ct) =>
                 {
                     if (c.Text.StartsWith('/') && !config.Features.Router) await ManageDeadline(c.Message, c.Key, ct);
                     else await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct);
                     return null;
                 }) { Section = "editor", Help = "<code>/deadline id | работа | YYYY-MM-DD | пара [| кабинет]</code> — дедлайн без ИИ\n/edit ID текст · /move ID дата [пара] · /cancel ID", Say = "дедлайны — «сиаод практика №7 в пятницу», «перенеси #12 на среду», «отмени #12»" },
             new("edit_registry", "Изменить реестр", "изменить расписание (разово или постоянно), список группы, предметы, звонки (планировщик покажет карточку)",
-                editors, dm, [], action, async (c, ct) => { await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct); return null; }) { Section = "editor", Say = "расписание и список — «31-го матан лекция 6-й парой дистанционно», «Бутова отчислили»" },
+                editors, anywhere, [], action, async (c, ct) => { await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct); return null; }) { Section = "editor", Say = "расписание и список — «31-го матан лекция 6-й парой дистанционно», «Бутова отчислили»" },
             new("delete_deadline", "Удалить дедлайн", "удалить ошибочно созданный дедлайн вместе с его постами (по ID, с подтверждением кнопкой)",
-                editors, dm, [new("id", "int", true, Note: "ID дедлайна, #N")], action, DeleteDeadlineCard)
+                editors, anywhere, [new("id", "int", true, Note: "ID дедлайна, #N")], action, DeleteDeadlineCard)
                 { Section = "editor", Slash = false, Help = "«удали дедлайн #12» — убрать ошибочный дедлайн вместе с постами (с подтверждением)", Say = "ошибочный дедлайн — «удали дедлайн #12» (уберу вместе с постами, после подтверждения)" },
-            new("undo", "Откат", "откатить последнее изменение реестра (с подтверждением)", editors, dm, [], action,
+            new("undo", "Откат", "откатить последнее изменение реестра (с подтверждением)", editors, anywhere, [], action,
                 async (c, ct) => { await Undo(c.Message, c.Key, c.Actor, ct); return null; })
                 { Section = "editor", Help = "/undo — откатить последнее изменение", Say = "откат — «откати последнее изменение»" },
-            new("discard_drafts", "Убрать черновики", "выбросить неподтверждённые черновики дедлайна и реестра", editors, dm, [], action, (c, _) =>
+            new("discard_drafts", "Убрать черновики", "выбросить неподтверждённые черновики дедлайна и реестра", editors, anywhere, [], action, (c, _) =>
                 {
                     store.DiscardRegistryDraft(c.Actor);
                     store.Delete($"planner_question:{c.Actor}");
@@ -218,7 +218,7 @@ public sealed partial class BotWorker
     /// <summary>The DM answer to «/start» without commands: who I am and what I do, in prose, no command list.</summary>
     private static string Greeting(string role) =>
         "Привет! Я бот нашей группы: подскажу расписание с учётом чётных недель и замен, напомню о дедлайнах и могу просто поболтать." +
-        (role is "head" or "developer" ? " А ещё через меня можно менять дедлайны и расписание — тоже обычным текстом, перед сохранением покажу карточку." : "") +
+        (role is "head" or "admin" or "developer" ? " А ещё через меня можно менять дедлайны и расписание — тоже обычным текстом, перед сохранением покажу карточку." : "") +
         "\n\nКоманды не нужны — просто спроси, например «что завтра?» или «какие дедлайны?».";
 
     /// <summary>Slash commands stay until block 4, but run through the catalog.</summary>
@@ -281,8 +281,9 @@ public sealed partial class BotWorker
     private async Task DeleteCallback(JsonElement cb, long actor, string kind, string value, CancellationToken ct)
     {
         var messageId = (int)cb.Field("message").Number("message_id");
+        var chat = cb.Field("message").Field("chat").Number("id");
         var parts = value.Split(':');
-        if (kind == "dkeep") { await SafeCallback(cb.Text("id")!, "Отменено", ct); await telegram.Edit(actor, messageId, "Дедлайн не трогаю.", ct); return; }
+        if (kind == "dkeep") { await SafeCallback(cb.Text("id")!, "Отменено", ct); await telegram.Edit(chat, messageId, "Дедлайн не трогаю.", ct); return; }
         if (parts.Length != 2 || !int.TryParse(parts[0], out var id) || !int.TryParse(parts[1], out var version)) return;
         await publicationGate.WaitAsync(ct);
         try
@@ -291,8 +292,8 @@ public sealed partial class BotWorker
             await SafeCallback(cb.Text("id")!, "Удаляю…", ct);
             Deadline d;
             try { d = store.DeleteDeadline(actor, id, version, DateTimeOffset.UtcNow); }
-            catch (InvalidOperationException e) { await telegram.Send(actor, 0, "Не удалено: " + e.Message, ct); return; }
-            await telegram.Edit(actor, messageId, $"🗑 Удалён дедлайн:\n{Deadlines.Facts(config, d)}\nЕго посты в «Дедлайнах» уберу в течение минуты.", ct);
+            catch (InvalidOperationException e) { await telegram.Send(chat, cb.Field("message").TopicId(), "Не удалено: " + e.Message, ct); return; }
+            await telegram.Edit(chat, messageId, $"🗑 Удалён дедлайн:\n{Deadlines.Facts(config, d)}\nЕго посты в «Дедлайнах» уберу в течение минуты.", ct);
         }
         finally { publicationGate.Release(); }
     }

@@ -181,7 +181,7 @@ static class CommandlessTests
             var data = Buttons(e.Calls("sendMessage").Single().Body);
             Assert(BotWorker.CallbackAllowed(e.C, 1, -100123, data[0]) && BotWorker.CallbackAllowed(e.C, 3, 3, "slot:1:0") && !BotWorker.CallbackAllowed(e.C, 999, -100123, data[0]) &&
                 !BotWorker.CallbackAllowed(e.C, 3, -100999, data[0]) && !BotWorker.CallbackAllowed(e.C, 3, 3, "save:x") && BotWorker.CallbackAllowed(e.C, 2, 2, "save:x") &&
-                !BotWorker.CallbackAllowed(e.C, 2, -100123, "save:x"), "Poll callback filter wrong");
+                BotWorker.CallbackAllowed(e.C, 2, -100123, "save:x") && !BotWorker.CallbackAllowed(e.C, 2, -100999, "save:x"), "Poll callback filter wrong");
             e.Clear();
             await Press(e, 1, -100123, slot.Message, data[0]);
             Assert(e.Calls("answerCallbackQuery").Single().Body.Text("text") == "Это не твой вопрос" && e.Calls("sendMessage").Count == 0 &&

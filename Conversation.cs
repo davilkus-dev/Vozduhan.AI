@@ -347,7 +347,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
         return new
         {
             local_now = local.ToString("yyyy-MM-dd HH:mm dddd", Ru),
-            editor_role = actor == config.OwnerId ? "developer" : "head",
+            editor_role = config.Role(actor),
             week = Schedule.InTerm(r, today) ? $"{Schedule.Week(r, today)}-я, {Schedule.ParityRu(Schedule.Parity(Schedule.Week(r, today)))}" : "вне семестра",
             registry = new
             {
@@ -358,7 +358,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
                 bells = r.Periods,
                 r.WeekOneMonday, r.TermEnd, r.DefaultCampus,
                 knowledge = owner ? r.KnowledgeBlocks.Select(b => new { b.Key, b.Hint, b.Always, preview = Limit(b.Text, 300), length = b.Text.Length }) : null,
-                owner_only = owner ? null : "Редактор — староста: сленг, комментарии к предметам, заметки о людях и знания ему недоступны; такие просьбы не превращай в operations, а вежливо скажи, что это настраивает разработчик." 
+                owner_only = owner ? null : "Редактор — не разработчик: сленг, комментарии к предметам, заметки о людях и знания ему недоступны; такие просьбы не превращай в operations, а вежливо скажи, что это настраивает разработчик." 
             },
             days_ahead = Enumerable.Range(0, 14).Select(i => today.AddDays(i)).Select(d => new
             {

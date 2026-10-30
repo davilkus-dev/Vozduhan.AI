@@ -147,12 +147,12 @@ public sealed partial class BotWorker : BackgroundService
     }
     /// <summary>
     /// Which button presses are queued: clarification buttons («slot:») for everybody in the roster, in the group and in DM
-    /// (the author check is in SlotCallback); every other button only for editors in their DM, as before.
+    /// (the author check is in SlotCallback); every other button only for editors, in their DM or the group.
     /// </summary>
     public static bool CallbackAllowed(BotConfig config, long actor, long chat, string? data) =>
         (data ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)
             ? config.AllowedUser(actor) && (chat == actor || chat == config.GroupId)
-            : config.CanEdit(actor) && chat == actor;
+            : config.CanEdit(actor) && (chat == actor || chat == config.GroupId);
     private static bool HasContent(JsonElement m) => new[] { "text", "caption", "photo", "video", "voice", "audio", "document", "sticker", "animation", "poll", "contact", "location", "venue", "dice", "video_note", "game", "checklist", "paid_media", "live_photo", "story" }
         .Any(key => m.Field(key).ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null));
 

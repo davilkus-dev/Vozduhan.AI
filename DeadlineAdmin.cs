@@ -8,7 +8,8 @@ public sealed partial class BotWorker
     /// <summary>Editors' private messages: the planner decides between conversation, deadline and registry change.</summary>
     private async Task AdminDialog(JsonElement m, string key, long actor, string text, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(text)) { await ChatGuarded(m, key, true, actor, ct); return; }
+        var isPrivate = m.Field("chat").Number("id") == actor;
+        if (string.IsNullOrWhiteSpace(text)) { await ChatGuarded(m, key, isPrivate, actor, ct); return; }
         PlanResult plan;
         var pending = store.Get($"planner_question:{actor}");
         var request = pending is null ? text : pending + "\nУточнение: " + text;
@@ -33,7 +34,7 @@ public sealed partial class BotWorker
             case "post" when actor == config.OwnerId:
                 await PostPreview(m, key, actor, plan.Idea ?? text, ct); return;
             default:
-                await ChatGuarded(m, key, true, actor, ct); return;
+                await ChatGuarded(m, key, isPrivate, actor, ct); return;
         }
     }
 
@@ -49,6 +50,7 @@ public sealed partial class BotWorker
         {
             await Respond(m, key, "Так не получится: " + e.Message + (plan.Question is null ? "" : "\n" + plan.Question) + "\nНичего не изменено.", ct); return;
         }
+        if (m.Field("chat").Number("id") != actor && lines.Any(RegistryOps.IsSecret)) { await Respond(m, key, "Это меняется только в личке со мной.", ct); return; }
         var previous = store.RegistryDraft(actor);
         var draft = new RegistryDraft(Guid.NewGuid().ToString("N")[..16], actor, store.RegistryVersion(), "ops",
             plan.Operations.Select(o => o.GetRawText()).ToArray(), lines.ToArray(),
@@ -75,6 +77,7 @@ public sealed partial class BotWorker
         {
             await Respond(m, key, "Последнее изменение сделал разработчик в своих настройках — откатить его может только он.", ct); return;
         }
+        if (m.Field("chat").Number("id") != actor && lines.Any(RegistryOps.IsSecret)) { await Respond(m, key, "Это откатывается только в личке со мной.", ct); return; }
         var current = store.RegistryVersion();
         var draft = new RegistryDraft(Guid.NewGuid().ToString("N")[..16], actor, current, "restore", [], lines.ToArray(), "/undo", previous);
         store.SaveRegistryDraft(draft);
@@ -97,8 +100,8 @@ public sealed partial class BotWorker
     /// <summary>The other editor learns about every registry change made by the owner or the head.</summary>
     internal async Task NotifyEditors(long actor, int version, IEnumerable<string> lines, string where, CancellationToken ct)
     {
-        var who = actor == config.OwnerId ? "Разработчик" : "Староста " + (config.FindMember(actor)?.ShortName ?? "");
-        var editors = config.R.Members.Where(x => x.Active && x.Role == "head" && x.UserId is not null).Select(x => x.UserId!.Value)
+        var who = actor == config.OwnerId ? "Разработчик" : (config.FindMember(actor)?.Role == "admin" ? "Администратор " : "Староста ") + (config.FindMember(actor)?.ShortName ?? "");
+        var editors = config.R.Members.Where(x => x.Active && x.Role is "head" or "admin" && x.UserId is not null).Select(x => x.UserId!.Value)
             .Append(config.OwnerId).Distinct().Where(x => x != actor);
         foreach (var editor in editors)
             try
@@ -186,11 +189,13 @@ public sealed partial class BotWorker
     {
         var actor = cb.Field("from").Number("id");
         if ((cb.Text("data") ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)) { await SlotCallback(cb, actor, ct); return; }
-        if (!config.CanEdit(actor) || cb.Field("message").Field("chat").Number("id") != actor) return;
+        var chat = cb.Field("message").Field("chat").Number("id");
+        var topic = cb.Field("message").TopicId();
+        if (!config.CanEdit(actor) || (chat != actor && chat != config.GroupId)) return;
         var data = (cb.Text("data") ?? "").Split(':', 2);
         if (data.Length == 2 && data[0] is "apost" or "achat" or "aredo" or "ano")
         {
-            if (actor == config.OwnerId) await PostCallback(cb, data[0], data[1], ct);
+            if (actor == config.OwnerId && chat == actor) await PostCallback(cb, data[0], data[1], ct);
             return;
         }
         if (data.Length == 2 && data[0] is "ddel" or "dkeep") { await DeleteCallback(cb, actor, data[0], data[1], ct); return; }
@@ -203,13 +208,13 @@ public sealed partial class BotWorker
             {
                 store.DiscardRegistryDraft(actor, data[1]);
                 await SafeCallback(cb.Text("id")!, "Отменено", ct);
-                await telegram.Edit(actor, messageId, "Изменения не применены.", ct); return;
+                await telegram.Edit(chat, messageId, "Изменения не применены.", ct); return;
             }
             await SafeCallback(cb.Text("id")!, "Применяю…", ct);
             (int Version, List<string> Lines) result;
             try { result = store.ConfirmRegistryDraft(actor, data[1]); }
-            catch (InvalidOperationException e) { await telegram.Send(actor, 0, "Не применено: " + e.Message, ct); return; }
-            await telegram.Edit(actor, messageId, Conversation.Limit($"✅ Применено, версия реестра {result.Version}:\n" + string.Join("\n", result.Lines), 3900), ct);
+            catch (InvalidOperationException e) { await telegram.Send(chat, topic, "Не применено: " + e.Message, ct); return; }
+            await telegram.Edit(chat, messageId, Conversation.Limit($"✅ Применено, версия реестра {result.Version}:\n" + string.Join("\n", result.Lines), 3900), ct);
             await NotifyEditors(actor, result.Version, result.Lines, "Telegram", ct);
             return;
         }
@@ -219,7 +224,7 @@ public sealed partial class BotWorker
         {
             store.Discard(actor, data[1]);
             await SafeCallback(cb.Text("id")!, "Отменено", ct);
-            await telegram.Edit(actor, messageId, "Черновик убран.", ct); return;
+            await telegram.Edit(chat, messageId, "Черновик убран.", ct); return;
         }
         await SafeCallback(cb.Text("id")!, "Сохраняю…", ct);
         await publicationGate.WaitAsync(ct);
@@ -227,8 +232,8 @@ public sealed partial class BotWorker
         {
             Deadline d;
             try { d = store.Confirm(actor, data[1], DateTimeOffset.UtcNow); }
-            catch (InvalidOperationException e) { await telegram.Send(actor, 0, e.Message, ct); return; }
-            await telegram.Edit(actor, messageId,
+            catch (InvalidOperationException e) { await telegram.Send(chat, topic, e.Message, ct); return; }
+            await telegram.Edit(chat, messageId,
                 $"✅ Сохранено в БД. Публикация поставлена в очередь.\n\n{Deadlines.Facts(config, d)}" +
                 (d.Status == "cancelled" ? "\nСтатус: отменено." : ""), ct);
         }

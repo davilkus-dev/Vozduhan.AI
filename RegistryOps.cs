@@ -16,6 +16,7 @@ public static class RegistryOps
         member_deactivate {member: ссылка, reason?} — отчислен/перевёлся/ушёл: запись сохраняется неактивной
         member_activate {member: ссылка}
         head_set {member: ссылка} — назначить старосту (только разработчик); head_clear {} — снять старосту (только разработчик)
+        admin_set {member: ссылка} — дать права администратора (как у старосты); admin_clear {member: ссылка} — снять их (только разработчик)
           ссылка на участника: {key?} | {userId?} | {listNumber?} | {username?} | {name?} — используй key из реестра, если он известен
         subject_upsert {id, name?, shortName?, aliases?: [..] (полная замена), addAliases?: [..], removeAliases?: [..], adminComment?, archived?}
         lesson_add {subjectId, kind: lecture|practice|lab, day: 1..7, period, weeks?: all|odd|even, room?, teacher?, campus?, online?, note?, from?, until?}
@@ -51,8 +52,8 @@ public static class RegistryOps
     public static void CheckPermissions(Registry before, Registry after, bool actorIsOwner)
     {
         if (actorIsOwner) return;
-        string Heads(Registry x) => string.Join(",", x.Members.Where(m => m.Active && m.Role == "head").Select(m => m.Key + ":" + m.UserId).OrderBy(k => k));
-        if (Heads(before) != Heads(after)) throw new InvalidOperationException("Сменить или снять старосту может только разработчик.");
+        string Heads(Registry x) => string.Join(",", x.Members.Where(m => m.Active && m.Role is "head" or "admin").Select(m => m.Role + ":" + m.Key + ":" + m.UserId).OrderBy(k => k));
+        if (Heads(before) != Heads(after)) throw new InvalidOperationException("Менять старосту и администраторов может только разработчик.");
         if (before.SecretPrint() != after.SecretPrint())
             throw new InvalidOperationException("Сленг, комментарии к предметам, заметки о людях и текст знаний меняет только разработчик.");
     }
@@ -161,7 +162,7 @@ public static class RegistryOps
                     Email = Has(op, "email") ? S(op, "email") : m.Email, Note = Has(op, "note") ? S(op, "note") : m.Note,
                     AdminNote = Has(op, "adminNote") ? (S(op, "adminNote") is { Length: > 0 } an ? an : null) : m.AdminNote
                 };
-                if (m.UserId is null && m.Role == "head") throw new InvalidOperationException("У старосты нельзя убрать Telegram ID — сначала назначь другого.");
+                if (m.UserId is null && m.Role is "head" or "admin") throw new InvalidOperationException("У старосты и администратора нельзя убрать Telegram ID — сначала назначь другого.");
                 var onlyNote = r.Members[i] with { AdminNote = m.AdminNote } == m;
                 r.Members[i] = m;
                 if (onlyNote && Has(op, "adminNote")) return $"🤫 Заметка о {m.ShortName}: " + (m.AdminNote is null ? "убрана" : "«" + Conversation.Limit(m.AdminNote, 150) + "»");
@@ -194,14 +195,24 @@ public static class RegistryOps
                 var i = FindMember(r, op.Field("member"));
                 var m = r.Members[i];
                 if (!m.Active || m.UserId is null) throw new InvalidOperationException("Старостой может быть только активный участник с Telegram ID.");
-                r.Members = r.Members.Select((x, j) => x with { Role = j == i ? "head" : "member" }).ToArray();
+                r.Members = r.Members.Select((x, j) => x with { Role = j == i ? "head" : x.Role == "head" ? "member" : x.Role }).ToArray();
                 return "⭐ Староста: " + Who(m);
             }
             case "head_clear":
             {
                 if (!actorIsOwner) throw new InvalidOperationException("Снять старосту может только разработчик.");
-                r.Members = r.Members.Select(x => x with { Role = "member" }).ToArray();
+                r.Members = r.Members.Select(x => x with { Role = x.Role == "head" ? "member" : x.Role }).ToArray();
                 return "⭐ Старосты больше нет";
+            }
+            case "admin_set" or "admin_clear":
+            {
+                if (!actorIsOwner) throw new InvalidOperationException("Назначать администраторов может только разработчик.");
+                var i = FindMember(r, op.Field("member"));
+                var m = r.Members[i];
+                if (m.Role == "head") throw new InvalidOperationException(Who(m) + " — староста, у него и так все права.");
+                if (name == "admin_set" && (!m.Active || m.UserId is null)) throw new InvalidOperationException("Администратором может быть только активный участник с Telegram ID.");
+                r.Members[i] = m with { Role = name == "admin_set" ? "admin" : "member" };
+                return (name == "admin_set" ? "🔑 Администратор: " : "🔑 Больше не администратор: ") + Who(m);
             }
             case "subject_upsert":
             {

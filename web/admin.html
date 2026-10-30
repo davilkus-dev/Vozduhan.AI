@@ -431,7 +431,7 @@ VIEWS.members=el=>{
   <td><div class="row" style="flex-wrap:nowrap"><button class="b ic" data-e="${m.i}">✏️</button>${m.active?`<button class="b d" data-off="${m.i}">Убрать</button>`:`<button class="b" data-on="${m.i}">Вернуть</button>`}</div></td></tr>`).join("")}</tbody></table></div>`;
   const edit=async i=>{const m=i>=0?S.draft.members[i]:{active:true,role:"member",listNumber:Math.max(0,...act.map(x=>x.listNumber||0))+1};
     const fields=[{k:"listNumber",label:"№ по списку",type:"number"},{k:"fullName",label:"ФИО"},{k:"shortName",label:"Как звать"},{k:"username",label:"Username"},{k:"userId",label:"Telegram ID",type:"number"},{k:"telegramName",label:"Имя в Telegram"},{k:"email",label:"Почта"},{k:"note",label:"Тех. заметка",ph:"почему ушёл и т.п."}];
-/*OWNER*/    if(OWNER())fields.push({k:"adminNote",label:"Кто такой и мемы про него (до 4000 символов, отдельный кусок для бота)",type:"textarea",rows:8,own:true,ph:"Лёха вечно про видеокарты, опять купил б/у 3060"},{k:"role",label:"Роль",type:"select",options:[["member","участник"],["head","староста"]]});/*END*/
+/*OWNER*/    if(OWNER())fields.push({k:"adminNote",label:"Кто такой и мемы про него (до 4000 символов, отдельный кусок для бота)",type:"textarea",rows:8,own:true,ph:"Лёха вечно про видеокарты, опять купил б/у 3060"},{k:"role",label:"Роль",type:"select",options:[["member","участник"],["head","староста"],["admin","администратор"]]});/*END*/
     const v=await form(i>=0?m.fullName:"Новый участник",fields,m,OWNER()?"":'<p class="muted small">Назначить старосту может только разработчик.</p>');
     if(!v)return;v.username=(v.username||"").replace(/^@/,"");v.listNumber=v.listNumber||0;
     if(!OWNER()){v.adminNote=m.adminNote;v.role=m.role}

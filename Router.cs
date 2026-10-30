@@ -252,7 +252,7 @@ public sealed partial class BotWorker
         });
         var reply = m.Field("reply_to_message");
         var pending = new List<string>();
-        if (place == Capabilities.Dm && config.CanEdit(actor))
+        if (config.CanEdit(actor))
         {
             if (store.Draft(actor) is not null) pending.Add("черновик дедлайна ждёт подтверждения или правки");
             if (store.RegistryDraft(actor) is not null) pending.Add("черновик изменения реестра ждёт подтверждения или правки");
