@@ -76,7 +76,7 @@ static partial class WakeupTests
                     var op = JsonDocument.Parse(await owner.GetStringAsync("api/plan")).RootElement;
                     Assert(!hp.Field("wakeups").EnumerateArray().Single(w => w.Number("id") == ownId).Field("canDelete").GetBoolean() &&
                         op.Field("wakeups").EnumerateArray().Single(w => w.Number("id") == ownId).Field("canDelete").GetBoolean() &&
-                        (await head.GetStringAsync("")).Contains("w.status===\"pending\"&&w.canDelete"), "Delete control ignores actor");
+                        (await head.GetStringAsync("")).Contains("(w.status===\"pending\"||w.status===\"ready\")&&w.canDelete"), "Delete control ignores actor");
                     Assert((await Post(owner, "wakeup/delete", new { id = ownId })).Body.Field("ok").GetBoolean(), "Owner cannot delete own wake-up");
                     Assert((await Post(owner, "wakeup", new { deadline = 0, at = future, reason = new string('я', 1000) })).Code == HttpStatusCode.OK &&
                         (await Post(owner, "wakeup", new { deadline = 0, at = future, reason = new string('я', 1001) })).Code == HttpStatusCode.BadRequest &&
@@ -101,7 +101,7 @@ static partial class WakeupTests
 
                 await Check("FIX-6.6: warm rejects bad text explicitly for every kind; genuine spontaneous SKIP persists", async () =>
                 {
-                    e.C.Ambient.MorningTime = "08:00";
+                    e.C.Ambient.MorningTime = "08:00"; e.C.Ambient.EveReminders = true; e.C.SummaryTopicId = 30;
                     var day = DateOnly.FromDateTime(future);
                     e.S.Set($"ambient:plan:{day:yyyy-MM-dd}", Json.Write(new[] { "13:30" }));
                     var manual = e.S.AddWakeup(0, e.C.Utc(future.AddDays(-1)).ToUnixTimeSeconds(), "пост", "post", 1);
@@ -112,10 +112,10 @@ static partial class WakeupTests
                     foreach (var key in keys)
                     {
                         var r = await Post(owner, "prep", new { key, action = "warm" });
-                        Assert(r.Code == HttpStatusCode.BadRequest && r.Body.Text("error") == "Текст не прошёл проверку: иероглифы в тексте. Нажми ещё раз" && e.W.Prepared(key) is null, "Bad warm-up became SKIP: " + r);
+                        Assert(r.Code == HttpStatusCode.BadRequest && r.Body.Text("error") == "Текст не прошёл проверку: иероглифы в тексте. Нажми ещё раз" && e.S.Publication(key)?.Text is null, "Bad warm-up became SKIP: " + r);
                     }
                     e.Text = _ => Task.FromResult("SKIP");
-                    Assert((await Post(owner, "prep", new { key = keys[3], action = "warm" })).Code == HttpStatusCode.OK && e.W.Prepared(keys[3])?.Text == "SKIP", "Genuine SKIP lost");
+                    Assert((await Post(owner, "prep", new { key = keys[3], action = "warm" })).Code == HttpStatusCode.OK && e.S.Publication(keys[3])?.Text == "SKIP", "Genuine SKIP lost");
                 });
 
                 await Check("FIX-6.12: spending page has Russian kinds, raw titles and discard reasons", async () =>
@@ -146,68 +146,76 @@ static partial class WakeupTests
         await Check("FIX-6.7: Windows and lone CR newlines pass TextGuard without regeneration", async () =>
         {
             using var e = new Env(make, "fix6-newlines.db");
+            e.C.SummaryTopicId = 30;
             e.Text = _ => Task.FromResult("Первая строка\r\nВторая строка\rТретья строка");
             var key = "ambient:summary:2026-12-01";
             var p = await e.Warm(key);
-            Assert(p is not null && p.Text == "Первая строка\nВторая строка\nТретья строка" && e.Ai.Count == 1 && TextGuard.Check(p.Text, "", 3900) is null, "CR text rejected or regenerated");
+            Assert(p.Text == "Первая строка\nВторая строка\nТретья строка" && e.Ai.Count == 1 && TextGuard.Check(p.Text, "", 3900) is null, "CR text rejected or regenerated");
         });
 
-        await Check("FIX-6.8: partial delivery resumes saved AI prep despite changed basis and supplied text", async () =>
+        await Check("FIX-6.8: partial delivery resumes the saved text despite changed basis", async () =>
         {
             using var e = new Env(make, "fix6-parts.db");
             e.C.SplitReplies = true;
-            var key = "ambient:morning:2026-12-01";
-            e.W.SavePrep(key, "Первая часть\n||\nВторая часть", "ai", "old-basis");
+            e.C.Ambient.MorningTime = e.C.LocalNow(T).ToString("HH:mm");
+            var key = $"ambient:morning:{e.C.LocalNow(T):yyyy-MM-dd}";
+            e.S.EnsurePublication(key, "morning", T.ToUnixTimeSeconds(), e.C.ChatTopicId, BotWorker.AutoMode);
+            e.S.SetPublicationText(key, "Первая часть\n||\nВторая часть", "ai", "old-basis");
             e.S.SavePost("ambient_part:" + key + ":1", 444, "");
-            await (Task)typeof(BotWorker).GetMethod("PostAmbient", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(e.W, ["morning", null, CancellationToken.None, "Другой текст", e.C.ChatTopicId, key, false])!;
-            Assert(e.Posts.SequenceEqual(["Первая часть"]) && e.Ai.Count == 0 && e.W.Prepared(key)?.Text == "Первая часть\n||\nВторая часть" &&
-                e.Log.Lines.Any(x => x.Contains(key) && x.Contains("stale prep basis")), "Partial post regenerated or duplicated");
+            await e.Tick(T.AddMinutes(1));
+            Assert(e.Posts.SequenceEqual(["Первая часть"]) && e.Ai.Count == 0 && e.Pub(key) is { Status: "sent", Text: "Первая часть\n||\nВторая часть" }, "Partial post regenerated or duplicated");
         });
 
-        await Check("FIX-6.9: ambient retries wait 2/5/10/15 minutes, persist, clear on success or late skip", async () =>
+        await Check("FIX-6.9: retries wait 2/5/10/15 minutes, persist, end with failed after 5; a late retry is skipped", async () =>
         {
             foreach (var kind in new[] { "summary", "morning", "spont", "eve" })
             {
-                using var e = new Env(make, "fix6-retry-" + kind + ".db");
-                var day = DateOnly.FromDateTime(e.C.LocalNow(T));
-                var date = day.ToString("yyyy-MM-dd");
-                var time = e.C.LocalNow(T).ToString("HH:mm");
-                var key = $"ambient:{kind}:{date}" + (kind == "spont" ? ":0" : "");
-                var retry = "ambient_retry:" + key;
-                e.C.SummaryTopicId = kind == "summary" ? 30 : 0;
-                e.C.Ambient.SummaryTime = time;
-                e.C.Ambient.MorningTime = kind == "morning" ? time : "";
-                e.C.Ambient.EveReminders = kind == "eve";
-                e.C.Ambient.EveReminderTime = time;
-                e.S.Set($"ambient:plan:{date}", Json.Write(kind == "spont" ? new[] { time } : Array.Empty<string>()));
-                if (kind == "eve") e.Add(day.AddDays(1).ToString("yyyy-MM-dd"));
-                e.Text = _ => throw new HttpRequestException("down");
-                for (var seconds = 0; seconds < 120; seconds += 30) await e.Tick(T.AddSeconds(seconds));
-                await e.Tick(T.AddSeconds(119));
-                Assert(e.Ai.Count == 1, kind + ": retried before 2 minutes");
-                var state = JsonDocument.Parse(e.S.Get(retry)!).RootElement;
-                Assert(state.Number("attempts") == 1 && state.Number("next") == T.AddMinutes(2).ToUnixTimeSeconds(), "Retry not persisted");
-                await e.Tick(T.AddMinutes(2));
-                for (var seconds = 150; seconds < 420; seconds += 30) await e.Tick(T.AddSeconds(seconds));
-                await e.Tick(T.AddSeconds(419));
-                Assert(e.Ai.Count == 2, kind + ": retried before 7 minutes");
-                await e.Tick(T.AddMinutes(7));
-                Assert(e.Ai.Count == 3, kind + ": third attempt missing");
-                e.Text = _ => Task.FromResult("Гайс, пора сдавать работу");
-                await e.Tick(T.AddMinutes(17).AddSeconds(-1));
-                Assert(e.Ai.Count == 3 && e.S.Get(key) is null, "Retried before 17 minutes");
-                await e.Tick(T.AddMinutes(17));
-                Assert(e.Ai.Count == 4 && e.S.Get(key) == "done" && e.S.Get(retry) is null, "Success kept retry or lost done");
-                e.S.Delete(key); e.W.ClearPrep(key);
-                e.Text = _ => throw new HttpRequestException("down");
-                foreach (var minute in new[] { 0, 2, 7, 17, 32 }) await e.Tick(T.AddMinutes(minute));
-                state = JsonDocument.Parse(e.S.Get(retry)!).RootElement;
-                Assert(state.Number("attempts") == 5 && state.Number("next") == T.AddMinutes(47).ToUnixTimeSeconds(), "15-minute plateau wrong");
-                e.S.Set(retry, Json.Write(new { attempts = 5, next = T.AddHours(3).ToUnixTimeSeconds() }));
-                var calls = e.Ai.Count;
-                await e.Tick(T.AddHours(2).AddSeconds(1));
-                Assert(e.Ai.Count == calls && e.S.Get(key) == "skipped" && e.S.Get(retry) is null, "Late retry not skipped/cleared");
+                Env Make(string suffix)
+                {
+                    var e = new Env(make, $"fix6-retry-{kind}{suffix}.db");
+                    var day = DateOnly.FromDateTime(e.C.LocalNow(T));
+                    var time = e.C.LocalNow(T).ToString("HH:mm");
+                    e.C.SummaryTopicId = kind == "summary" ? 30 : 0;
+                    e.C.Ambient.SummaryTime = time;
+                    e.C.Ambient.MorningTime = kind == "morning" ? time : "";
+                    e.C.Ambient.EveReminders = kind == "eve";
+                    e.C.Ambient.EveReminderTime = time;
+                    e.S.Set($"ambient:plan:{day:yyyy-MM-dd}", Json.Write(kind == "spont" ? new[] { time } : Array.Empty<string>()));
+                    if (kind == "eve") e.Add(day.AddDays(1).ToString("yyyy-MM-dd"));
+                    e.Text = _ => throw new HttpRequestException("down");
+                    return e;
+                }
+                var key = $"ambient:{kind}:{DateOnly.FromDateTime(new BotConfig().LocalNow(T)):yyyy-MM-dd}" + (kind == "spont" ? ":0" : "");
+                using (var e = Make(""))
+                {
+                    for (var seconds = 0; seconds < 120; seconds += 30) await e.Tick(T.AddSeconds(seconds));
+                    await e.Tick(T.AddSeconds(119));
+                    Assert(e.Ai.Count == 1 && e.Pub(key) is { Attempts: 1 } p1 && p1.NextTry == T.AddMinutes(2).ToUnixTimeSeconds(), kind + ": retried before 2 minutes or not persisted");
+                    await e.Tick(T.AddMinutes(2));
+                    for (var seconds = 150; seconds < 420; seconds += 30) await e.Tick(T.AddSeconds(seconds));
+                    await e.Tick(T.AddSeconds(419));
+                    Assert(e.Ai.Count == 2, kind + ": retried before 7 minutes");
+                    await e.Tick(T.AddMinutes(7));
+                    Assert(e.Ai.Count == 3, kind + ": third attempt missing");
+                    e.Text = _ => Task.FromResult("Гайс, пора сдавать работу");
+                    await e.Tick(T.AddMinutes(17).AddSeconds(-1));
+                    Assert(e.Ai.Count == 3 && e.Pub(key).Status == "planned", "Retried before 17 minutes");
+                    await e.Tick(T.AddMinutes(17));
+                    Assert(e.Ai.Count == 4 && e.Pub(key).Status == "sent", "Success not recorded");
+                }
+                using (var e = Make("-fail"))
+                {
+                    foreach (var minute in new[] { 0, 2, 7, 17, 32 }) await e.Tick(T.AddMinutes(minute));
+                    Assert(e.Pub(key) is { Status: "failed", Attempts: 5 }, "Not failed after 5 attempts: " + Json.Write(e.Pub(key)));
+                }
+                using (var e = Make("-late"))
+                {
+                    await e.Tick(T);
+                    e.S.RetryPublication(key, 1, T.AddHours(3).ToUnixTimeSeconds(), "ошибка");
+                    var calls = e.Ai.Count;
+                    await e.Tick(T.AddHours(2).AddSeconds(1));
+                    Assert(e.Ai.Count == calls && e.Pub(key).Status == "skipped", "Late retry not skipped");
+                }
             }
         });
 
@@ -224,7 +232,7 @@ static partial class WakeupTests
         await Check("FIX-6.12: ambient, deadline, parse and wakeplan callers supply stable tags", async () =>
         {
             using var e = new Env(make, "fix6-tags.db");
-            e.C.Ambient.MorningTime = "08:00";
+            e.C.Ambient.MorningTime = "08:00"; e.C.Ambient.EveReminders = true; e.C.SummaryTopicId = 30;
             var d = e.Add("2026-12-14");
             var wake = e.S.AddWakeup(d.Id, T.AddDays(1).ToUnixTimeSeconds(), "напомнить", "manual", 2);
             var post = e.S.AddWakeup(0, T.AddDays(1).ToUnixTimeSeconds(), "пост", "post", 1);

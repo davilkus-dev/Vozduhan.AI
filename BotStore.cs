@@ -85,6 +85,7 @@ public sealed partial class BotStore : IDisposable
         AddColumn("inbox", "chat", "INTEGER NOT NULL DEFAULT 0");
         AddColumn("messages", "arrived", "INTEGER NOT NULL DEFAULT 0");
         Exec("CREATE INDEX IF NOT EXISTS inbox_chat ON inbox(chat,state)");
+        InitPublications();
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");

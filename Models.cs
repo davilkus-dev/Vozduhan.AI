@@ -133,6 +133,8 @@ public sealed class FeatureSettings
     public int WebSearchDailyLimit { get; set; } = 20;
     /// <summary>Per person per local day; the developer has no personal limit (the daily one still counts).</summary>
     public int WebSearchPerUserDaily { get; set; } = 3;
+    /// <summary>How each kind of the bot's own posts goes out (summary, morning, spont, eve, wakeup, post): auto_preview (default), manual, auto.</summary>
+    public Dictionary<string, string> PublicationModes { get; set; } = new();
 }
 
 /// <summary>Model choice editable from the web admin (owner). Any OpenRouter model id works.</summary>

@@ -419,6 +419,11 @@ public sealed class Conversation(BotConfig config, BotStore store)
             known_group_members = MembersView(),
             recent_messages = history,
             recent_bot_posts = RecentPosts(),
+            recent_deadline_mentions = store.Mentions(now.AddHours(-24).ToUnixTimeSeconds()).Select(x => new
+            {
+                deadline = active.FirstOrDefault(d => d.Id == x.Deadline) is { } d ? $"#{d.Id} {config.R.SubjectName(d.SubjectId)} — {d.Work}" : $"#{x.Deadline}",
+                at = config.LocalNow(DateTimeOffset.FromUnixTimeSeconds(x.Time)).ToString("dd.MM HH:mm"), x.Kind
+            }),
             extra
         });
     }

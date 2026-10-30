@@ -507,6 +507,7 @@ static class NewFeatureTests
             {
                 var ac = make("ambient.db");
                 ac.SummaryTopicId = 30; ac.Ambient.SpontaneousPerDay = 0; ac.Ambient.MorningTime = "08:00";
+                ac.Features.PublicationModes = BotWorker.PublicationKinds.ToDictionary(k => k, _ => BotWorker.AutoMode);
                 using var st = new BotStore(ac);
                 var aiRequests = new List<string>();
                 string wakePlan = "{}";
@@ -532,16 +533,18 @@ static class NewFeatureTests
                 var proc = typeof(BotWorker).GetMethod("Process", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 async Task Upd(JsonElement u) => await (Task)proc.Invoke(w, [u, CancellationToken.None])!;
 
-                // 2026-11-30 (Mon) 08:01 MSK = 05:01Z: summary in «Сводка», morning drop in Воздуханство, exactly once.
+                // 2026-11-30 (Mon) 08:01 MSK = 05:01Z: summary in «Сводка», morning drop in Воздуханство 15 minutes later (anti-dup), exactly once.
                 sent.Clear();
                 await Tick("2026-11-30T05:01:00Z"); await Tick("2026-11-30T05:02:00Z");
+                Assert(!sent.Any(x => x.Method == "sendMessage" && x.Payload.Number("message_thread_id") == ac.ChatTopicId), "Morning drop not moved by the 15-minute gap");
+                await Tick("2026-11-30T05:16:00Z"); await Tick("2026-11-30T05:17:00Z");
                 var posts = sent.Where(x => x.Method == "sendMessage").ToList();
                 Assert(posts.Count(x => x.Payload.Number("message_thread_id") == 30) == 1 && posts.Single(x => x.Payload.Number("message_thread_id") == 30).Payload.Text("text")!.Contains("Понедельник, держитесь"),
                     "Morning summary missing or duplicated");
                 Assert(posts.Count(x => x.Payload.Number("message_thread_id") == ac.ChatTopicId) == 2, "Morning drop not split into two chat messages");
                 sent.Clear();
                 await Tick("2026-12-01T08:30:00Z"); // 11:30 MSK: three and a half hours late
-                Assert(!sent.Any(x => x.Method == "sendMessage") && st.Get("ambient:morning:2026-12-01") == "skipped", "Late morning not skipped");
+                Assert(!sent.Any(x => x.Method == "sendMessage") && st.Publication("ambient:morning:2026-12-01")!.Status == "skipped", "Late morning not skipped");
 
                 // A confirmed deadline gets AI wake-ups; invalid points are dropped; due ones fire into the chat.
                 var draft = Deadlines.Resolve(ac, new("create", SubjectId: "siaod", Work: "Практика №2", Date: "2026-12-07"), null, [], 1, "t", DateTimeOffset.Parse("2026-12-01T09:00:00Z"));
@@ -577,7 +580,7 @@ static class NewFeatureTests
                 st.Set("ambient:plan:2026-12-02", Json.Write(new[] { "12:00" }));
                 st.Set("ambient:morning:2026-12-02", "done"); st.Set("ambient:summary:2026-12-02", "done");
                 sent.Clear(); await Tick("2026-12-02T09:05:00Z");
-                Assert(!sent.Any(x => x.Method == "sendMessage") && st.Get("ambient:spont:2026-12-02:0") == "done", "SKIP was posted");
+                Assert(!sent.Any(x => x.Method == "sendMessage") && st.Publication("ambient:spont:2026-12-02:0")!.Status == "silent", "SKIP was posted");
 
                 // Owner triggers a post manually: preview card, then send.
                 sent.Clear();
@@ -594,9 +597,10 @@ static class NewFeatureTests
                 Assert(!sent.Single(x => x.Method == "sendMessage").Payload.Text("text")!.Contains("Черновик"), "Head could trigger posts");
                 // Warm-up: the summary is prepared in advance, edited, and exactly that text is posted later without a new AI call.
                 var warm = typeof(BotWorker).GetMethod("Warm", BindingFlags.Instance | BindingFlags.NonPublic)!;
-                var prep = await (Task<BotWorker.Prep?>)warm.Invoke(w, ["ambient:summary:2026-12-03", CancellationToken.None])!;
-                Assert(prep!.Text.Contains("Понедельник, держитесь") && prep.Source == "ai", "Warm-up did not prepare the summary");
-                w.SavePrep("ambient:summary:2026-12-03", "Среда сегодня, отдыхайте", "manual");
+                var prep = await (Task<Publication>)warm.Invoke(w, ["ambient:summary:2026-12-03", CancellationToken.None])!;
+                Assert(prep.Text!.Contains("Понедельник, держитесь") && prep.Source == "ai", "Warm-up did not prepare the summary");
+                await (Task)typeof(BotWorker).GetMethod("AdminPublication", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(w, ["ambient:summary:2026-12-03", "save", "Среда сегодня, отдыхайте", CancellationToken.None])!;
                 Assert(w.Preview("ambient:summary:2026-12-03", "Среда сегодня, отдыхайте")!.Contains("Среда сегодня, отдыхайте") &&
                     w.Preview("ambient:summary:2026-12-03", "x")!.Contains("📅"), "Preview must show the full composed post");
                 st.Set("ambient:morning:2026-12-03", "done");
@@ -604,7 +608,7 @@ static class NewFeatureTests
                 sent.Clear(); await Tick("2026-12-03T05:00:30Z");
                 var summaryPost = sent.Single(x => x.Method == "sendMessage" && x.Payload.Number("message_thread_id") == 30).Payload.Text("text")!;
                 Assert(summaryPost.StartsWith("Среда сегодня, отдыхайте") && summaryPost.Contains("📅"), "Prepared summary not used: " + summaryPost);
-                Assert(aiRequests.Count == callsBefore && w.Prepared("ambient:summary:2026-12-03") is null, "Prepared post regenerated or not consumed");
+                Assert(aiRequests.Count == callsBefore && st.Publication("ambient:summary:2026-12-03")!.Status == "sent", "Prepared post regenerated or not consumed");
                 // A cancelled morning post is never sent.
                 st.Set("ambient:summary:2026-12-05", "cancelled"); st.Set("ambient:morning:2026-12-05", "cancelled");
                 sent.Clear(); await Tick("2026-12-05T05:01:00Z");
@@ -743,7 +747,7 @@ static class NewFeatureTests
                     Assert(rejected.StatusCode == HttpStatusCode.BadRequest && rejectedBody.Contains("Текст не прошёл проверку: иероглифы в тексте. Нажми ещё раз"), "Strict manual generation: " + rejectedBody);
                     var prepKey = $"ambient:morning:{DateOnly.FromDateTime(c.LocalNow(DateTimeOffset.UtcNow)).AddDays(1):yyyy-MM-dd}";
                     var tooLong = await owner.PostAsync("api/prep", new StringContent(Json.Write(new { key = prepKey, action = "save", text = new string('ж', OpenRouterClient.TextMax + 1) }), Encoding.UTF8, "application/json"));
-                    Assert(tooLong.StatusCode == HttpStatusCode.BadRequest && (await tooLong.Content.ReadAsStringAsync()).Contains((OpenRouterClient.TextMax + 1).ToString()) && worker.Prepared(prepKey) is null, "Long manual text cut or saved");
+                    Assert(tooLong.StatusCode == HttpStatusCode.BadRequest && (await tooLong.Content.ReadAsStringAsync()).Contains((OpenRouterClient.TextMax + 1).ToString()) && s.Publication(prepKey)?.Text is null, "Long manual text cut or saved");
                 }
                 count++; Console.WriteLine("PASS web admin FIX-1: head sees only the group and her DM, including edits/deletions, no raw, seen without details; owner sees all");
                 var dl = await browser.PostAsync("api/deadline", new StringContent(Json.Write(new { action = "create", subjectId = "siaod", work = "Практика №3", date = "2026-12-07" }), Encoding.UTF8, "application/json"));

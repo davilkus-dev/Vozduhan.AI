@@ -315,9 +315,10 @@ VIEWS.changes=el=>{
 
 
 // ---------- plan: wake-ups, morning, drops, prepared posts ----------
-const ST={cancelled:'<span class="st cancelled">отменено</span>',planned:'<span class="st changed">ждёт</span>',pending:'<span class="st changed">ожидает</span>',sending:'<span class="st changed">отправляется</span>',done:'<span class="st added">отправлено</span>',fired:'<span class="st added">отправлено</span>',
+const ST={cancelled:'<span class="st cancelled">отменено</span>',planned:'<span class="st changed">ждёт</span>',ready:'<span class="st changed">превью у разработчика</span>',sent:'<span class="st added">отправлено</span>',pending:'<span class="st changed">ожидает</span>',sending:'<span class="st changed">отправляется</span>',done:'<span class="st added">отправлено</span>',fired:'<span class="st added">отправлено</span>',
   silent:'<span class="chip">промолчал</span>',obsolete:'<span class="chip">неактуален</span>',skipped:'<span class="chip">пропущен</span>',failed:'<span class="st cancelled">ошибка</span>'};
 const SRC={ai:"🤖 ИИ",default:"🛟 запасной",manual:"✋ вручную",post:"📝 пост"};
+const MODE={manual:'<span class="chip">✋ только после ✅</span>',auto:'<span class="chip">без превью</span>'};
 const dt=ts=>new Date(ts*1000).toLocaleString("ru-RU",{weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 VIEWS.plan=async el=>{
   const viewId=renderId;
@@ -339,8 +340,9 @@ VIEWS.plan=async el=>{
   /*END*/
   const r=await api("plan");if(viewId!==renderId)return;const a=r.ambient;
   // One planned post: status, warm-up buttons (owner) and the exact preview once it is prepared.
-  const item=(label,it)=>`<div class="pi"><div class="row"><span>${label}</span>${ST[it.status]||""}${it.prep?`<span class="chip">${it.prep.source==="manual"?"✍️ вручную":"🔥 прогрет"}</span>`:""}${it.prep?.stale?'<span class="chip" style="color:var(--warn)">⚠ факты изменились — перегенерируй или проверь</span>':""}`+
-    /*OWNER*/(it.status==="planned"||it.status==="pending"?`<button class="b pb" data-warm="${it.key}" title="Сгенерировать заранее">🔥</button><button class="b pb" data-edit="${it.key}" title="Написать/поправить вручную">✏️</button>${it.prep?`<button class="b pb" data-clear="${it.key}" title="Сбросить текст — сгенерирует в момент отправки">↺</button>`:""}${it.key.startsWith("ambient:")?`<button class="b pb d" data-cancel="${it.key}" title="Отменить это сообщение">🚫</button>`:""}`:"")+
+  const live=it=>it.status==="planned"||it.status==="pending"||it.status==="ready";
+  const item=(label,it)=>`<div class="pi"><div class="row"><span>${label}</span>${ST[it.status]||""}${live(it)?MODE[it.mode]||"":""}${it.note&&it.key.startsWith("ambient:")?`<span class="faint small">${esc(it.note)}</span>`:""}${it.prep?`<span class="chip">${it.prep.source==="manual"?"✍️ вручную":"🔥 прогрет"}</span>`:""}${it.prep?.stale?'<span class="chip" style="color:var(--warn)">⚠ факты изменились — перегенерируй или проверь</span>':""}`+
+    /*OWNER*/(live(it)?`<button class="b pb" data-warm="${it.key}" title="Сгенерировать заранее">🔥</button><button class="b pb" data-edit="${it.key}" title="Написать/поправить вручную">✏️</button>${it.prep?`<button class="b pb" data-clear="${it.key}" title="Сбросить текст — сгенерирует в момент отправки">↺</button>`:""}${it.key.startsWith("ambient:")?`<button class="b pb d" data-cancel="${it.key}" title="Отменить это сообщение">🚫</button>`:""}`:"")+
     (it.status==="cancelled"?`<button class="b pb" data-restore="${it.key}" title="Вернуть">↩</button>`:"")+/*END*/
     `</div>${it.prep?`<details class="pv"><summary>что напишет</summary><div class="tgv">${it.prep.preview||""}</div></details>`:""}</div>`;
   const preps={};const keep=it=>{if(it){preps[it.key]=it.prep;}return it};
@@ -352,7 +354,7 @@ VIEWS.plan=async el=>{
   const groups={};for(const w of r.wakeups)(groups[w.deadline]??=[]).push(w);
   const wk=Object.entries(groups).sort((x,y)=>Math.min(...x[1].map(w=>w.due))-Math.min(...y[1].map(w=>w.due))).map(([id,ws])=>`<div class="card"><div class="row" style="justify-content:space-between"><h3 style="margin:0">${id==="0"?"📝 Отложенные посты":"⏰ "+esc(ws[0].deadlineTitle||"дедлайн #"+id)}</h3>
     ${id!=="0"?`<div class="row"><button class="b" data-add="${id}">＋ Напоминание</button><button class="b" data-re="${id}">🤖 Перепланировать</button></div>`:""}</div>
-    <table><tbody>${ws.map(w=>`<tr class="${w.status==="pending"?"":"off"}"><td style="white-space:nowrap">${dt(w.due)}</td><td>${SRC[w.source]||esc(w.source)}</td><td>${esc(w.reason)}${w.note?`<div class="faint small">${esc(w.note)}</div>`:""}${w.attempts>0?`<div class="faint small">попыток: ${w.attempts}</div>`:""}${item("",w)}</td><td>${w.status==="pending"&&w.canDelete?`<button class="b ic d" data-del="${w.id}" title="Удалить будильник">🗑</button>`:""}</td></tr>`).join("")}</tbody></table></div>`).join("");
+    <table><tbody>${ws.map(w=>`<tr class="${w.status==="pending"||w.status==="ready"?"":"off"}"><td style="white-space:nowrap">${dt(w.due)}</td><td>${SRC[w.source]||esc(w.source)}</td><td>${esc(w.reason)}${w.note?`<div class="faint small">${esc(w.note)}</div>`:""}${w.attempts>0?`<div class="faint small">попыток: ${w.attempts}</div>`:""}${item("",w)}</td><td>${(w.status==="pending"||w.status==="ready")&&w.canDelete?`<button class="b ic d" data-del="${w.id}" title="Удалить будильник">🗑</button>`:""}</td></tr>`).join("")}</tbody></table></div>`).join("");
   const settings=""/*OWNER*/+`<details class="card"><summary style="cursor:pointer"><b>⚙️ Настройки инициативы</b> <span class="muted small">— сохраняются в базе и действуют сразу</span></summary>
     <div class="f"><label>Инициатива бота</label><input type="checkbox" id="a_en" ${a.enabled?"checked":""}>
     <label>Утро в «Сводку»</label><input type="time" id="a_sum" value="${a.summaryTime}">
@@ -369,7 +371,8 @@ VIEWS.plan=async el=>{
     <div class="card tw"><h3>Ближайшие 7 дней</h3><table><thead><tr><th>День</th><th>Утро</th><th>Вбросы в Воздуханство</th><th>Вечером в «Сводку»</th></tr></thead><tbody>${days}</tbody></table></div>
     <h3>Будильники к дедлайнам</h3>${wk||'<div class="card empty">Пока нет — появятся, когда добавишь дедлайн</div>'}
     <h3>Подготовленные посты в темах</h3><div class="card tw"><table><tbody>${r.deliveries.map(x=>`<tr><td style="white-space:nowrap">${dt(x.due)}</td><td><span class="chip">${esc(x.topic)}</span></td><td><pre style="margin:0;max-height:160px">${esc(x.text)}</pre></td></tr>`).join("")||'<tr><td class="empty">Нет</td></tr>'}</tbody></table></div>
-    <p class="muted small">🔥 — сгенерировать пост заранее и посмотреть, ✏️ — написать или поправить вручную, ↺ — сбросить текст (бот напишет в момент отправки), 🚫 — отменить сообщение, ↩ — вернуть. Прогретый текст уйдёт как есть; расписание и сдачи в сводке подставляются свежими. Опоздавшие больше чем на 2 часа события пропускаются, чтобы не заспамить чат после простоя.</p>`;
+    <p class="muted small">🔥 — сгенерировать пост заранее и посмотреть, ✏️ — написать или поправить вручную, ↺ — сбросить текст (бот напишет в момент отправки), 🚫 — отменить сообщение, ↩ — вернуть. Прогретый текст уйдёт как есть; расписание и сдачи в сводке подставляются свежими. Опоздавшие больше чем на 2 часа события пропускаются, чтобы не заспамить чат после простоя.
+    За 30 минут до отправки разработчику приходит превью в личку с кнопками ✏️ 🔄 🚫 ✅; без ответа пост уходит в своё время. Между постами бота — не меньше 15 минут, напоминание о том же дедлайне — не чаще раза в 90 минут: слишком близкие сдвигаются.</p>`;
   el.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{await api("wakeup/delete",{id:+b.dataset.del});render()});
   /*OWNER*/
   const warm=async(key,btn)=>{if(btn){btn.disabled=true;btn.textContent="…"}const x=await api("prep",{key,action:"warm"});if(!x.ok)toast(x.error);return x.ok};
@@ -391,12 +394,16 @@ VIEWS.plan=async el=>{
     ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"],
     ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"],
     ["writerDiet","Диета: ответчику — только нужные куски данных и знаний (нужен маршрутизатор)"],["webSearch","Веб-поиск по решению маршрутизатора"]];
+  const PKINDS=[["summary","Утро в «Сводку»"],["morning","Утро в Воздуханство"],["spont","Вбросы"],["eve","Напоминание накануне"],["wakeup","Будильники к дедлайнам"],["post","Отложенные посты"]];
+  const PMODES=[["auto_preview","превью за 30 мин, без ответа — уходит"],["manual","только после ✅"],["auto","без превью"]];
   if($("#f_body"))api("features").then(x=>{if(viewId!==renderId||!x.ok)return;const f=x.features;
     $("#f_body").innerHTML=FEAT.map(([k,t])=>`<label>${t}</label><input type="checkbox" id="f_${k}" ${f[k]?"checked":""}>`).join("")+
       `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`+
       `<label>Поисков в сутки на всех</label><input type="number" id="f_wd" min="0" max="10000" value="${f.webSearchDailyLimit}">`+
-      `<label>Поисков в сутки на человека (разработчик без лимита)</label><input type="number" id="f_wu" min="0" max="10000" value="${f.webSearchPerUserDaily}">`;
-    $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value,webSearchDailyLimit:+$("#f_wd").value,webSearchPerUserDaily:+$("#f_wu").value};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
+      `<label>Поисков в сутки на человека (разработчик без лимита)</label><input type="number" id="f_wu" min="0" max="10000" value="${f.webSearchPerUserDaily}">`+
+      PKINDS.map(([k,t])=>`<label>${t}</label><select id="pm_${k}">${PMODES.map(([m,mt])=>`<option value="${m}" ${(f.publicationModes||{})[k]===m||(!(f.publicationModes||{})[k]&&m==="auto_preview")?"selected":""}>${mt}</option>`).join("")}</select>`).join("");
+    $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value,webSearchDailyLimit:+$("#f_wd").value,webSearchPerUserDaily:+$("#f_wu").value,
+      publicationModes:Object.fromEntries(PKINDS.map(([k])=>[k,$("#pm_"+k).value]))};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
       const r=await api("features",{settings});if(r.ok)toast("Новые функции сохранены");else info("Ошибка",`<p>${esc(r.error)}</p>`)}});
   /*END*/
   el.querySelectorAll("[data-re]").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="Думаю…";const x=await api("wakeup/replan",{deadline:+b.dataset.re});if(x.ok)toast("ИИ поставил будильников: "+x.count);else info("Ошибка",`<p>${esc(x.error)}</p>`);render()});

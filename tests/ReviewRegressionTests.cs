@@ -76,21 +76,18 @@ static class ReviewRegressionTests
         Assert(sent.Count == 0, "SKIP posted content");
         c.Ambient.MorningTime = ""; c.Ambient.SpontaneousPerDay = 0; c.Ambient.EveReminders = false;
         foreach (var d in store.AllDeadlines()) store.Set("wakeplan:" + d.Id, d.Version.ToString());
+        c.Features.PublicationModes = BotWorker.PublicationKinds.ToDictionary(k => k, _ => BotWorker.AutoMode);
         var id = store.AddWakeup(0, now.ToUnixTimeSeconds(), "manual", "post");
-        worker.SavePrep("wake:" + id, "first\n||\nsecond", "manual");
+        await Call(worker, "AdminPublication", "wake:" + id, "save", "first\n||\nsecond", CancellationToken.None);
         c.SummaryTopicId = 0;
         await Call(worker, "AmbientTick", now, CancellationToken.None);
-        var failed = store.Wakeups().Single(w => w.Id == id);
-        Assert(failed.Status == "pending" && failed.Attempts == 1 && failed.NextTry > now.ToUnixTimeSeconds() && failed.Note is { Length: > 0 } && worker.Prepared("wake:" + id) is not null, "Failed wakeup lost");
+        var failed = store.Publication("wake:" + id)!;
+        Assert(failed.Status == "planned" && store.Wakeups().Single(w => w.Id == id).Status == "pending" && failed.Attempts == 1 && failed.NextTry > now.ToUnixTimeSeconds() &&
+            failed.Note is { Length: > 0 } && failed.Text is not null, "Failed wakeup lost");
         await Call(worker, "AmbientTick", now, CancellationToken.None);
         Assert(sent.Count == 1, "Retried before next_try");
         await Call(worker, "AmbientTick", now.AddMinutes(3), CancellationToken.None);
         Assert(sent.Count == 2 && store.Wakeups().Single(w => w.Id == id).Status == "fired", "Retry duplicated a sent part");
-        var job = "review-job";
-        try { await Call(worker, "Job", job, date, "08:00", date.ToDateTime(new TimeOnly(8, 1)), (Func<string, Task>)(_ => throw new HttpRequestException())); } catch (HttpRequestException) { }
-        Assert(store.Get(job) is null, "Failed job marked done");
-        await Call(worker, "Job", job, date, "08:00", date.ToDateTime(new TimeOnly(8, 1)), (Func<string, Task>)(_ => Task.CompletedTask));
-        Assert(store.Get(job) == "done", "Retried job not completed");
         Console.WriteLine("PASS review: public notes, SKIP, failed jobs and multipart wakeup retry");
         fail = true;
         store.Set("postdraft:1", Json.Write(new { token = "retry-post", text = "first\n||\nsecond" }));

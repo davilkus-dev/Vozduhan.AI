@@ -266,11 +266,12 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 var a = config.Ambient;
                 var today = DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow));
                 var deadlines = store.AllDeadlines();
-                string Status(string key) => store.Get(key) switch { "done" => "done", "skipped" => "skipped", "cancelled" => "cancelled", _ => "planned" };
-                // Prepared ("warmed") texts are owner-only: they may contain roasts from people notes.
+                string Status(string key) => store.Publication(key)?.Status ?? "planned";
+                // Prepared texts are owner-only: they may contain roasts from people notes.
                 var basis = worker.Basis();
-                object? P(string key) => !owner || worker.Prepared(key) is not { } p ? null
-                    : new { p.Text, p.Source, p.At, preview = worker.Preview(key, p.Text), stale = p.Basis != basis };
+                object? P(string key) => !owner || store.Publication(key) is not { Text: { } text } p ? null
+                    : new { text, p.Source, at = p.Updated, preview = worker.Preview(key, text), stale = p.Source == "ai" && p.Basis != basis };
+                object Item(string key, string time) => new { key, time, status = Status(key), prep = P(key), mode = store.Publication(key)?.Mode, note = store.Publication(key)?.Note };
                 await Send(response, 200, new
                 {
                     ok = true, ambient = a,
@@ -283,17 +284,22 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                         return new
                         {
                             date = ds, weekday = Schedule.DayNames[Schedule.Dow(d)],
-                            summary = config.SummaryTopicId > 0 ? new { key = $"ambient:summary:{ds}", time = a.SummaryTime, status = Status($"ambient:summary:{ds}"), prep = P($"ambient:summary:{ds}") } : null,
-                            morning = a.MorningTime.Length == 0 ? null : new { key = $"ambient:morning:{ds}", time = a.MorningTime, status = Status($"ambient:morning:{ds}"), prep = P($"ambient:morning:{ds}") },
-                            spontaneous = spont?.Select((t, n) => new { key = $"ambient:spont:{ds}:{n}", time = t, status = Status($"ambient:spont:{ds}:{n}"), prep = P($"ambient:spont:{ds}:{n}") }),
+                            summary = config.SummaryTopicId > 0 ? Item($"ambient:summary:{ds}", a.SummaryTime) : null,
+                            morning = a.MorningTime.Length == 0 ? null : Item($"ambient:morning:{ds}", a.MorningTime),
+                            spontaneous = spont?.Select((t, n) => Item($"ambient:spont:{ds}:{n}", t)),
                             eve = tomorrow.Count == 0 || !a.EveReminders ? null : new { key = $"ambient:eve:{ds}", time = a.EveReminderTime, status = Status($"ambient:eve:{ds}"),
-                                about = tomorrow.Select(x => config.R.SubjectName(x.SubjectId) + " — " + x.Work), prep = P($"ambient:eve:{ds}") }
+                                about = tomorrow.Select(x => config.R.SubjectName(x.SubjectId) + " — " + x.Work), prep = P($"ambient:eve:{ds}"),
+                                mode = store.Publication($"ambient:eve:{ds}")?.Mode, note = store.Publication($"ambient:eve:{ds}")?.Note }
                         };
                     }),
                     wakeups = store.Wakeups().Where(w => owner || w.Deadline != 0).Where(w => w.Status == "pending" || w.Due > DateTimeOffset.UtcNow.AddDays(-14).ToUnixTimeSeconds()).Select(w =>
                     {
                         var d = deadlines.FirstOrDefault(x => x.Id == w.Deadline);
-                        return new { w.Id, w.Deadline, w.Due, w.Reason, w.Source, w.Status, w.Note, w.Attempts, canDelete = owner || w.Actor != config.OwnerId, key = "wake:" + w.Id, prep = P("wake:" + w.Id),
+                        var pub = store.Publication("wake:" + w.Id);
+                        // A pending wake-up shows its publication's progress: when it will really go (anti-dup may move it), preview, retries.
+                        return new { w.Id, w.Deadline, Due = w.Status == "pending" && pub is { Active: true } ? pub.Due : w.Due, w.Reason, w.Source,
+                            Status = w.Status == "pending" && pub?.Status == "ready" ? "ready" : w.Status, Note = pub?.Note ?? w.Note, Attempts = pub?.Attempts ?? w.Attempts,
+                            mode = pub?.Mode, canDelete = owner || w.Actor != config.OwnerId, key = "wake:" + w.Id, prep = P("wake:" + w.Id),
                             deadlineTitle = d is null ? null : $"#{d.Id} {config.R.SubjectName(d.SubjectId)} — {d.Work} ({d.Date}, {d.Period} пара)" };
                     }),
                     deliveries = store.PendingDeliveries().Select(x => new { x.Key, x.Due, x.Text,
@@ -312,7 +318,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                         try
                         {
                             var p = await worker.Warm(key, ct);
-                            await Send(response, 200, new { ok = true, text = p!.Text, preview = worker.Preview(key, p.Text) });
+                            await Send(response, 200, new { ok = true, text = p.Text, preview = worker.Preview(key, p.Text ?? "") });
                         }
                         catch (AiTextRejectedException e) { await Send(response, 400, new { ok = false, error = BotWorker.Rejected(e) + " Нажми ещё раз" }); }
                         catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); }
@@ -322,21 +328,14 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                         if (string.IsNullOrEmpty(text)) { await Send(response, 400, new { ok = false, error = "Пустой текст. Чтобы бот промолчал, напиши SKIP." }); return; }
                         var max = key.StartsWith("ambient:summary:") || key.StartsWith("ambient:eve:") ? OpenRouterClient.LeadMax : OpenRouterClient.TextMax;
                         if (text.Length > max) { await Send(response, 400, new { ok = false, error = $"Слишком длинно: {text.Length} символов, можно не больше {max}." }); return; }
-                        worker.SavePrep(key, text, "manual");
+                        try { await worker.AdminPublication(key, "save", text, ct); }
+                        catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); return; }
                         await Send(response, 200, new { ok = true, preview = worker.Preview(key, text) });
                         return;
-                    case "cancel" when key.StartsWith("ambient:"):
-                        if (store.Get(key) is { } state && state != "cancelled") { await Send(response, 400, new { ok = false, error = "Уже отправлено или пропущено." }); return; }
-                        store.Set(key, "cancelled"); // the scheduler sees the key and never runs the job
-                        worker.ClearPrep(key);
-                        await Send(response, 200, new { ok = true });
-                        return;
-                    case "restore" when key.StartsWith("ambient:"):
-                        if (store.Get(key) == "cancelled") store.Delete(key);
-                        await Send(response, 200, new { ok = true });
-                        return;
                     default:
-                        worker.ClearPrep(key);
+                        var action = body.Text("action") is "cancel" or "restore" ? body.Text("action")! : "clear";
+                        try { await worker.AdminPublication(key, action, null, ct); }
+                        catch (InvalidOperationException e) { await Send(response, 400, new { ok = false, error = e.Message }); return; }
                         await Send(response, 200, new { ok = true });
                         return;
                 }
@@ -360,7 +359,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                     // A new window or count re-rolls today's remaining drops (only if none happened yet).
                     var today = DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow)).ToString("yyyy-MM-dd");
                     if ((old.SpontaneousPerDay, old.SpontaneousChance, old.ActiveFrom, old.ActiveTo) != (next.SpontaneousPerDay, next.SpontaneousChance, next.ActiveFrom, next.ActiveTo) &&
-                        store.Get($"ambient:spont:{today}:0") is null)
+                        !store.Publications($"ambient:spont:{today}:").Any(p => !p.Active))
                         store.Delete($"ambient:plan:{today}");
                 }
                 await Send(response, 200, new { ok = true, ambient = config.Ambient });
@@ -650,6 +649,9 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
         {
             if (!fields.TryGetValue(p.Name, out var f)) return null;
             if (f.PropertyType == typeof(bool) && p.Value.ValueKind is JsonValueKind.True or JsonValueKind.False) f.SetValue(next, p.Value.GetBoolean());
+            else if (f.Name == nameof(FeatureSettings.PublicationModes) && p.Value.ValueKind == JsonValueKind.Object &&
+                     p.Value.EnumerateObject().All(x => BotWorker.PublicationKinds.Contains(x.Name) && x.Value.ValueKind == JsonValueKind.String && BotWorker.PublicationModes.Contains(x.Value.GetString())))
+                f.SetValue(next, p.Value.EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetString()!));
             else if (f.PropertyType == typeof(int) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt32(out var n) && n is >= 0 and <= 10000) f.SetValue(next, n);
             else return null;
         }

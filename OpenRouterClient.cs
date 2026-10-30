@@ -390,7 +390,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
     public async Task<PlanResult> Plan(string text, object state, string tag, CancellationToken ct)
     {
         var instruction = $$"""
-            Ты разбираешь сообщение редактора бота группы (разработчик, староста или администратор) и решаешь, что это.
+            Ты разбираешь личное сообщение редактора бота группы (разработчик, староста или администратор; бывает и обращение к боту в общем чате) и решаешь, что это.
             Верни только один JSON-объект:
             {"intent": "chat" | "deadline" | "registry" | "post", "deadline": {...} | null, "operations": [...] | null, "idea": строка | null, "question": строка | null}
 
@@ -552,6 +552,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         const string tags = """
 
             Если в extra есть for_date или for_time — пиши так, как будто сейчас этот момент (его день есть в schedule.days), а не текущее время.
+            recent_deadline_mentions — о каких дедлайнах ты уже писал за сутки (full — целый пост с фактами, brief — вскользь): не повторяй те же поводы и шутки.
             Если обращаешься к конкретному человеку или хочешь его дёрнуть — обязательно тегни: пиши его telegram_username (например @R3searchh),
             а если юзернейма нет — вставь его mention_html. Просто имя без тега человек не увидит.
             """;

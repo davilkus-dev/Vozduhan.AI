@@ -47,6 +47,7 @@ static class DevNoteTests
         var c = make("devnote.db");
         c.ModelRouting = new(); c.SummaryTopicId = 30;
         c.Ambient.SpontaneousPerDay = 0; c.Ambient.EveReminders = false; c.Ambient.MorningTime = "08:00";
+        c.Features.PublicationModes = BotWorker.PublicationKinds.ToDictionary(k => k, _ => BotWorker.AutoMode);
         var port = 21000 + Random.Shared.Next(1000);
         c.Web = new WebSettings { Enabled = true, Listen = $"http://127.0.0.1:{port}/", PublicUrl = $"http://127.0.0.1:{port}", AllowedNetworks = ["127.0.0.0/8"] };
         using var s = new BotStore(c);
@@ -177,10 +178,11 @@ static class DevNoteTests
             await Update(Dm(2, "а что с дедлайном?"));
             Assert(s.Draft(2) is not null && !headDraft.Contains(Mark) && !headDraft.Contains("devNote") && !headDraft.Contains("dev_note") &&
                 aiRequests.Last(x => x.Contains("разбираешь личное сообщение редактора")).Contains("pending_deadline_draft"), "Head draft or planner state carries the note");
+            c.Ambient.EveReminders = true;
             foreach (var key in new[] { "ambient:summary:2026-12-14", "ambient:morning:2026-12-14", "ambient:eve:2026-12-13" })
-                await (Task<BotWorker.Prep?>)typeof(BotWorker).GetMethod("Warm", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(worker, [key, CancellationToken.None])!;
+                await (Task<Publication>)typeof(BotWorker).GetMethod("Warm", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(worker, [key, CancellationToken.None])!;
             s.Set("ambient:plan:2026-12-14", Json.Write(new[] { "13:30" }));
-            await (Task<BotWorker.Prep?>)typeof(BotWorker).GetMethod("Warm", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(worker, ["ambient:spont:2026-12-14:0", CancellationToken.None])!;
+            await (Task<Publication>)typeof(BotWorker).GetMethod("Warm", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(worker, ["ambient:spont:2026-12-14:0", CancellationToken.None])!;
             (code, _) = await Post(owner, "post-now", new { idea = "сходка" });
             var kinds = new[] { "планируешь, когда тебе", "разбираешь личное сообщение редактора", "утреннее сообщение группе в теме «Сводка»", "ЗАДАЧА: утреннее сообщение в Воздуханство",
                 "ЗАДАЧА: одна короткая вводная строка", "ЗАДАЧА: ты сам решил", "ЗАДАЧА: разработчик попросил" };

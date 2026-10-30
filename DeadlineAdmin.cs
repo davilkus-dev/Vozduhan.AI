@@ -189,6 +189,7 @@ public sealed partial class BotWorker
     {
         var actor = cb.Field("from").Number("id");
         if ((cb.Text("data") ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)) { await SlotCallback(cb, actor, ct); return; }
+        if ((cb.Text("data") ?? "").StartsWith(PublicationPrefix, StringComparison.Ordinal)) { await PublicationCallback(cb, actor, ct); return; }
         var chat = cb.Field("message").Field("chat").Number("id");
         var topic = cb.Field("message").TopicId();
         if (!config.CanEdit(actor) || (chat != actor && chat != config.GroupId)) return;

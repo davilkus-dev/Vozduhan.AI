@@ -301,6 +301,8 @@ public sealed partial class BotWorker : BackgroundService
             }
             return;
         }
+        if (isPrivate && actor == config.OwnerId && store.ActiveSlot(actor, chat, DateTimeOffset.UtcNow) is { Capability: PublicationEdit } edit)
+        { await PublicationEditText(m, responseKey, edit, text, ct); return; }
         var editor = config.CanEdit(actor);
         var joined = store.Post($"coalesce:{chat}:{id}")?.Text;
         var router = config.Features.Router;

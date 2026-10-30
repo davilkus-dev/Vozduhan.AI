@@ -331,19 +331,10 @@ public sealed partial class BotStore
     {
         lock (gate) return Query($"SELECT {WakeupColumns} FROM wakeups WHERE ($d IS NULL OR deadline=$d) AND status<>'deleted' ORDER BY due", ReadWakeup, ("d", deadline));
     }
-    public List<Wakeup> DueWakeups(long now)
-    {
-        lock (gate) return Query($"SELECT {WakeupColumns} FROM wakeups WHERE status='pending' AND due<=$n AND next_try<=$n ORDER BY due", ReadWakeup, ("n", now));
-    }
     /// <summary>Atomically moves a wake-up from one state to another; false when somebody else already did.</summary>
     public bool SetWakeup(long id, string status, string from = "pending", string? note = null)
     {
         lock (gate) return Exec("UPDATE wakeups SET status=$s, note=COALESCE($note,note) WHERE id=$id AND status=$f", ("s", status), ("id", id), ("f", from), ("note", note)) == 1;
-    }
-    /// <summary>A failed send goes back to pending with a later retry time.</summary>
-    public void RetryWakeup(long id, int attempts, long nextTry, string note)
-    {
-        lock (gate) Exec("UPDATE wakeups SET status='pending', attempts=$a, next_try=$n, note=$note WHERE id=$id AND status='sending'", ("id", id), ("a", attempts), ("n", nextTry), ("note", note));
     }
     public void DropPendingWakeups(int deadline, string? source = null)
     {

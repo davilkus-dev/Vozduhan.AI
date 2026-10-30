@@ -29,7 +29,8 @@ static partial class WakeupTests
     /// <summary>A worker with fake Telegram and OpenRouter; AI answers are routed by the task text of each prompt.</summary>
     sealed class Env : IDisposable
     {
-        public readonly BotConfig C; public readonly BotStore S; public readonly BotWorker W; public readonly Logs Log = new();
+        public readonly BotConfig C; public readonly BotStore S; public BotWorker W; public readonly Logs Log = new();
+        readonly TelegramClient tgClient; readonly OpenRouterClient aiClient;
         public readonly List<(string Method, JsonElement Body)> Sent = [];
         public readonly List<string> Ai = [];
         public Func<string, CancellationToken, Task<string>> Plan = (_, _) => Task.FromResult("{}");
@@ -38,6 +39,8 @@ static partial class WakeupTests
         {
             C = make(file);
             C.Ambient.SpontaneousPerDay = 0; C.Ambient.EveReminders = false; C.Ambient.MorningTime = ""; C.ModelRouting = new(); // one request per AI call
+            // These checks are about delivery itself: no preview window unless a test asks for it.
+            C.Features.PublicationModes = BotWorker.PublicationKinds.ToDictionary(k => k, _ => BotWorker.AutoMode);
             S = new BotStore(C);
             var tg = new HttpClient(new Handler(async (request, _) =>
             {
@@ -55,13 +58,18 @@ static partial class WakeupTests
                 var content = body.Contains("планируешь, когда тебе") ? await Plan(body, ct) : await Text(body);
                 return new { choices = new[] { new { message = new { content }, finish_reason = "stop" } } };
             })) { BaseAddress = new Uri("https://openrouter.test/") };
-            W = new BotWorker(C, S, new TelegramClient(tg, "t"), new OpenRouterClient(ai, C, "k"), Log);
+            tgClient = new TelegramClient(tg, "t"); aiClient = new OpenRouterClient(ai, C, "k");
+            W = new BotWorker(C, S, tgClient, aiClient, Log);
         }
+        /// <summary>A new worker on the same database and fakes, as after a service restart.</summary>
+        public void Restart() => W = new BotWorker(C, S, tgClient, aiClient, Log);
         public List<string> Posts => Sent.Where(x => x.Method == "sendMessage").Select(x => x.Body.Text("text")!).ToList();
         public int PlanCalls => Ai.Count(x => x.Contains("планируешь, когда тебе"));
         public Task Tick(DateTimeOffset utc) => Call("AmbientTick", utc, CancellationToken.None);
         public Task PlanTick(DateTimeOffset utc, CancellationToken? ct = null) => Call("PlanTick", utc, ct ?? CancellationToken.None);
-        public async Task<BotWorker.Prep?> Warm(string key) => await (Task<BotWorker.Prep?>)Method("Warm").Invoke(W, [key, CancellationToken.None])!;
+        public async Task<Publication> Warm(string key) => await (Task<Publication>)Method("Warm").Invoke(W, [key, CancellationToken.None])!;
+        public Task Admin(string key, string action, string? text = null) => Call("AdminPublication", key, action, text!, CancellationToken.None);
+        public Publication Pub(string key) => S.Publication(key)!;
         Task Call(string name, params object[] args) => (Task)Method(name).Invoke(W, args)!;
         static MethodInfo Method(string name) => typeof(BotWorker).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!;
         public Deadline Add(string date, string work = "Практика №1")
@@ -184,17 +192,21 @@ static partial class WakeupTests
             using var e = new Env(make, "w-isolation.db");
             e.C.Ambient.MorningTime = "08:00";
             var at = DateTimeOffset.Parse("2026-12-02T05:00:00Z"); // 08:00 MSK
-            e.S.Set("ambient:summary:2026-12-02", "done");
+            e.C.SummaryTopicId = 30;
+            e.S.Set("ambient:summary:2026-12-02", "done"); // finished before the upgrade: never sent again
             e.Text = body => body.Contains("A-сломан") ? throw new HttpRequestException("down")
                 : Task.FromResult(body.Contains("ЗАДАЧА: утреннее") ? "Доброе утро, гайс" : "Пост Б для группы");
             var a = e.S.AddWakeup(0, at.ToUnixTimeSeconds(), "A-сломан", "post");
             var b = e.S.AddWakeup(0, at.ToUnixTimeSeconds(), "B-целый", "post");
             await e.Tick(at.AddMinutes(1));
-            var wa = e.Wake(a);
-            Assert(e.Wake(b).Status == "fired" && e.Posts.Contains("Пост Б для группы") && e.Posts.Contains("Доброе утро, гайс") && e.S.Get("ambient:morning:2026-12-02") == "done", "Other work blocked");
-            Assert(wa.Status == "pending" && wa.Attempts == 1 && wa.NextTry > at.AddMinutes(1).ToUnixTimeSeconds() && wa.Note is { Length: > 0 } && !wa.Note.Contains("down"), "Failed wake-up state: " + Json.Write(wa));
-            for (var i = 0; i < 6 && e.Wake(a).Status == "pending"; i++) await e.Tick(DateTimeOffset.FromUnixTimeSeconds(e.Wake(a).NextTry + 1));
-            Assert(e.Wake(a).Status == "failed" && e.Wake(a).Attempts == 5 && e.Posts.Count == 2, "Not failed after 5 attempts: " + Json.Write(e.Wake(a)));
+            Assert(e.Posts.SequenceEqual(["Доброе утро, гайс"]) && e.Pub("ambient:summary:2026-12-02").Status == "sent" && e.Pub("ambient:morning:2026-12-02").Status == "sent", "Morning not sent first");
+            await e.Tick(at.AddMinutes(16));
+            var pa = e.Pub("wake:" + a);
+            Assert(e.Wake(b).Status == "fired" && e.Posts.Contains("Пост Б для группы"), "Other work blocked");
+            Assert(e.Wake(a).Status == "pending" && pa.Attempts == 1 && pa.NextTry > at.AddMinutes(16).ToUnixTimeSeconds() && pa.Note is { Length: > 0 } && !pa.Note.Contains("down"), "Failed wake-up state: " + Json.Write(pa));
+            for (var i = 0; i < 20 && e.Pub("wake:" + a).Active; i++)
+                await e.Tick(DateTimeOffset.FromUnixTimeSeconds(Math.Max(e.Pub("wake:" + a).NextTry, e.Pub("wake:" + a).Due) + 1));
+            Assert(e.Wake(a).Status == "failed" && e.Pub("wake:" + a) is { Status: "failed", Attempts: 5 } && e.Posts.Count == 2, "Not failed after 5 attempts: " + Json.Write(e.Pub("wake:" + a)));
         });
 
         await Check("warm-up: a stale AI text is regenerated, an editor's text goes as is, an old prep without basis is regenerated", async () =>
@@ -204,20 +216,21 @@ static partial class WakeupTests
             var due = DateTimeOffset.Parse("2026-12-10T07:00:00Z");
             var w1 = e.S.AddWakeup(d.Id, due.ToUnixTimeSeconds(), "первый", "manual");
             e.Text = _ => Task.FromResult("ТЕКСТ-СТАРЫЙ про А412");
-            Assert((await e.Warm("wake:" + w1))!.Basis == e.W.Basis(), "Warm-up has no basis");
+            Assert((await e.Warm("wake:" + w1)).Basis == e.W.Basis(), "Warm-up has no basis");
             d = e.Change(d, new(Room: "Б777"));
             e.Text = _ => Task.FromResult("ТЕКСТ-НОВЫЙ про Б777");
             var calls = e.Ai.Count;
             await e.Tick(due.AddMinutes(1));
-            Assert(e.Posts.SequenceEqual(["ТЕКСТ-НОВЫЙ про Б777"]) && e.Ai.Count == calls + 1 && e.Ai.Last().Contains("Б777") && e.Log.Lines.Contains("prep устарел: wake:" + w1), "Stale prep was sent");
-            var w2 = e.S.AddWakeup(d.Id, due.AddHours(1).ToUnixTimeSeconds(), "второй", "manual");
-            e.W.SavePrep("wake:" + w2, "РУЧНОЙ ТЕКСТ", "manual");
+            Assert(e.Posts.SequenceEqual(["ТЕКСТ-НОВЫЙ про Б777"]) && e.Ai.Count == calls + 1 && e.Ai.Last().Contains("Б777") && e.Log.Lines.Any(x => x.Contains("wake:" + w1) && x.Contains("facts changed")), "Stale prep was sent");
+            // Reminders of one deadline are 2 h apart here: closer ones are moved by the 90-minute cooldown (tested separately).
+            var w2 = e.S.AddWakeup(d.Id, due.AddHours(2).ToUnixTimeSeconds(), "второй", "manual");
+            await e.Admin("wake:" + w2, "save", "РУЧНОЙ ТЕКСТ");
             d = e.Change(d, new(Room: "В888"));
-            await e.Tick(due.AddHours(1).AddMinutes(1));
-            Assert(e.Posts.Last() == "РУЧНОЙ ТЕКСТ", "Editor's text not sent as is");
-            var w3 = e.S.AddWakeup(d.Id, due.AddHours(2).ToUnixTimeSeconds(), "третий", "manual");
-            e.S.Set("prep:wake:" + w3, Json.Write(new { text = "БЕЗ-БАЗЫ", at = 1, source = "ai" }));
             await e.Tick(due.AddHours(2).AddMinutes(1));
+            Assert(e.Posts.Last() == "РУЧНОЙ ТЕКСТ", "Editor's text not sent as is");
+            var w3 = e.S.AddWakeup(d.Id, due.AddHours(4).ToUnixTimeSeconds(), "третий", "manual");
+            e.S.Set("prep:wake:" + w3, Json.Write(new { text = "БЕЗ-БАЗЫ", at = 1, source = "ai" }));
+            await e.Tick(due.AddHours(4).AddMinutes(1));
             Assert(e.Posts.Last() == "ТЕКСТ-НОВЫЙ про Б777", "Prep without basis was sent");
         });
 
@@ -266,10 +279,12 @@ static partial class WakeupTests
             var future = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds();
             var post = e.S.AddWakeup(0, future, "пост-разработчика", "post", 1);
             var broken = e.S.AddWakeup(d.Id, future, "к дедлайну", "manual");
-            e.S.SetWakeup(broken, "sending"); e.S.RetryWakeup(broken, 2, future, "ошибка: таймаут");
             var fresh = e.S.AddWakeup(d.Id, future + 3600, "свежий", "manual");
-            e.W.SavePrep("wake:" + broken, "старый текст", "ai", "old-basis");
-            e.W.SavePrep("wake:" + fresh, "свежий текст", "ai");
+            e.S.EnsurePublication("wake:" + broken, "wakeup", future, 0, BotWorker.AutoPreview);
+            e.S.RetryPublication("wake:" + broken, 2, future, "ошибка: таймаут");
+            e.S.SetPublicationText("wake:" + broken, "старый текст", "ai", "old-basis");
+            e.S.EnsurePublication("wake:" + fresh, "wakeup", future + 3600, 0, BotWorker.AutoPreview);
+            e.S.SetPublicationText("wake:" + fresh, "свежий текст", "ai", e.W.Basis());
             using var cts = new CancellationTokenSource();
             var web = new AdminWeb(e.C, e.S, e.W, Microsoft.Extensions.Logging.Abstractions.NullLogger<AdminWeb>.Instance);
             await web.StartAsync(cts.Token);
@@ -311,6 +326,7 @@ static partial class WakeupTests
             finally { cts.Cancel(); await web.StopAsync(CancellationToken.None); }
         });
         await RunFix6(make);
+        await RunPublications(make);
         return count;
     }
 }
