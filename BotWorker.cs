@@ -1,6 +1,7 @@
 using System.Net;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -405,9 +406,11 @@ public sealed partial class BotWorker : BackgroundService
             if (tail.Length > 0) store.SavePost(tailKey, 0, tail);
             store.SavePost(answerKey, 0, answer);
         }
-        var parts = config.SplitReplies ? OpenRouterClient.Parts(answer) : [answer.Replace("\n" + OpenRouterClient.Split + "\n", "\n")];
+        var (text, poll) = ExtractPoll(answer);
+        if (text.Length == 0 && poll is null) text = "Не получилось собрать опрос — сформулируй ещё раз?";
+        List<string> parts = text.Length == 0 ? [] : config.SplitReplies ? OpenRouterClient.Parts(text) : [text.Replace("\n" + OpenRouterClient.Split + "\n", "\n")];
         var formatted = false;
-        if (store.Post(tailKey)?.Text is { Length: > 0 } code)
+        if (parts.Count > 0 && store.Post(tailKey)?.Text is { Length: > 0 } code)
         {
             // The model's text is converted first, so the links the code adds are never touched by the markdown rules.
             parts = parts.Select(TelegramHtml.FromMarkdown).ToList();
@@ -415,10 +418,51 @@ public sealed partial class BotWorker : BackgroundService
             formatted = true;
         }
         var first = await SendParts(chat, topic, parts, id, (DateTimeOffset.UtcNow - started).TotalMilliseconds, ct, i => key + ":part:" + i, formatted);
+        if (poll is not null && store.Post(key + ":poll") is null)
+            try
+            {
+                var sent = await telegram.Poll(chat, topic, poll.Question, poll.Options, poll.Anonymous, poll.Multiple, poll.Correct, first is null ? id : null, ct);
+                store.SavePost(key + ":poll", (int)sent.Number("message_id"), "");
+                store.Remember(chat, sent.TopicId(), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
+                first ??= (int)sent.Number("message_id");
+            }
+            catch (TelegramError e) when (e.Code == 400) { log.LogWarning("Poll rejected: {Error}", e.Description); }
         store.SavePost(key, first ?? 0, "");
+        store.ForgetPost(key + ":poll");
         store.ForgetPost(answerKey);
         store.ForgetPost(tailKey);
         for (var i = 0; i < parts.Count; i++) store.ForgetPost(key + ":part:" + i);
+    }
+
+    public sealed record PollSpec(string Question, string[] Options, bool Anonymous, bool Multiple, int? Correct);
+
+    /// <summary>The Writer's [ОПРОС] block cut out of its answer; an invalid block is dropped (null poll).</summary>
+    public static (string Text, PollSpec? Poll) ExtractPoll(string answer)
+    {
+        var block = Regex.Match(answer, @"\[ОПРОС\](.*?)(?:\[/ОПРОС\]|$)", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        if (!block.Success) return (answer, null);
+        var text = (answer[..block.Index] + answer[(block.Index + block.Length)..]).Trim();
+        string? question = null; var options = new List<string>(); bool anonymous = true, multiple = false; int? correct = null;
+        foreach (var raw in block.Groups[1].Value.Split('\n'))
+        {
+            var line = WebUtility.HtmlDecode(Regex.Replace(raw, "<[^>]+>", "")).Trim();
+            var field = Regex.Match(line, @"^(вопрос|анонимный|несколько|верный)\s*:\s*(.*)$", RegexOptions.IgnoreCase);
+            var value = field.Groups[2].Value.Trim();
+            var yes = value.StartsWith("да", StringComparison.OrdinalIgnoreCase);
+            switch (field.Success ? field.Groups[1].Value.ToLowerInvariant() : "")
+            {
+                case "вопрос": question = value; break;
+                case "анонимный": anonymous = yes; break;
+                case "несколько": multiple = yes; break;
+                case "верный": correct = int.TryParse(value, out var n) ? n - 1 : -1; break;
+                default:
+                    if (Regex.Match(line, @"^(?:[-•–]|\d+[.)])\s*(.+)$") is { Success: true } o) options.Add(o.Groups[1].Value.Trim());
+                    break;
+            }
+        }
+        var ok = question is { Length: > 0 and <= 300 } && options.Count is >= 2 and <= 10 && options.All(o => o.Length <= 100)
+            && options.Distinct().Count() == options.Count && (correct is null || correct >= 0 && correct < options.Count);
+        return (text, ok ? new(question!, options.ToArray(), anonymous, multiple, correct) : null);
     }
 
     /// <summary>The message, what it replies to and the author's messages just before it (a photo and then «что тут?»).</summary>

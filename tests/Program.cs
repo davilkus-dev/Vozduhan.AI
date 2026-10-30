@@ -191,6 +191,10 @@ try
         Assert(!Conversation.CallsBot(Message(-100123, 10, 1, 3, "слышал про @vozduhanAIbot"), 99, "vozduhanAIbot"), "Plain substring triggered bot");
         Assert(Conversation.CallsBot(Message(-100123, 10, 1, 3, "Воздухан, что завтра?"), 99, "vozduhanAIbot") && Conversation.CallsBot(Message(-100123, 10, 1, 3, "бот, создай опрос"), 99, "vozduhanAIbot") &&
             !Conversation.CallsBot(Message(-100123, 10, 1, 3, "кто в Воздуханстве работает"), 99, "vozduhanAIbot"), "Name trigger wrong");
+        var (pollText, poll) = BotWorker.ExtractPoll("Держите\n[ОПРОС]\nвопрос: Идём на пару?\n- Да\n- Нет\nанонимный: нет\n[/ОПРОС]");
+        Assert(pollText == "Держите" && poll is { Question: "Идём на пару?", Anonymous: false, Multiple: false, Correct: null } && poll.Options.SequenceEqual(["Да", "Нет"]) &&
+            BotWorker.ExtractPoll("[ОПРОС]\nвопрос: 2+2?\n- 3\n- 4\nверный: 2\n[/ОПРОС]").Poll?.Correct == 1 &&
+            BotWorker.ExtractPoll("[ОПРОС]\nвопрос: ?\n- один\n[/ОПРОС]") is ("", null) && BotWorker.ExtractPoll("просто текст").Poll is null, "Poll block parsed wrong");
         Assert(Conversation.CallsBot(Message(-100123, 10, 2, 3, "@vozduhanAIbot ответь", entities: [new { type = "mention", offset = 0, length = 14 }]), 99, "vozduhanAIbot"), "Mention ignored");
         var reply = Message(-100123, 10, 3, 99, "Bot response");
         Assert(Conversation.CallsBot(Message(-100123, 10, 4, 3, "а почему?", reply), 99, "vozduhanAIbot"), "Reply to bot ignored");
