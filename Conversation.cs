@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Vozduhan.AI;
 
@@ -432,6 +433,7 @@ public sealed class Conversation(BotConfig config, BotStore store)
     {
         if (m.Field("reply_to_message").Field("from").Number("id") == botId) return true;
         var text = m.Text("text") ?? m.Text("caption") ?? "";
+        if (Regex.IsMatch(text, @"(?<!\w)(воздухан(?:а|у|ом|е|чик)?|бот(?:а|у|ом|е|ик|яра)?)(?!\w)", RegexOptions.IgnoreCase)) return true;
         var entities = m.Field(m.Text("text") is null ? "caption_entities" : "entities");
         if (entities.ValueKind != JsonValueKind.Array) return false;
         foreach (var e in entities.EnumerateArray())

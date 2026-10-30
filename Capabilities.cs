@@ -147,6 +147,13 @@ public sealed partial class BotWorker
             new("roster", "Список группы", "список группы по номерам", all, anywhere, [], render,
                 (c, _) => Done(RosterHtml(c.Place == Capabilities.Dm && c.Role != "member")))
                 { Help = "/roster — список группы", Say = "список группы — «кто у нас в группе?»" },
+            new("poll", "Опрос", "создать опрос или викторину Telegram в этом чате", all, anywhere,
+                [new("question", "string", true, Note: "вопрос опроса, до 300 символов"),
+                 new("options", "string", true, Note: "варианты ответа через | (от 2 до 10, каждый до 100 символов)"),
+                 new("anonymous", "bool", Note: "анонимный ли; решай по контексту: «кто придёт/кто за» — false, мнения о людях и щекотливое — true"),
+                 new("multiple", "bool", Note: "можно выбрать несколько вариантов (не для викторины)"),
+                 new("correct", "int", Note: "только для викторины: номер правильного варианта с 1; нет — обычный опрос")], action, SendPoll)
+                { Slash = false, Say = "опросы и викторины — «создай опрос: идём на пару или нет»" },
             new("help", "Что я умею", "что умеет бот", all, anywhere, [], render, (c, _) => Done(Help(c.Role, c.Place))),
 
             new("web_link", "Веб-админка", "одноразовая ссылка на веб-админку", editors, dm, [], action, (c, _) => Done(H(WebLink(c.Actor))))
@@ -265,6 +272,21 @@ public sealed partial class BotWorker
     };
 
     /// <summary>Asks to confirm deleting a mistaken deadline (block 1, C2); the button carries the version it was shown at.</summary>
+    private async Task<string?> SendPoll(CapabilityCall c, CancellationToken ct)
+    {
+        var question = (string)c.Args["question"];
+        var options = ((string)c.Args["options"]).Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var correct = c.Args.TryGetValue("correct", out var n) ? (int)n - 1 : (int?)null;
+        if (question.Length > 300 || options.Length is < 2 or > 10 || options.Any(o => o.Length > 100) || options.Distinct().Count() != options.Length || correct is < 0 || correct >= options.Length)
+            return "Не получилось собрать опрос: нужен вопрос до 300 символов и от 2 до 10 разных вариантов до 100 символов. Сформулируй ещё раз?";
+        var m = c.Message;
+        var sent = await telegram.Poll(m.Field("chat").Number("id"), m.TopicId(), question, options,
+            !c.Args.TryGetValue("anonymous", out var a) || (bool)a, c.Args.TryGetValue("multiple", out var x) && (bool)x, correct, (int)m.Number("message_id"), ct);
+        store.SavePost(c.Key, (int)sent.Number("message_id"), "");
+        store.Remember(sent.Field("chat").Number("id"), sent.TopicId(), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
+        return null;
+    }
+
     private async Task<string?> DeleteDeadlineCard(CapabilityCall c, CancellationToken ct)
     {
         var id = (int)c.Args["id"];

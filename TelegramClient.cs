@@ -91,6 +91,13 @@ public sealed class TelegramClient(HttpClient http, string token)
             parse_mode = html ? "HTML" : null, link_preview_options = new { is_disabled = true } }, ct); }
         catch (TelegramError e) when (e.Code == 400 && e.Description.Contains("message is not modified", StringComparison.OrdinalIgnoreCase)) { }
     }
+    public Task<JsonElement> Poll(long chat, int topic, string question, string[] options, bool anonymous, bool multiple, int? correct, int reply, CancellationToken ct) =>
+        Call("sendPoll", new
+        {
+            chat_id = chat, message_thread_id = topic > 1 ? (int?)topic : null, question, options = options.Select(text => new { text }).ToArray(),
+            is_anonymous = anonymous, type = correct is null ? "regular" : "quiz", allows_multiple_answers = correct is null && multiple,
+            correct_option_id = correct, reply_parameters = new { message_id = reply, allow_sending_without_reply = true }
+        }, ct);
     public Task<JsonElement> Delete(long chat, int id, CancellationToken ct) => Call("deleteMessage", new { chat_id = chat, message_id = id }, ct);
     public Task<JsonElement> Callback(string id, string text, CancellationToken ct) => Call("answerCallbackQuery", new { callback_query_id = id, text, show_alert = false }, ct);
     public Task<JsonElement> Pin(long chat, int id, bool pin, CancellationToken ct) => Call(pin ? "pinChatMessage" : "unpinChatMessage",

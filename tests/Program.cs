@@ -189,6 +189,8 @@ try
     Check("mentions use entities and replies identify the bot", () =>
     {
         Assert(!Conversation.CallsBot(Message(-100123, 10, 1, 3, "слышал про @vozduhanAIbot"), 99, "vozduhanAIbot"), "Plain substring triggered bot");
+        Assert(Conversation.CallsBot(Message(-100123, 10, 1, 3, "Воздухан, что завтра?"), 99, "vozduhanAIbot") && Conversation.CallsBot(Message(-100123, 10, 1, 3, "бот, создай опрос"), 99, "vozduhanAIbot") &&
+            !Conversation.CallsBot(Message(-100123, 10, 1, 3, "кто в Воздуханстве работает"), 99, "vozduhanAIbot"), "Name trigger wrong");
         Assert(Conversation.CallsBot(Message(-100123, 10, 2, 3, "@vozduhanAIbot ответь", entities: [new { type = "mention", offset = 0, length = 14 }]), 99, "vozduhanAIbot"), "Mention ignored");
         var reply = Message(-100123, 10, 3, 99, "Bot response");
         Assert(Conversation.CallsBot(Message(-100123, 10, 4, 3, "а почему?", reply), 99, "vozduhanAIbot"), "Reply to bot ignored");
