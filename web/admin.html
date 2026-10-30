@@ -396,8 +396,8 @@ VIEWS.plan=async el=>{
     ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"],
     ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"],
     ["writerDiet","Диета: ответчику — только нужные куски данных и знаний (нужен маршрутизатор)"],["webSearch","Веб-поиск по решению маршрутизатора"],
-    ["mediaLibrary","Медиатека: стикеры из лички разработчика и файлы из админки"],["mediaPicker","Подбор медиа: иногда стикер или картинка после ответа (нужна медиатека)"],
-    ["pickerInPrivate","Подбор медиа и в личке"]];
+    ["mediaLibrary","Медиатека: стикеры из лички разработчика и файлы из админки"],["mediaPicker","Медиа в ответах: бот сам кидает стикеры и картинки из медиатеки (нужна медиатека)"],
+    ["pickerInPrivate","Медиа в ответах и в личке"]];
   const PKINDS=[["summary","Утро в «Сводку»"],["morning","Утро в Воздуханство"],["spont","Вбросы"],["eve","Напоминание накануне"],["wakeup","Будильники к дедлайнам"],["post","Отложенные посты"]];
   const PMODES=[["auto_preview","превью за 30 мин, без ответа — уходит"],["manual","только после ✅"],["auto","без превью"]];
   if($("#f_body"))api("features").then(x=>{if(viewId!==renderId||!x.ok)return;const f=x.features;
@@ -405,12 +405,8 @@ VIEWS.plan=async el=>{
       `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`+
       `<label>Поисков в сутки на всех</label><input type="number" id="f_wd" min="0" max="10000" value="${f.webSearchDailyLimit}">`+
       `<label>Поисков в сутки на человека (разработчик без лимита)</label><input type="number" id="f_wu" min="0" max="10000" value="${f.webSearchPerUserDaily}">`+
-      `<label>Подбор медиа: шанс после ответа, %</label><input type="number" id="f_pc" min="0" max="100" value="${Math.round(f.pickerChance*100)}">`+
-      `<label>Подбор медиа: пауза в чате, минут</label><input type="number" id="f_pm" min="0" max="10000" value="${f.pickerCooldownMinutes}">`+
-      `<label>Подборов медиа в сутки, максимум</label><input type="number" id="f_pd" min="0" max="10000" value="${f.pickerDailyLimit}">`+
       PKINDS.map(([k,t])=>`<label>${t}</label><select id="pm_${k}">${PMODES.map(([m,mt])=>`<option value="${m}" ${(f.publicationModes||{})[k]===m||(!(f.publicationModes||{})[k]&&m==="auto_preview")?"selected":""}>${mt}</option>`).join("")}</select>`).join("");
     $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value,webSearchDailyLimit:+$("#f_wd").value,webSearchPerUserDaily:+$("#f_wu").value,
-      pickerChance:+$("#f_pc").value/100,pickerCooldownMinutes:+$("#f_pm").value,pickerDailyLimit:+$("#f_pd").value,
       publicationModes:Object.fromEntries(PKINDS.map(([k])=>[k,$("#pm_"+k).value]))};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
       const r=await api("features",{settings});if(r.ok)toast("Новые функции сохранены");else info("Ошибка",`<p>${esc(r.error)}</p>`)}});
   /*END*/
@@ -663,7 +659,7 @@ VIEWS.usage=async el=>{
 const MKIND={sticker:"стикер",photo:"картинка",animation:"GIF",video:"видео"};
 VIEWS.media=async el=>{
   const viewId=renderId;S.mq=S.mq||"";S.mk=S.mk||"";
-  el.innerHTML=page("Медиатека","Стикеры (пришли стикер боту в личку — предложит добавить его или весь набор), картинки, GIF и видео. С «Подбором медиа» бот иногда кидает их после ответа. Бот выбирает по описанию.",
+  el.innerHTML=page("Медиатека","Стикеры (пришли стикер боту в личку — предложит добавить его или весь набор), картинки, GIF и видео. С «Медиа в ответах» бот сам кидает их, когда к месту, — подбирает по описанию.",
     `<input type="file" id="mf" accept=".jpg,.jpeg,.png,.webp,.gif,.mp4" style="display:none"><button class="b p" id="mu">＋ Загрузить файл</button>`)+
     `<div class="card row"><input id="mq" placeholder="поиск по описанию, тегам, эмодзи" value="${esc(S.mq)}" style="flex:1 1 220px"><select id="mk">${[["","все виды"],...Object.entries(MKIND)].map(([k,t])=>`<option value="${k}" ${S.mk===k?"selected":""}>${t}</option>`).join("")}</select><button class="b" id="ms">Найти</button></div><div id="ml"><div class="card empty">Загрузка…</div></div>`;
   $("#ms").onclick=()=>{S.mq=$("#mq").value.trim();S.mk=$("#mk").value;render()};$("#mq").onkeydown=e=>{if(e.key==="Enter")$("#ms").click()};

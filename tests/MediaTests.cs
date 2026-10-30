@@ -22,6 +22,8 @@ static class MediaTests
         public readonly List<(string Kind, string User)> Ai = [];
         public Queue<string> Routes = new();
         public Func<string, string>? PickerAnswer;
+        public string Writer = "Дедлайн по сиаоду горит, но мы держимся";
+        public string WriterSystem = "";
         public Func<string, int?>? Fail;
         public JsonElement[] Set = [];
         int next = 9000;
@@ -86,16 +88,17 @@ static class MediaTests
                 var system = root.Field("messages")[0].Text("content") ?? "";
                 var content = root.Field("messages")[1].Field("content");
                 var user = content.ValueKind == JsonValueKind.String ? content.GetString()! : content[0].Text("text") ?? "";
-                var kind = system.Contains("Ты — маршрутизатор") ? "router" : system.Contains("Ты подбираешь к сообщению бота") ? "picker"
+                var kind = system.Contains("Ты — маршрутизатор") ? "router" : system.Contains("Ты подбираешь стикер, картинку или гифку") ? "picker"
                     : system.Contains("Ты описываешь медиа") ? "digest" : system.Contains("разбираешь личное сообщение редактора") ? "plan" : "chat";
                 lock (e.Ai) e.Ai.Add((kind, user));
+                if (kind == "chat") e.WriterSystem = system;
                 return (HttpStatusCode.OK, RouterTests.Answer(kind switch
                 {
                     "router" => e.Routes.Count > 0 ? e.Routes.Dequeue() : """{"reaction":null,"mode":"writer","reason":"болтовня"}""",
                     "picker" => e.PickerAnswer?.Invoke(user) ?? """{"id":null}""",
                     "digest" => """{"summary":"кот смеётся над дедлайном","text_on_image":null,"transcript":null}""",
                     "plan" => """{"intent":"chat"}""",
-                    _ => "Дедлайн по сиаоду горит, но мы держимся"
+                    _ => e.Writer
                 }));
             })) { BaseAddress = new Uri("https://openrouter.test/") };
             e.W = new BotWorker(e.C, e.S, new TelegramClient(tg, "t"), new OpenRouterClient(ai, e.C, "k"), NullLogger<BotWorker>.Instance);
@@ -270,88 +273,71 @@ static class MediaTests
             finally { cts.Cancel(); await web.StopAsync(CancellationToken.None); }
         }
 
-        // G2. Media Picker.
+        // G2. The Writer asks for media with a [МЕДИА: …] tag; the Picker finds it. No chance, no cooldown, one per answer.
         static object GroupMsg(int id, string text) => RouterTests.Group(3, id, text);
-        string Route(string mode, string? hint = null, string? capability = null, object? args = null) =>
-            Json.Write(new { reaction = "👍", mode, capability, args, media_hint = hint, reason = "тест" });
+        const string Wants = "[МЕДИА: кот, который ржёт до слёз над горящим дедлайном]";
         using (var e = Env.Make(make, "media-picker.db"))
         {
             var f = e.C.Features;
-            f.MediaPicker = true; f.PickerChance = 1; f.PickerCooldownMinutes = 0;
+            f.MediaPicker = true;
             var cat = Add(e.S, "a", "кот смеётся над дедлайном");
             var sad = Add(e.S, "b", "грустный студент на паре");
+            var dance = Add(e.S, "c", "победный танец");
+            Assert(BotWorker.ExtractMedia("Ну ты даёшь\n\n[МЕДИА: кот ржёт]\n[медиа: ещё один]") == ("Ну ты даёшь", "кот ржёт") &&
+                BotWorker.ExtractMedia("просто текст") == ("просто текст", null) && BotWorker.ExtractMedia("[МЕДИА:  ]") == ("", null), "Media tag parsing wrong");
+
             string? input = null;
             e.PickerAnswer = user => { input = user; return Json.Write(new { id = cat }); };
+            e.Writer = "Дедлайн по сиаоду горит, но мы держимся\n" + Wants;
             await e.Process(GroupMsg(100, "как там дедлайн?"));
             var order = e.Tg.Select(x => x.Method).Where(m => m is "sendMessage" or "sendSticker").ToList();
             var sticker = e.Calls("sendSticker").Single().Body;
-            Assert(order.SequenceEqual(["sendMessage", "sendSticker"]) && sticker.Text("sticker") == "f-a" && sticker.Field("reply_parameters").Number("message_id") == 100 &&
-                sticker.Number("message_thread_id") == 10, "Sticker not sent after the answer: " + string.Join(",", order));
+            Assert(order.SequenceEqual(["sendMessage", "sendSticker"]) && e.Calls("sendMessage")[0].Body.Text("text") == "Дедлайн по сиаоду горит, но мы держимся" &&
+                sticker.Text("sticker") == "f-a" && sticker.Field("reply_parameters").Number("message_id") == 100 && sticker.Number("message_thread_id") == 10,
+                "Media not sent after the answer, or the tag leaked: " + string.Join(",", order));
             var asked = JsonDocument.Parse(input!).RootElement;
-            Assert(asked.Text("answer")!.Contains("Дедлайн по сиаоду") && asked.Field("candidates").EnumerateArray().Select(x => x.Number("id")).Order().SequenceEqual([cat, sad]) &&
-                asked.Field("candidates")[0].Number("id") == cat, "Picker input wrong: " + input);
-            Assert(e.S.Media(cat) is { Uses: 1, LastUsed: > 0 } && e.S.Post("reply:-100123:100:pick") is null, "Uses not counted or keys left");
+            Assert(asked.Text("wanted") == "кот, который ржёт до слёз над горящим дедлайном" && asked.Text("answer")!.StartsWith("Дедлайн") &&
+                asked.Field("candidates")[0].Number("id") == cat && e.WriterSystem.Contains("[МЕДИА:"), "Picker input or Writer rules wrong: " + input);
+            Assert(e.S.Media(cat) is { Uses: 1 } && e.S.Post("reply:-100123:100:pick") is null, "Uses not counted or keys left");
 
-            // The model names somebody else's id: nothing.
-            e.Clear(); e.PickerAnswer = _ => """{"id":424242}""";
-            await e.Process(GroupMsg(101, "ну и денёк"));
-            Assert(e.Asked("picker").Count == 1 && e.Calls("sendSticker").Count == 0 && e.Calls("sendMessage").Count == 1, "Foreign id sent");
-            // Used in this chat in the last 24 h: not a candidate any more.
-            Assert(!JsonDocument.Parse(e.Asked("picker")[0].User).RootElement.Field("candidates").EnumerateArray().Any(x => x.Number("id") == cat), "Recently used offered again");
-            Pass("picker: chance 1, cooldown 0 → sticker from the candidates right after the answer, as a reply; a foreign id → nothing");
+            // No cooldown: the next answer right away gets its media too (another one: the same is not repeated in the chat for 24 h).
+            e.Clear(); e.PickerAnswer = user => { input = user; return Json.Write(new { id = dance }); };
+            await e.Process(GroupMsg(101, "сдали!"));
+            Assert(e.Calls("sendSticker").Single().Body.Text("sticker") == "f-c" &&
+                !JsonDocument.Parse(input!).RootElement.Field("candidates").EnumerateArray().Any(x => x.Number("id") == cat), "Second media blocked or repeated");
 
-            // Cooldown and daily limit.
-            e.Clear(); e.PickerAnswer = _ => Json.Write(new { id = sad });
-            f.PickerCooldownMinutes = 10; e.S.Set("picker_last:-100123", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
-            await e.Process(GroupMsg(102, "ещё вопрос"));
-            Assert(e.Asked("picker").Count == 0 && e.Calls("sendMessage").Count == 1, "Cooldown ignored");
-            f.PickerCooldownMinutes = 0; f.PickerDailyLimit = 2; e.Clear();
-            await e.Process(GroupMsg(103, "и ещё"));
-            Assert(e.Asked("picker").Count == 0 && e.Calls("sendSticker").Count == 0, "Daily limit ignored");
-            Pass("picker: cooldown in the chat and the daily limit stop the call");
+            // Only a tag: media without text. A foreign id: nothing. No tag: no Picker at all.
+            e.Clear(); e.Writer = Wants; e.PickerAnswer = _ => Json.Write(new { id = sad });
+            await e.Process(GroupMsg(102, "ахах"));
+            Assert(e.Calls("sendMessage").Count == 0 && e.Calls("sendSticker").Single().Body.Text("sticker") == "f-b", "Tag-only answer wrong");
+            var shock = Add(e.S, "e", "кот в шоке");
+            e.Clear(); e.Writer = "ну такое\n" + Wants; e.PickerAnswer = _ => """{"id":424242}""";
+            await e.Process(GroupMsg(103, "ну и денёк"));
+            Assert(e.Asked("picker").Count == 1 && e.Calls("sendSticker").Count == 0 && e.Calls("sendMessage").Single().Body.Text("text") == "ну такое", "Foreign id sent");
+            e.Clear(); e.Writer = "Пара в 10:40, А412";
+            await e.Process(GroupMsg(104, "где пара?"));
+            Assert(e.Asked("picker").Count == 0 && e.Calls("sendSticker").Count == 0, "Picker without a tag");
+            Pass("media in answers: the Writer's [МЕДИА: …] tag → the Picker → one media right after the text, no cooldown; tag only → media only; foreign id or no tag → nothing");
 
-            // Render and action never get media; no candidates — no call; DM only with PickerInPrivate.
-            f.PickerDailyLimit = 30; e.Clear();
-            e.Routes.Enqueue(Route("render", "ржака", "next_lesson"));
-            await e.Process(GroupMsg(104, "какая пара?"));
-            e.Routes.Enqueue(Route("action", "ржака", "pin"));
-            await e.Process(RouterTests.Group(2, 105, "закрепи"));
-            e.Routes.Enqueue(Route("action", "ржака", "edit_deadline"));
-            await e.Process(RouterTests.Group(2, 113, "как дела с дедлайном?"));
-            Assert(e.Asked("plan").Count == 1 && e.Asked("chat").Count == 1, "Action did not reach the Writer through the planner");
+            // Necessary checks: no candidates; the flag; DM only with PickerInPrivate (and no rules about media there).
+            e.Clear(); e.Writer = "лол\n" + Wants;
+            foreach (var id in new[] { cat, sad, dance, shock }) e.S.MediaUpdate(id, null, null, null, false);
+            await e.Process(GroupMsg(105, "без кандидатов"));
+            Assert(e.Asked("picker").Count == 0 && e.Calls("sendMessage").Single().Body.Text("text") == "лол", "Picker called without candidates");
+            foreach (var id in new[] { cat, sad, dance, shock }) e.S.MediaUpdate(id, null, null, null, true);
             await e.Process(RouterTests.Dm(3, 106, "привет"));
-            Assert(e.Asked("picker").Count == 0 && e.Calls("sendSticker").Count == 0, "Picker for render/action or in DM");
-            e.S.MediaUpdate(sad, null, null, null, false);
-            await e.Process(GroupMsg(107, "без кандидатов"));
-            Assert(e.Asked("picker").Count == 0, "Picker called without candidates");
-            e.S.MediaUpdate(sad, null, null, null, true);
-            f.PickerInPrivate = true;
-            await e.Process(RouterTests.Dm(3, 108, "привет"));
-            Assert(e.Asked("picker").Count == 1 && e.Calls("sendSticker").Single().Body.Number("chat_id") == 3, "PickerInPrivate ignored");
-            f.PickerInPrivate = false;
-            Pass("picker: not for render/action, not without candidates, in DM only with PickerInPrivate");
+            Assert(e.Asked("picker").Count == 0 && !e.WriterSystem.Contains("[МЕДИА:") && e.Calls("sendMessage").Last().Body.Text("text") == "лол", "Media in DM without PickerInPrivate");
+            f.PickerInPrivate = true; e.PickerAnswer = _ => Json.Write(new { id = sad });
+            await e.Process(RouterTests.Dm(3, 107, "привет"));
+            Assert(e.Asked("picker").Count == 1 && e.Calls("sendSticker").Single().Body.Number("chat_id") == 3 && e.WriterSystem.Contains("[МЕДИА:"), "PickerInPrivate ignored");
+            f.PickerInPrivate = false; f.MediaPicker = false; e.Clear();
+            await e.Process(GroupMsg(108, "флаг выключен"));
+            Assert(e.Asked("picker").Count == 0 && !e.WriterSystem.Contains("[МЕДИА:") && e.Calls("sendMessage").Single().Body.Text("text") == "лол", "Flag off still sends media");
+            f.MediaPicker = true;
+            Pass("media in answers: no candidates → no call; flag off or DM without PickerInPrivate → no rules, tag cut, nothing sent");
 
-            // react_only with media_hint: media without text; without the hint — only the reaction.
-            e.Clear(); e.S.Delete("picker_last:-100123");
-            var third = Add(e.S, "c", "победный танец");
-            e.PickerAnswer = user => { input = user; return Json.Write(new { id = third }); };
-            e.Routes.Enqueue(Route("react_only", "победа"));
-            await e.Process(GroupMsg(109, "сдали!!!"));
-            Assert(JsonDocument.Parse(input!).RootElement is var pick && pick.Text("hint") == "победа" && pick.Field("answer").ValueKind is JsonValueKind.Undefined or JsonValueKind.Null &&
-                e.Calls("sendSticker").Single().Body.Text("sticker") == "f-c" && e.Calls("sendMessage").Count == 0, "react_only hint did not bring media");
-            e.Clear(); e.Routes.Enqueue(Route("react_only"));
-            await e.Process(GroupMsg(110, "ок"));
-            Assert(e.Asked("picker").Count == 0 && e.Calls("sendSticker").Count == 0, "react_only without a hint called the picker");
-            var allowed = e.W.Catalog.For("member", Capabilities.Group);
-            Assert(BotWorker.ParseRoute(Route("writer", new string('я', 61)), allowed, ["👍"], DateOnly.FromDateTime(DateTime.Today), out _, media: true)!.MediaHint is null &&
-                BotWorker.ParseRoute(Route("writer", "ржака"), allowed, ["👍"], DateOnly.FromDateTime(DateTime.Today), out _, media: false)!.MediaHint is null &&
-                BotWorker.ParseRoute(Route("render", "ржака", "next_lesson"), allowed, ["👍"], DateOnly.FromDateTime(DateTime.Today), out _, media: true)!.MediaHint is null &&
-                BotWorker.ParseRoute(Route("writer", "ржака"), allowed, ["👍"], DateOnly.FromDateTime(DateTime.Today), out _, media: true)!.MediaHint == "ржака", "media_hint checks wrong");
-            Assert(OpenRouterClient.RouterSystem(f).Contains("media_hint") && !OpenRouterClient.RouterSystem(new FeatureSettings()).Contains("media_hint"), "Router rules ignore the flag");
-            Pass("picker: react_only with media_hint → media without text; hint over 60 chars, without the flag or for render — dropped");
-
-            // Restart after the text but before the media: one text, one media, one choice.
-            e.Clear(); e.S.Delete("picker_last:-100123");
+            // Restart after the text but before the media: one text, one choice, one media.
+            e.Clear();
             var fresh = Add(e.S, "d", "дедлайны горят синим пламенем");
             e.PickerAnswer = _ => Json.Write(new { id = fresh });
             var fails = 1;
@@ -359,18 +345,15 @@ static class MediaTests
             try { await e.Process(GroupMsg(111, "что по дедлайнам")); throw new Exception("Expected the media failure"); }
             catch (TelegramError t) when (t.Code == 503) { }
             await e.Process(GroupMsg(111, "что по дедлайнам"));
+            await e.Process(GroupMsg(111, "что по дедлайнам"));
             Assert(e.Calls("sendMessage").Count == 1 && e.Calls("sendSticker").Count == 2 && e.Asked("picker").Count == 1 && e.Asked("chat").Count == 1 &&
                 e.S.Media(fresh)!.Uses == 1 && e.S.Post("reply:-100123:111") is not null, "Restart duplicated text or media");
-            await e.Process(GroupMsg(111, "что по дедлайнам"));
-            Assert(e.Calls("sendSticker").Count == 2, "Replay sent the media again");
 
             // Telegram rejects the file: the item is switched off, the answer stays done.
-            e.Clear(); e.S.Delete("picker_last:-100123");
-            e.Fail = m => m == "sendSticker" ? 400 : null;
-            e.PickerAnswer = _ => Json.Write(new { id = sad });
+            e.Clear(); e.Fail = m => m == "sendSticker" ? 400 : null; e.PickerAnswer = _ => Json.Write(new { id = shock });
             await e.Process(GroupMsg(112, "а теперь"));
-            Assert(e.S.Media(sad) is { Enabled: false } && e.S.Post("reply:-100123:112") is not null, "Rejected file not disabled");
-            Pass("picker: restart between text and media → one media; Telegram rejects the file → item disabled");
+            Assert(e.Calls("sendSticker").Count == 1 && e.S.Media(shock) is { Enabled: false } && e.S.Post("reply:-100123:112") is not null, "Rejected file not disabled");
+            Pass("media in answers: restart between text and media → one media; Telegram rejects the file → item disabled");
         }
         return count;
     }

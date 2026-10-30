@@ -487,7 +487,7 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
             case "/api/features":
             {
                 if (Features(body.Field("settings"), config.Features) is not { } next)
-                { await Send(response, 400, new { ok = false, error = "Неверные настройки: флаги — true/false, числа — целые от 0 до 10000, шанс — от 0 до 1" }); return; }
+                { await Send(response, 400, new { ok = false, error = "Неверные настройки: флаги — true/false, числа — целые от 0 до 10000" }); return; }
                 config.Features = next;
                 store.Set("feature_settings", Json.Write(next));
                 await Send(response, 200, new { ok = true, features = next });
@@ -654,7 +654,6 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                      p.Value.EnumerateObject().All(x => BotWorker.PublicationKinds.Contains(x.Name) && x.Value.ValueKind == JsonValueKind.String && BotWorker.PublicationModes.Contains(x.Value.GetString())))
                 f.SetValue(next, p.Value.EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetString()!));
             else if (f.PropertyType == typeof(int) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt32(out var n) && n is >= 0 and <= 10000) f.SetValue(next, n);
-            else if (f.PropertyType == typeof(double) && p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetDouble(out var d) && d is >= 0 and <= 1) f.SetValue(next, d);
             else return null;
         }
         return next;

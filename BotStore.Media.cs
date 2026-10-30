@@ -168,16 +168,4 @@ public sealed partial class BotStore
     }
 
     public int DigestSpent(DateTimeOffset now) => int.TryParse(Get($"digest_budget:{Config.LocalNow(now):yyyy-MM-dd}"), out var n) ? n : 0;
-    /// <summary>One Picker call in the group's local day.</summary>
-    public bool PickerBudget(DateTimeOffset now, int limit)
-    {
-        lock (gate)
-        {
-            var key = $"picker_budget:{Config.LocalNow(now):yyyy-MM-dd}";
-            var used = int.TryParse(Get(key), out var n) ? n : 0;
-            if (used >= limit) return false;
-            Set(key, (used + 1).ToString());
-            return true;
-        }
-    }
 }

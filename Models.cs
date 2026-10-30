@@ -137,11 +137,8 @@ public sealed class FeatureSettings
     public Dictionary<string, string> PublicationModes { get; set; } = new();
     /// <summary>Stickers from the developer's DM and files from the web admin, described in the background.</summary>
     public bool MediaLibrary { get; set; }
-    /// <summary>Sometimes a fitting sticker, picture or GIF from the library goes after an answer (needs MediaLibrary).</summary>
+    /// <summary>The Writer may add one sticker, picture or GIF from the library to its answer (needs MediaLibrary).</summary>
     public bool MediaPicker { get; set; }
-    public double PickerChance { get; set; } = 0.25;
-    public int PickerCooldownMinutes { get; set; } = 10;
-    public int PickerDailyLimit { get; set; } = 30;
     public bool PickerInPrivate { get; set; }
 }
 

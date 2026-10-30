@@ -395,9 +395,9 @@ public sealed partial class BotWorker : BackgroundService
                 if (features.WriterDiet)
                 {
                     var (trusted, user) = conversation.Writer(m, isPrivate, decision?.Blocks, webNote);
-                    answer = await ai.Chat(trusted, user, Tag(m), config.SplitReplies, ct, web);
+                    answer = await ai.Chat(trusted, user, Tag(m), config.SplitReplies, ct, web, MediaAllowed(isPrivate));
                 }
-                else answer = await ai.Chat(conversation.AdminContext(isPrivate), conversation.Context(m, isPrivate, webNote), Tag(m), config.SplitReplies, ct, web);
+                else answer = await ai.Chat(conversation.AdminContext(isPrivate), conversation.Context(m, isPrivate, webNote), Tag(m), config.SplitReplies, ct, web, MediaAllowed(isPrivate));
                 if (web is { Sources.Count: > 0 }) tail = OpenRouterClient.SourcesHtml(web.Sources);
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
@@ -413,7 +413,8 @@ public sealed partial class BotWorker : BackgroundService
             store.SavePost(answerKey, 0, answer);
         }
         var (text, poll) = ExtractPoll(answer);
-        if (text.Length == 0 && poll is null) text = "Не получилось собрать опрос — сформулируй ещё раз?";
+        (text, var media) = ExtractMedia(text);
+        if (text.Length == 0 && poll is null && media is null) text = "Не получилось собрать опрос — сформулируй ещё раз?";
         List<string> parts = text.Length == 0 ? [] : config.SplitReplies ? OpenRouterClient.Parts(text) : [text.Replace("\n" + OpenRouterClient.Split + "\n", "\n")];
         var formatted = false;
         if (parts.Count > 0 && store.Post(tailKey)?.Text is { Length: > 0 } code)
@@ -436,7 +437,7 @@ public sealed partial class BotWorker : BackgroundService
                     catch (TelegramError e) when (e.Code is 400 or 403) { log.LogWarning("Pin rejected: {Error}", e.Description); }
             }
             catch (TelegramError e) when (e.Code == 400) { log.LogWarning("Poll rejected: {Error}", e.Description); }
-        if (text.Length > 0 && !answer.StartsWith(NoAiPrefix, StringComparison.Ordinal)) await Pick(m, key, text, decision?.MediaHint, ct);
+        if (media is not null && MediaAllowed(isPrivate)) await Pick(m, key, text, media, ct);
         store.SavePost(key, first ?? 0, "");
         ForgetPick(key);
         store.ForgetPost(key + ":poll");
