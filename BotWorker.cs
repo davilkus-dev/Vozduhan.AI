@@ -425,6 +425,9 @@ public sealed partial class BotWorker : BackgroundService
                 store.SavePost(key + ":poll", (int)sent.Number("message_id"), "");
                 store.Remember(chat, sent.TopicId(), (int)sent.Number("message_id"), sent.Number("date"), sent.GetRawText());
                 first ??= (int)sent.Number("message_id");
+                if (poll.Pin && config.CanEdit(actor))
+                    try { await telegram.Pin(chat, (int)sent.Number("message_id"), true, ct); }
+                    catch (TelegramError e) when (e.Code is 400 or 403) { log.LogWarning("Pin rejected: {Error}", e.Description); }
             }
             catch (TelegramError e) when (e.Code == 400) { log.LogWarning("Poll rejected: {Error}", e.Description); }
         store.SavePost(key, first ?? 0, "");
@@ -434,7 +437,7 @@ public sealed partial class BotWorker : BackgroundService
         for (var i = 0; i < parts.Count; i++) store.ForgetPost(key + ":part:" + i);
     }
 
-    public sealed record PollSpec(string Question, string[] Options, bool Anonymous, bool Multiple, int? Correct);
+    public sealed record PollSpec(string Question, string[] Options, bool Anonymous, bool Multiple, int? Correct, bool Pin = false);
 
     /// <summary>The Writer's [ОПРОС] block cut out of its answer; an invalid block is dropped (null poll).</summary>
     public static (string Text, PollSpec? Poll) ExtractPoll(string answer)
@@ -442,11 +445,11 @@ public sealed partial class BotWorker : BackgroundService
         var block = Regex.Match(answer, @"\[ОПРОС\](.*?)(?:\[/ОПРОС\]|$)", RegexOptions.Singleline | RegexOptions.IgnoreCase);
         if (!block.Success) return (answer, null);
         var text = (answer[..block.Index] + answer[(block.Index + block.Length)..]).Trim();
-        string? question = null; var options = new List<string>(); bool anonymous = true, multiple = false; int? correct = null;
+        string? question = null; var options = new List<string>(); bool anonymous = true, multiple = false, pin = false; int? correct = null;
         foreach (var raw in block.Groups[1].Value.Split('\n'))
         {
             var line = WebUtility.HtmlDecode(Regex.Replace(raw, "<[^>]+>", "")).Trim();
-            var field = Regex.Match(line, @"^(вопрос|анонимный|несколько|верный)\s*:\s*(.*)$", RegexOptions.IgnoreCase);
+            var field = Regex.Match(line, @"^(вопрос|анонимный|несколько|верный|закрепить)\s*:\s*(.*)$", RegexOptions.IgnoreCase);
             var value = field.Groups[2].Value.Trim();
             var yes = value.StartsWith("да", StringComparison.OrdinalIgnoreCase);
             switch (field.Success ? field.Groups[1].Value.ToLowerInvariant() : "")
@@ -454,6 +457,7 @@ public sealed partial class BotWorker : BackgroundService
                 case "вопрос": question = value; break;
                 case "анонимный": anonymous = yes; break;
                 case "несколько": multiple = yes; break;
+                case "закрепить": pin = yes; break;
                 case "верный": correct = int.TryParse(value, out var n) ? n - 1 : -1; break;
                 default:
                     if (Regex.Match(line, @"^(?:[-•–]|\d+[.)])\s*(.+)$") is { Success: true } o) options.Add(o.Groups[1].Value.Trim());
@@ -462,7 +466,7 @@ public sealed partial class BotWorker : BackgroundService
         }
         var ok = question is { Length: > 0 and <= 300 } && options.Count is >= 2 and <= 10 && options.All(o => o.Length <= 100)
             && options.Distinct().Count() == options.Count && (correct is null || correct >= 0 && correct < options.Count);
-        return (text, ok ? new(question!, options.ToArray(), anonymous, multiple, correct) : null);
+        return (text, ok ? new(question!, options.ToArray(), anonymous, multiple, correct, pin) : null);
     }
 
     /// <summary>The message, what it replies to and the author's messages just before it (a photo and then «что тут?»).</summary>

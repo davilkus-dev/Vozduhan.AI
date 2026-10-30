@@ -163,6 +163,9 @@ public sealed partial class BotWorker
             new("delete_deadline", "Удалить дедлайн", "удалить ошибочно созданный дедлайн вместе с его постами (по ID, с подтверждением кнопкой)",
                 editors, anywhere, [new("id", "int", true, Note: "ID дедлайна, #N")], action, DeleteDeadlineCard)
                 { Section = "editor", Slash = false, Help = "«удали дедлайн #12» — убрать ошибочный дедлайн вместе с постами (с подтверждением)", Say = "ошибочный дедлайн — «удали дедлайн #12» (уберу вместе с постами, после подтверждения)" },
+            new("pin", "Закрепить", "закрепить или открепить в чате сообщение, на которое человек ответил своей просьбой", editors, anywhere,
+                [new("unpin", "bool", Note: "true — открепить")], action, PinMessage)
+                { Section = "editor", Slash = false, Say = "закреп — ответь на сообщение «закрепи» или «открепи»" },
             new("undo", "Откат", "откатить последнее изменение реестра (с подтверждением)", editors, anywhere, [], action,
                 async (c, ct) => { await Undo(c.Message, c.Key, c.Actor, ct); return null; })
                 { Section = "editor", Help = "/undo — откатить последнее изменение", Say = "откат — «откати последнее изменение»" },
@@ -266,6 +269,20 @@ public sealed partial class BotWorker
     };
 
     /// <summary>Asks to confirm deleting a mistaken deadline (block 1, C2); the button carries the version it was shown at.</summary>
+    private async Task<string?> PinMessage(CapabilityCall c, CancellationToken ct)
+    {
+        var unpin = c.Args.TryGetValue("unpin", out var u) && (bool)u;
+        var target = c.Message.Field("reply_to_message");
+        if (target.ValueKind != JsonValueKind.Object || target.Number("message_id") == c.Message.TopicId())
+            return unpin ? "Ответь «открепи» на закреплённое сообщение." : "Ответь «закрепи» на сообщение, которое надо закрепить.";
+        try { await telegram.Pin(c.Message.Field("chat").Number("id"), (int)target.Number("message_id"), !unpin, ct); }
+        catch (TelegramError e) when (e.Code is 400 or 403) { return "Не вышло: у меня нет права закреплять сообщения в этом чате."; }
+        store.SavePost(c.Key, 0, "");
+        if (c.Message.Field("chat").Number("id") != config.GroupId) return unpin ? "Открепил." : "Закрепил.";
+        try { await telegram.React(c.Message.Field("chat").Number("id"), (int)c.Message.Number("message_id"), "👌", ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
+        return null;
+    }
+
     private async Task<string?> DeleteDeadlineCard(CapabilityCall c, CancellationToken ct)
     {
         var id = (int)c.Args["id"];
