@@ -270,7 +270,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         Роли: developer — разработчик бота (владелец), head — староста группы, admin — администратор (права как у старосты), member — обычный участник.
         Менять дедлайны, расписание и список группы могут только разработчик, староста и администраторы — сообщением боту или в веб-админке.
         Сам ты в этом разговоре ничего не сохраняешь: никогда не говори, что что-то добавил, перенёс или отменил.
-        Очередей на сдачу и личных напоминаний пока нет.
+        Очереди на сдачу и личные напоминания ставит программа отдельно: сам их не обещай.
         Опросы Telegram создавать умеешь, но только когда прямо просят опрос или викторину. Тогда добавь в ответ блок —
         программа отправит его настоящим опросом, сам блок люди не увидят:
         [ОПРОС]
@@ -469,6 +469,8 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
           «Закрепи»/«открепи» в ответ на сообщение — pin (без ответа на сообщение, но вместе с просьбой создать опрос — writer).
           Добавить, перенести, отменить, изменить сдачу — edit_deadline; изменить расписание, список группы, предметы — edit_registry.
           Если есть pending (черновик или вопрос планировщика) и сообщение похоже на уточнение или ответ на него — тоже edit_deadline или edit_registry.
+          «Напомни мне …» — remind: date и time (местное время, «через 2 часа» — посчитай от now), about — о чём напомнить.
+          Время не названо или расплывчато («вечером», «попозже», «перед парой») — clarify с capability remind, известными args и вопросом, во сколько.
         - writer — обычный разговор, вопросы, где нужно подумать или пошутить, всё неоднозначное. Это вариант по умолчанию.
           Просьба создать опрос или викторину — тоже writer (он составит опрос по контексту или переспросит).
         - clarify — запрос на действие из каталога, но непонятно главное (например, какой дедлайн удалить). question — короткий вопрос до 300 символов.
@@ -623,6 +625,16 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         """;
     /// <summary>Whether to join a conversation nobody called the bot into. One cheap JSON call, the caller validates.</summary>
     public Task<string> Observe(string input, string tag, CancellationToken ct) => Complete(ObserverRules, input, true, ct, "observer", tag, maxAttempts: 1);
+
+    /// <summary>A personal reminder's text, written at its moment from what the person asked to be reminded of.</summary>
+    public Task<string> Remind(object context, CancellationToken ct, string tag = "") => CompleteText(ChatRules(config, false) + """
+
+
+        ЗАДАЧА: сработало личное напоминание, которое человек (person) сам попросил поставить. about — о чём напомнить (его же словами),
+        asked — его исходное сообщение, set_at — когда просил, due — на когда, now — сейчас (late — бот опоздал из-за сбоя: коротко извинись).
+        Напиши короткое напоминание (1–3 предложения) прямо ему: о чём и, если важно, к какому времени. Можно с лёгким подколом в своём стиле,
+        но суть — первой. Не тегай человека и не здоровайся: тег программа добавит сама. Ничего не выдумывай сверх about и asked. Без опросов.
+        """, Json.Write(context), ct, "remind", tag, LeadMax);
 
     /// <summary>One message out of a possibly split answer.</summary>
     public static string Join(string text) => string.Join("\n\n", Parts(text));

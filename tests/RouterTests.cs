@@ -29,6 +29,7 @@ static class RouterTests
         public readonly List<(string Method, JsonElement Body)> Tg = [];
         public readonly List<(string Kind, string System, string User)> Ai = [];
         public Func<string, (HttpStatusCode, object)?>? Reply;
+        public Func<string, JsonElement, int?>? Fail;
         public Queue<string> Routes = new();
         public string Plan = "{}";
         int next = 7000;
@@ -56,6 +57,7 @@ static class RouterTests
                 var p = JsonDocument.Parse(body).RootElement.Clone();
                 lock (e.Tg) e.Tg.Add((method, p));
                 lock (e.Seq) e.Seq.Add("tg:" + method);
+                if (e.Fail?.Invoke(method, p) is { } code) return (HttpStatusCode.OK, new { ok = false, error_code = code, description = "Forbidden: bot can't initiate conversation" });
                 if (method != "sendMessage") return (HttpStatusCode.OK, new { ok = true, result = true });
                 return (HttpStatusCode.OK, new { ok = true, result = new { message_id = Interlocked.Increment(ref e.next), date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                     chat = new { id = p.Number("chat_id"), type = p.Number("chat_id") > 0 ? "private" : "supergroup" }, message_thread_id = p.Number("message_thread_id"),

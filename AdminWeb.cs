@@ -521,6 +521,23 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, problem is null ? 200 : 400, new { ok = problem is null, error = problem });
                 return;
             }
+            case "/api/reminders" when !post:
+                await Send(response, 200, new
+                {
+                    ok = true, reminders = store.Reminders(200).Select(x => new
+                    {
+                        x.Id, name = config.R.Members.FirstOrDefault(m => m.Key is not null && m.Key == x.Member)?.FullName ?? x.Name, x.About, x.Due, x.Status,
+                        x.Source, x.Created, text = x.Text is null ? null : TelegramHtml.Plain(x.Text), flood = x.FloodId > 0, dm = x.Dm > 0 ? "sent" : x.Dm < 0 ? "closed" : null
+                    })
+                });
+                return;
+            case "/api/reminder" when post:
+            {
+                var id = body.Field("id").ValueKind == JsonValueKind.Number && body.Field("id").TryGetInt64(out var n) ? n : 0;
+                var ok = body.Text("action") == "cancel" && store.FinishReminder(id, "cancelled", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                await Send(response, ok ? 200 : 400, new { ok, error = ok ? null : "Это напоминание уже не ждёт отправки." });
+                return;
+            }
             case "/api/ideas" when !owner:
                 await Send(response, 403, new { ok = false, error = "Идеи — только для разработчика" });
                 return;

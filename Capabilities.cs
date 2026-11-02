@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace Vozduhan.AI;
 
-/// <summary>A simple argument: type date | int | string | bool | enum.</summary>
+/// <summary>A simple argument: type date | time (HH:mm) | int | string | bool | enum.</summary>
 public sealed record CapabilityArg(string Name, string Type, bool Required = false, string[]? Options = null, string? Note = null);
 
 /// <summary>What a handler gets: checked role and place, validated arguments, the message it answers and its reply key.</summary>
@@ -81,6 +81,8 @@ public sealed class Capabilities(BotConfig config, IReadOnlyList<Capability> all
                 {
                     "date" => v.ValueKind == JsonValueKind.String && BotWorker.ParseDate(v.GetString()!.Trim(), today) is { } d
                               && Math.Abs(d.DayNumber - today.DayNumber) <= 400 ? d : null,
+                    "time" => v.ValueKind == JsonValueKind.String && TimeOnly.TryParseExact(v.GetString()!.Trim(), ["H:mm", "HH:mm"], CultureInfo.InvariantCulture,
+                              DateTimeStyles.None, out var t) ? t : null,
                     "int" => v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) && n >= 0 ? n
                            : v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out n) ? n : null,
                     "bool" => v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean()
@@ -163,6 +165,10 @@ public sealed partial class BotWorker
             new("start_queue", "Очередь на сдачу", "открыть очередь на сдачу по предмету на дату: список с кнопками записи, закроется после пары",
                 editors, anywhere, [], action, async (c, ct) => { await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct); return null; })
                 { Section = "editor", Slash = false, Say = "очередь на сдачу — «создай очередь на сдачу завтра по мобилкам»" },
+            new("remind", "Напоминание", "личное напоминание автору сообщения: в назначенное время бот тегнет его в Воздуханстве и напишет в личку",
+                all, anywhere, [new("date", "date", true, Note: "YYYY-MM-DD из calendar"), new("time", "time", true, Note: "HH:mm, местное"),
+                    new("about", "string", true, Note: "о чём напомнить, коротко")], action, AddReminder)
+                { Slash = false, Say = "напоминания — «напомни мне завтра в 9:00 сдать лабу по сиаоду»" },
             new("delete_deadline", "Удалить дедлайн", "удалить ошибочно созданный дедлайн вместе с его постами (по ID, с подтверждением кнопкой)",
                 editors, anywhere, [new("id", "int", true, Note: "ID дедлайна, #N")], action, DeleteDeadlineCard)
                 { Section = "editor", Slash = false, Help = "«удали дедлайн #12» — убрать ошибочный дедлайн вместе с постами (с подтверждением)", Say = "ошибочный дедлайн — «удали дедлайн #12» (уберу вместе с постами, после подтверждения)" },

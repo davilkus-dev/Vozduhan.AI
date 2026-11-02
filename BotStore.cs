@@ -89,6 +89,7 @@ public sealed partial class BotStore : IDisposable
         InitMedia();
         InitIdeas();
         InitQueues();
+        InitReminders();
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");
@@ -520,6 +521,7 @@ public sealed partial class BotStore : IDisposable
                 ("s", now.ToUnixTimeSeconds()));
             // Unanswered clarifications: marked, not deleted (the rows stay as history).
             Exec("UPDATE pending_slots SET state='expired' WHERE state='active' AND expires<$s", ("s", now.ToUnixTimeSeconds()));
+            Exec("DELETE FROM reminders WHERE status<>'pending' AND due<$s", ("s", now.AddDays(-90).ToUnixTimeSeconds()));
             Exec("UPDATE ideas SET status='expired' WHERE status IN ('new','approved') AND publication_key IS NULL AND expires<$s", ("s", now.ToUnixTimeSeconds()));
             var day = now.ToString("yyyy-MM-dd");
             if (Get("backup_day") == day) return;

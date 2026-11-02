@@ -223,7 +223,7 @@ $("#logout").onclick=async()=>{await api("logout",{});location.reload()};
 window.onbeforeunload=e=>{if(dirty()){e.preventDefault();e.returnValue=""}};
 
 // ---------- navigation ----------
-const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["queues","📋","Очереди"],["plan","🛎","План бота"],["-"],
+const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["queues","📋","Очереди"],["reminders","⏲","Напоминания"],["plan","🛎","План бота"],["-"],
   ["subjects","🎓","Предметы"],["members","👥","Группа"],/*OWNER*/["knowledge","🧠","Знания",true],/*END*/["settings","🔔","Звонки и семестр"],["-"],
   ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],["usage","💸","Расходы",true],["media","🖼","Медиатека",true],["ideas","💡","Идеи",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
 function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
@@ -622,7 +622,7 @@ const num=n=>(n||0).toLocaleString("ru-RU");
 const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
 const KUSE={chat:"ответ в чате","chat-web":"Ответ с поиском",router:"Маршрутизатор",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",picker:"Подбор медиа",
   "ambient-deadline":"вводная поста дедлайна","ambient-wakeup":"напоминание","ambient-summary":"утренняя сводка","ambient-morning":"утро в чате",
-  "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост",idea:"генератор идей",observer:"наблюдатель"};
+  "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост",idea:"генератор идей",observer:"наблюдатель",remind:"напоминание"};
 const kuse=k=>`<span title="${esc(k)}">${esc(KUSE[k]||k)}</span>`;
 const wasteReason=r=>({length:"обрыв по длине",empty:"пустой ответ",invalid_json:"битый JSON",think:"рассуждения в тексте",
   "rejected:empty":"пустой ответ", "rejected:cjk":"иероглифы в тексте", "rejected:garbled":"битые символы", "rejected:not_russian":"ответ не по-русски",
@@ -742,6 +742,18 @@ VIEWS.queues=async el=>{
   $("#qa").onclick=async()=>{const v=await form("Новая очередь",[{k:"subjectId",label:"Предмет",type:"select",options:subjOptions()},{k:"date",label:"Дата",type:"date"},
     {k:"period",label:"Пара (пусто — по расписанию)",type:"select",options:periodOptions(true)},{k:"work",label:"Что сдаём (необязательно)",ph:"Практика №5"}],{date:S.me.today});
     if(v)go({action:"create",subjectId:v.subjectId,date:v.date,period:v.period==null?null:+v.period,work:v.work},"Очередь отправлена в чат")}};
+// ---------- reminders ----------
+const RST={pending:"🕓 ждёт",sent:"✅ отправлено",cancelled:"✖ отменено",missed:"⚠ не отправлено"};
+VIEWS.reminders=async el=>{
+  const viewId=renderId;
+  el.innerHTML=page("Напоминания","Личные напоминания: кто-то пишет боту «напомни мне завтра в 9 сдать лабу». В назначенное время бот сам пишет текст, тегает человека в Воздуханстве и пишет ему в личку, если она открыта.")+`<div class="card tw" id="rl"><div class="empty">Загрузка…</div></div>`;
+  const r=await api("reminders");if(viewId!==renderId)return;
+  if(!r.ok)return void($("#rl").innerHTML=`<div class="empty">${esc(r.error)}</div>`);
+  $("#rl").innerHTML=`<table><thead><tr><th>Когда</th><th>Кто</th><th>О чём</th><th>Статус</th><th></th></tr></thead><tbody>${r.reminders.map(x=>`<tr><td>${time(x.due)}</td><td>${esc(x.name)}</td>
+    <td title="${esc(x.source)}">${esc(x.about)}${x.text?`<div class="faint small">${esc(x.text)}</div>`:""}</td>
+    <td><span class="chip">${RST[x.status]||esc(x.status)}</span>${x.status==="sent"?`<div class="faint small">${x.dm==="sent"?"чат + личка":x.dm==="closed"?"только чат: личка закрыта":"чат"}</div>`:""}</td>
+    <td>${x.status==="pending"?`<button class="b d" data-rc="${x.id}">Отменить</button>`:""}</td></tr>`).join("")||'<tr><td colspan="5" class="empty">Напоминаний пока нет</td></tr>'}</tbody></table>`;
+  el.querySelectorAll("[data-rc]").forEach(b=>b.onclick=async()=>{const x=await api("reminder",{id:+b.dataset.rc,action:"cancel"});if(x.ok){toast("Отменено");render()}else info("Не получилось",`<p>${esc(x.error)}</p>`)})};
 // ---------- seen users ----------
 VIEWS.seen=async el=>{
   const viewId=renderId;el.innerHTML=page("Люди в Telegram","Все, кто писал боту или в группу. Если человек есть в списке без Telegram ID — привяжи, и бот начнёт ему отвечать.")+`<div class="card tw" id="su"><div class="empty">Загрузка…</div></div>`;
