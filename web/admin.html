@@ -225,7 +225,7 @@ window.onbeforeunload=e=>{if(dirty()){e.preventDefault();e.returnValue=""}};
 // ---------- navigation ----------
 const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["plan","🛎","План бота"],["-"],
   ["subjects","🎓","Предметы"],["members","👥","Группа"],/*OWNER*/["knowledge","🧠","Знания",true],/*END*/["settings","🔔","Звонки и семестр"],["-"],
-  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],["usage","💸","Расходы",true],["media","🖼","Медиатека",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
+  ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],["usage","💸","Расходы",true],["media","🖼","Медиатека",true],["ideas","💡","Идеи",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
 function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
   $("#nav").querySelectorAll("button").forEach(b=>b.onclick=()=>{S.tab=b.dataset.k;render();window.scrollTo(0,0)})}
 let renderId=0;
@@ -397,7 +397,10 @@ VIEWS.plan=async el=>{
     ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"],
     ["writerDiet","Диета: ответчику — только нужные куски данных и знаний (нужен маршрутизатор)"],["webSearch","Веб-поиск по решению маршрутизатора"],
     ["mediaLibrary","Медиатека: стикеры из лички разработчика и файлы из админки"],["mediaPicker","Медиа в ответах: бот сам кидает стикеры и картинки из медиатеки (нужна медиатека)"],
-    ["pickerInPrivate","Медиа в ответах и в личке"]];
+    ["pickerInPrivate","Медиа в ответах и в личке"],["ideas","Идеи: пул поводов для вбросов, ИИ пополняет его каждое утро"],
+    ["observer","Вмешательство: бот сам встревает в живой разговор в Воздуханстве, если может помочь фактом или пошутить"]];
+  const NUMS=[["ideasPerDay","Идей в сутки"],["ideaTtlDays","Идея живёт, дней"],["personCooldownDays","Один человек во вбросах по идеям — не чаще раза в N дней"],
+    ["observerPerDay","Вмешательств в день"],["observerMinGapMinutes","Вмешательство — не раньше чем через N минут после сообщения бота"]];
   const PKINDS=[["summary","Утро в «Сводку»"],["morning","Утро в Воздуханство"],["spont","Вбросы"],["eve","Напоминание накануне"],["wakeup","Будильники к дедлайнам"],["post","Отложенные посты"]];
   const PMODES=[["auto_preview","превью за 30 мин, без ответа — уходит"],["manual","только после ✅"],["auto","без превью"]];
   if($("#f_body"))api("features").then(x=>{if(viewId!==renderId||!x.ok)return;const f=x.features;
@@ -405,9 +408,10 @@ VIEWS.plan=async el=>{
       `<label>Описаний медиа в сутки, максимум</label><input type="number" id="f_lim" min="0" max="10000" value="${f.digestDailyLimit}">`+
       `<label>Поисков в сутки на всех</label><input type="number" id="f_wd" min="0" max="10000" value="${f.webSearchDailyLimit}">`+
       `<label>Поисков в сутки на человека (разработчик без лимита)</label><input type="number" id="f_wu" min="0" max="10000" value="${f.webSearchPerUserDaily}">`+
+      NUMS.map(([k,t])=>`<label>${t}</label><input type="number" id="n_${k}" min="0" max="10000" value="${f[k]}">`).join("")+
       PKINDS.map(([k,t])=>`<label>${t}</label><select id="pm_${k}">${PMODES.map(([m,mt])=>`<option value="${m}" ${(f.publicationModes||{})[k]===m||(!(f.publicationModes||{})[k]&&m==="auto_preview")?"selected":""}>${mt}</option>`).join("")}</select>`).join("");
     $("#f_save").onclick=async()=>{const settings={digestDailyLimit:+$("#f_lim").value,webSearchDailyLimit:+$("#f_wd").value,webSearchPerUserDaily:+$("#f_wu").value,
-      publicationModes:Object.fromEntries(PKINDS.map(([k])=>[k,$("#pm_"+k).value]))};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;
+      publicationModes:Object.fromEntries(PKINDS.map(([k])=>[k,$("#pm_"+k).value]))};for(const[k]of FEAT)settings[k]=$("#f_"+k).checked;for(const[k]of NUMS)settings[k]=+$("#n_"+k).value;
       const r=await api("features",{settings});if(r.ok)toast("Новые функции сохранены");else info("Ошибка",`<p>${esc(r.error)}</p>`)}});
   /*END*/
   el.querySelectorAll("[data-re]").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="Думаю…";const x=await api("wakeup/replan",{deadline:+b.dataset.re});if(x.ok)toast("ИИ поставил будильников: "+x.count);else info("Ошибка",`<p>${esc(x.error)}</p>`);render()});
@@ -618,7 +622,7 @@ const num=n=>(n||0).toLocaleString("ru-RU");
 const pct=v=>v==null?"—":(v*100).toFixed(v>0&&v<.1?1:0)+"%";
 const KUSE={chat:"ответ в чате","chat-web":"Ответ с поиском",router:"Маршрутизатор",digest:"описание медиа","digest-bg":"описание медиа на фоне",plan:"планировщик редактора",deadline:"разбор дедлайна",wakeplan:"план будильников",test:"проверка модели",picker:"Подбор медиа",
   "ambient-deadline":"вводная поста дедлайна","ambient-wakeup":"напоминание","ambient-summary":"утренняя сводка","ambient-morning":"утро в чате",
-  "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост"};
+  "ambient-eve":"вечернее напоминание","ambient-spontaneous":"вброс","ambient-manual":"ручной пост",idea:"генератор идей",observer:"наблюдатель"};
 const kuse=k=>`<span title="${esc(k)}">${esc(KUSE[k]||k)}</span>`;
 const wasteReason=r=>({length:"обрыв по длине",empty:"пустой ответ",invalid_json:"битый JSON",think:"рассуждения в тексте",
   "rejected:empty":"пустой ответ", "rejected:cjk":"иероглифы в тексте", "rejected:garbled":"битые символы", "rejected:not_russian":"ответ не по-русски",
@@ -686,6 +690,32 @@ VIEWS.media=async el=>{
   el.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{const m=item(b.dataset.mt);upd({id:m.id,enabled:!m.enabled},m.enabled?"Выключено":"Включено")});
   el.querySelectorAll("[data-md]").forEach(b=>b.onclick=async()=>{const i=await menu("Удалить медиа #"+b.dataset.md+"?",[{t:"Удалить",cls:"p"}],'<p class="muted">Бот перестанет его использовать. Запись останется в базе.</p>');
     if(i!==0)return;const x=await api("media/delete",{id:+b.dataset.md});if(x.ok){toast("Удалено");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)})};
+// ---------- ideas ----------
+const IST={new:"🆕 новая",approved:"✅ одобрена",used:"✔️ использована",rejected:"🚫 отклонена",expired:"⌛ просрочена"};
+VIEWS.ideas=async el=>{
+  const viewId=renderId;
+  el.innerHTML=page("Идеи","Поводы для вбросов: каждое утро их придумывает ИИ, можно добавить свои. Вброс берёт идею, чьи условия выполняются в момент отправки; идея про людей уходит только после ✅ в личке.",
+    `<button class="b p" id="ia">＋ Своя идея</button><button class="b" id="ig">🤖 Сгенерировать сейчас</button>`)+`<div id="il"><div class="card empty">Загрузка…</div></div>`;
+  const r=await api("ideas");if(viewId!==renderId)return;
+  if(!r.ok)return void($("#il").innerHTML=`<div class="card">${esc(r.error)}</div>`);
+  const label=Object.fromEntries(r.options),who=Object.fromEntries(r.members.map(m=>[m.key,m.name])),open=i=>i.status!=="used"&&i.status!=="expired";
+  $("#il").innerHTML=(r.enabled?"":`<div class="card muted small">Идеи выключены — включи в «План бота» → «Новые функции».</div>`)+`<div class="card tw"><table><thead><tr><th>Идея</th><th>Когда</th><th>О ком</th><th>Статус</th><th></th></tr></thead><tbody>${r.ideas.map(i=>`<tr class="${i.status==="new"||i.status==="approved"?"":"off"}">
+    <td>${esc(i.text)}<div class="faint small">${i.source==="manual"?"✍️ своя":"🤖 ИИ"} · ${time(i.created)}${i.publicationKey&&open(i)?" · в работе":""}</div></td>
+    <td>${i.conditions.map(c=>`<span class="chip">${esc(label[c]||c)}</span>`).join("")}</td><td>${i.people.map(p=>esc(who[p]||p)).join(", ")||'<span class="faint">—</span>'}</td><td>${IST[i.status]||esc(i.status)}</td>
+    <td style="white-space:nowrap">${open(i)?(i.status!=="approved"?`<button class="b ic" data-ok="${i.id}" title="Одобрить">✅</button>`:"")+(i.status!=="rejected"?`<button class="b ic" data-no="${i.id}" title="Отклонить">🚫</button>`:"")+`<button class="b ic" data-ed="${i.id}" title="Править">✏️</button>`:""}<button class="b ic d" data-rm="${i.id}" title="Удалить">🗑</button></td></tr>`).join("")||'<tr><td colspan="5" class="empty">Пока пусто</td></tr>'}</tbody></table></div>`;
+  const act=async(body,ok)=>{const x=await api("ideas",body);if(x.ok){toast(ok);render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)};
+  const edit=async i=>{const opts=[["","—"],...r.options],people=[["","—"],...r.members.map(m=>[m.key,m.name])];
+    const v=await form(i?"Идея #"+i.id:"Своя идея",[{k:"text",label:"О чём и по какому поводу написать (до 300 символов)",type:"textarea",rows:3},
+      ...[0,1,2].map(n=>({k:"c"+n,label:n?"И ещё условие":"Когда уместно",type:"select",options:opts})),...[0,1].map(n=>({k:"p"+n,label:n?"И ещё человек":"О ком (такой вброс уйдёт только после ✅)",type:"select",options:people}))],
+      {text:i?.text||"",...Object.fromEntries((i?.conditions||["any"]).map((c,n)=>["c"+n,c])),...Object.fromEntries((i?.people||[]).map((p,n)=>["p"+n,p]))});
+    if(v)act({action:"save",id:i?.id||0,text:v.text||"",conditions:[v.c0,v.c1,v.c2].filter(Boolean),people:[v.p0,v.p1].filter(Boolean)},"Сохранено")};
+  const find=id=>r.ideas.find(i=>i.id===+id);
+  $("#ia").onclick=()=>edit(null);
+  $("#ig").onclick=async()=>{const b=$("#ig");b.disabled=true;b.textContent="Думаю…";const x=await api("ideas",{action:"generate"});if(x.ok){toast("Новых идей: "+x.added);render()}else{info("Ошибка",`<p>${esc(x.error)}</p>`);render()}};
+  el.querySelectorAll("[data-ok]").forEach(b=>b.onclick=()=>act({action:"approve",id:+b.dataset.ok},"Одобрено"));
+  el.querySelectorAll("[data-no]").forEach(b=>b.onclick=()=>act({action:"reject",id:+b.dataset.no},"Отклонено"));
+  el.querySelectorAll("[data-ed]").forEach(b=>b.onclick=()=>edit(find(b.dataset.ed)));
+  el.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>act({action:"delete",id:+b.dataset.rm},"Удалено"))};
 /*END*/
 // ---------- seen users ----------
 VIEWS.seen=async el=>{

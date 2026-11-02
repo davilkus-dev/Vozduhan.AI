@@ -120,6 +120,10 @@ public sealed partial class BotStore
         lock (gate) Exec("UPDATE publications SET preview_message_id=$m, status=CASE WHEN $m=0 AND status='ready' THEN 'planned' ELSE status END, updated=$n WHERE key=$k",
             ("k", key), ("m", message), ("n", Now()));
     }
+    public void SetPublicationMode(string key, string mode)
+    {
+        lock (gate) Exec("UPDATE publications SET mode=$m, updated=$n WHERE key=$k", ("k", key), ("m", mode), ("n", Now()));
+    }
     public void MovePublicationDue(string key, long due, string note)
     {
         lock (gate) Exec("UPDATE publications SET due=$d, note=$note, updated=$n WHERE key=$k", ("k", key), ("d", due), ("note", note), ("n", Now()));

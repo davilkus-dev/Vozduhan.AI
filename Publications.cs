@@ -19,7 +19,8 @@ public sealed partial class BotWorker
     private const int MaxPublicationAttempts = 5;
     private readonly SemaphoreSlim publicationsGate = new(1);
 
-    private string ModeFor(string kind) => config.Features.PublicationModes.TryGetValue(kind, out var m) && PublicationModes.Contains(m) ? m : AutoPreview;
+    private string ModeFor(string kind, string? key = null) => key is not null && IdeaAboutPeople(key) ? ManualMode
+        : config.Features.PublicationModes.TryGetValue(kind, out var m) && PublicationModes.Contains(m) ? m : AutoPreview;
 
     /// <summary>The day's own events. roll: choose the day's random drops now if they are not chosen yet.</summary>
     internal IEnumerable<(string Key, string Kind, DateTimeOffset Due, int Topic)> DayEvents(DateOnly day, bool roll = true)
@@ -44,7 +45,7 @@ public sealed partial class BotWorker
             return store.Wakeups().FirstOrDefault(w => w.Id == id && w.Status == "pending") is { } w ? EnsureWakeup(w) : store.Publication(key);
         if (parts.Length >= 3 && parts[0] == "ambient" && DateOnly.TryParseExact(parts[2], "yyyy-MM-dd", out var day) &&
             DayEvents(day, roll: day == DateOnly.FromDateTime(config.LocalNow(DateTimeOffset.UtcNow))).FirstOrDefault(e => e.Key == key) is { Key: not null } e)
-            return store.Publication(key) ?? store.EnsurePublication(e.Key, e.Kind, e.Due.ToUnixTimeSeconds(), e.Topic, ModeFor(e.Kind));
+            return store.Publication(key) ?? store.EnsurePublication(e.Key, e.Kind, e.Due.ToUnixTimeSeconds(), e.Topic, ModeFor(e.Kind, e.Key));
         return store.Publication(key);
     }
 
@@ -61,7 +62,7 @@ public sealed partial class BotWorker
                 foreach (var e in DayEvents(day))
                 {
                     current.Add(e.Key);
-                    if (day == today || e.Due <= utc + PreviewLead) store.EnsurePublication(e.Key, e.Kind, e.Due.ToUnixTimeSeconds(), e.Topic, ModeFor(e.Kind));
+                    if (day == today || e.Due <= utc + PreviewLead) store.EnsurePublication(e.Key, e.Kind, e.Due.ToUnixTimeSeconds(), e.Topic, ModeFor(e.Kind, e.Key));
                 }
             foreach (var w in store.Wakeups().Where(w => w.Status == "pending")) EnsureWakeup(w);
             foreach (var p in store.ActivePublications())
@@ -177,7 +178,7 @@ public sealed partial class BotWorker
             "summary" => await GenerateAmbient("summary", moment, ct, strict: true, at: at, tag: p.Key),
             "morning" => await GenerateAmbient("morning", moment, ct, split: true, strict: true, at: at, tag: p.Key),
             "eve" => await GenerateAmbient("eve", moment, ct, strict: true, at: at, tag: p.Key),
-            _ => await GenerateAmbient("spontaneous", moment, ct, split: true, strict: true, at: at, tag: p.Key)
+            _ => await GenerateAmbient("spontaneous", SpontExtra(p, at, forTime, previous), ct, split: true, strict: true, at: at, tag: p.Key)
         };
     }
 
@@ -206,6 +207,8 @@ public sealed partial class BotWorker
         }
         var (text, silent) = await TextFor(p, ct);
         if (text is null) { await Finish(p, "silent", silent, ct); return; }
+        // The text was just written by an idea about people: the drop waits for ✅ instead of going now.
+        if (p.Mode != ManualMode && store.Publication(p.Key)!.Mode == ManualMode) { await SendPreview(store.Publication(p.Key)!, utc, ct); return; }
         switch (p.Kind)
         {
             case "summary": await MorningSummary(EventDay(p), ct, text); break;
@@ -246,6 +249,7 @@ public sealed partial class BotWorker
     private async Task Finish(Publication p, string status, string? note, CancellationToken ct, string? previewText = null, long? at = null)
     {
         if (!store.FinishPublication(p.Key, status, note, at)) return;
+        store.IdeaFinished(p.Key, status == "sent", at ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         if (WakeupOf(p) is { Status: "pending" } w)
             store.SetWakeup(w.Id, status switch
             {

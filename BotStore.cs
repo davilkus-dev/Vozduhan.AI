@@ -87,6 +87,7 @@ public sealed partial class BotStore : IDisposable
         Exec("CREATE INDEX IF NOT EXISTS inbox_chat ON inbox(chat,state)");
         InitPublications();
         InitMedia();
+        InitIdeas();
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");
@@ -208,6 +209,12 @@ public sealed partial class BotStore : IDisposable
     {
         lock (gate) return Query("SELECT payload FROM messages WHERE chat=$c AND topic=$t AND id<=$id ORDER BY id DESC LIMIT $n",
             r => r.GetString(0), ("c", chat), ("t", topic), ("id", through), ("n", count)).AsEnumerable().Reverse().ToList();
+    }
+    /// <summary>When the bot last wrote in a conversation (unix seconds); null — not within the kept history.</summary>
+    public long? LastBotMessage(long chat, int topic, long botId)
+    {
+        lock (gate) return Scalar("SELECT MAX(sent) FROM messages WHERE chat=$c AND topic=$t AND (json_extract(payload,'$.from.id')=$u OR json_extract(payload,'$.from.is_bot')=1)",
+            ("c", chat), ("t", topic), ("u", botId)) is long t ? t : null;
     }
     public void RememberReference(long chat, int topic, int id, long sent, string payload)
     {
@@ -512,6 +519,7 @@ public sealed partial class BotStore : IDisposable
                 ("s", now.ToUnixTimeSeconds()));
             // Unanswered clarifications: marked, not deleted (the rows stay as history).
             Exec("UPDATE pending_slots SET state='expired' WHERE state='active' AND expires<$s", ("s", now.ToUnixTimeSeconds()));
+            Exec("UPDATE ideas SET status='expired' WHERE status IN ('new','approved') AND publication_key IS NULL AND expires<$s", ("s", now.ToUnixTimeSeconds()));
             var day = now.ToString("yyyy-MM-dd");
             if (Get("backup_day") == day) return;
             var folder = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(Config.DataPath))!, "backups");

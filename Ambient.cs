@@ -27,6 +27,8 @@ public sealed partial class BotWorker
         {
             try { await PlanTick(DateTimeOffset.UtcNow, ct); }
             catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Wake-up planning tick failed ({Type})", Failure(e)); }
+            try { await IdeaTick(DateTimeOffset.UtcNow, ct); }
+            catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Idea generation failed ({Type})", Failure(e)); }
             await Task.Delay(TimeSpan.FromSeconds(60), ct);
         }
     }

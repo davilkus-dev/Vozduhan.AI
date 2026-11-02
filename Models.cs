@@ -140,6 +140,15 @@ public sealed class FeatureSettings
     /// <summary>The Writer may add one sticker, picture or GIF from the library to its answer (needs MediaLibrary).</summary>
     public bool MediaPicker { get; set; }
     public bool PickerInPrivate { get; set; }
+    /// <summary>A daily pool of ideas for spontaneous drops; a drop takes one whose conditions hold.</summary>
+    public bool Ideas { get; set; }
+    public int IdeasPerDay { get; set; } = 6;
+    public int IdeaTtlDays { get; set; } = 14;
+    public int PersonCooldownDays { get; set; } = 3;
+    /// <summary>The bot may join a lively conversation in Воздуханство without being called.</summary>
+    public bool Observer { get; set; }
+    public int ObserverPerDay { get; set; } = 3;
+    public int ObserverMinGapMinutes { get; set; } = 45;
 }
 
 /// <summary>Model choice editable from the web admin (owner). Any OpenRouter model id works.</summary>

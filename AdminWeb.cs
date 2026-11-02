@@ -493,6 +493,47 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, 200, new { ok = true, features = next });
                 return;
             }
+            case "/api/ideas" when !owner:
+                await Send(response, 403, new { ok = false, error = "Идеи — только для разработчика" });
+                return;
+            case "/api/ideas" when !post:
+                await Send(response, 200, new { ok = true, enabled = config.Features.Ideas, ideas = store.Ideas(), options = worker.IdeaOptions(),
+                    members = config.R.Members.Where(m => m.Active).Select(m => new { m.Key, name = $"{m.ShortName} ({m.FullName})" }) });
+                return;
+            case "/api/ideas":
+            {
+                var id = body.Field("id").ValueKind == JsonValueKind.Number && body.Field("id").TryGetInt64(out var n) ? n : 0;
+                IEnumerable<string?> Strings(string name) => body.Field(name).ValueKind == JsonValueKind.Array
+                    ? body.Field(name).EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : "?") : [];
+                switch (body.Text("action"))
+                {
+                    case "generate":
+                        try { await Send(response, 200, new { ok = true, added = await worker.GenerateIdeas(DateTimeOffset.UtcNow, ct) }); }
+                        catch (Exception e) when (!ct.IsCancellationRequested)
+                        {
+                            log.LogWarning("Idea generation from the web failed: {Type}", e.GetType().Name);
+                            await Send(response, 502, new { ok = false, error = "ИИ не ответил или ответил не по схеме — попробуй ещё раз" });
+                        }
+                        return;
+                    case "approve" or "reject":
+                        await Send(response, 200, new { ok = store.SetIdeaStatus(id, body.Text("action") == "approve" ? "approved" : "rejected"), error = "Эту идею уже не поменять" });
+                        return;
+                    case "delete":
+                        await Send(response, 200, new { ok = store.DeleteIdea(id), error = "Идея сейчас в работе или её нет" });
+                        return;
+                    case "save":
+                        if (worker.CleanIdea(body.Text("text"), Strings("conditions"), Strings("people"), true, out var error) is not { } idea)
+                        { await Send(response, 400, new { ok = false, error }); return; }
+                        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                        var score = BotWorker.IdeaScore(idea.Conditions);
+                        if (id == 0) store.AddIdea(idea.Text, idea.Conditions, idea.People, "manual", "approved", score, now, now + config.Features.IdeaTtlDays * 86400L);
+                        else if (!store.UpdateIdea(id, idea.Text, idea.Conditions, idea.People, score)) { await Send(response, 400, new { ok = false, error = "Эту идею уже не поменять" }); return; }
+                        await Send(response, 200, new { ok = true });
+                        return;
+                }
+                await Send(response, 400, new { ok = false, error = "Неизвестное действие" });
+                return;
+            }
             case "/api/ai-settings" when !post && owner:
                 await Send(response, 200, new { ok = true, current = config.AiSnapshot(), file = config.FileAi, saved = store.Get("ai_settings") is not null });
                 return;

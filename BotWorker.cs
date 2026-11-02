@@ -23,7 +23,7 @@ public sealed partial class BotWorker : BackgroundService
         System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(200) { FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest });
     /// <summary>Live chat: at most this many messages are handled at once; waiting for a coalescing window does not hold a handler.</summary>
     private const int ChatHandlers = 3;
-    private readonly SemaphoreSlim chatHandlers = new(ChatHandlers);
+    private readonly SemaphoreSlim chatHandlers = new(ChatHandlers), observing = new(1);
     private static readonly AsyncLocal<bool> holdsHandler = new();
     public static TimeSpan CoalesceQuiet = TimeSpan.FromSeconds(1.5), CoalesceMax = TimeSpan.FromSeconds(6);
 
@@ -312,7 +312,21 @@ public sealed partial class BotWorker : BackgroundService
         var router = config.Features.Router;
         // In the group a message to someone else is ignored, unless its author owes the bot an answer to a pending question.
         var addressed = isPrivate || Conversation.CallsBot(m, botId, username) || joined is not null;
-        if (!addressed && !(router && store.ActiveSlot(actor, chat, DateTimeOffset.UtcNow) is { } open && open.Topic == topic)) return;
+        if (!addressed && !(router && store.ActiveSlot(actor, chat, DateTimeOffset.UtcNow) is { } open && open.Topic == topic))
+        {
+            // Off the chat queue: the observer waits for the background AI slot and must not delay the next message.
+            if (!isPrivate && config.Features.Observer && observing.Wait(0))
+            {
+                var copy = m.Clone();
+                _ = Task.Run(async () =>
+                {
+                    try { await Observe(copy, DateTimeOffset.UtcNow, ct); }
+                    catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Observer failed ({Type})", Failure(e)); }
+                    finally { observing.Release(); }
+                }, CancellationToken.None);
+            }
+            return;
+        }
         // Without the Router commands are answered deterministically through the catalog; with it there are no commands, only text.
         if (command.Length > 0 && !router) { await SlashCommand(m, responseKey, actor, isPrivate ? Capabilities.Dm : Capabilities.Group, command, words, text, ct); return; }
         if (command == "/start" && isPrivate) { await Respond(m, responseKey, Greeting(Catalog.Role(actor)), ct); return; }
