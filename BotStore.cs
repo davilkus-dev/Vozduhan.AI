@@ -88,6 +88,7 @@ public sealed partial class BotStore : IDisposable
         InitPublications();
         InitMedia();
         InitIdeas();
+        InitQueues();
         if (!tool)
         {
             Exec("UPDATE inbox SET state=0 WHERE state=1");

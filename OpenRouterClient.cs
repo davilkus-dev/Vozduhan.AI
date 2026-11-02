@@ -405,12 +405,14 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         var instruction = $$"""
             Ты разбираешь личное сообщение редактора бота группы (разработчик, староста или администратор; бывает и обращение к боту в общем чате) и решаешь, что это.
             Верни только один JSON-объект:
-            {"intent": "chat" | "deadline" | "registry" | "post", "deadline": {...} | null, "operations": [...] | null, "idea": строка | null, "question": строка | null}
+            {"intent": "chat" | "deadline" | "registry" | "post" | "queue", "deadline": {...} | null, "operations": [...] | null, "idea": строка | null, "question": строка | null}
 
             chat — обычный разговор и вопросы («что завтра?», «где матан?», «как дела?»). Вопросы о расписании — это chat.
             deadline — добавить, изменить, перенести или отменить сдачу конкретной работы.
             post — разработчик просит тебя самого написать/вкинуть сообщение для группы («напиши в чат про сходку в 15:00», «вкинь утреннее»);
             idea — суть того, о чём написать. Только для editor_role=developer; для старосты это chat.
+            queue — открыть очередь на сдачу («создай очередь на сдачу завтра по мобилкам»): заполни deadline — subjectId, date,
+            period (только если назван), work (только если названа), остальное null. Это не дедлайн: дедлайн не создаётся.
             registry — изменить список группы, предметы, сленг, комментарии к предметам, расписание (постоянно или разово),
             звонки, настройки недель/семестра, текст знаний.
 
@@ -436,7 +438,7 @@ public sealed class OpenRouterClient(HttpClient http, BotConfig config, string? 
         var result = await Complete(instruction, user, true, ct, "plan", tag);
         using var doc = JsonDocument.Parse(result);
         var root = doc.RootElement;
-        var intent = root.Text("intent") is "deadline" or "registry" or "post" ? root.Text("intent")! : "chat";
+        var intent = root.Text("intent") is "deadline" or "registry" or "post" or "queue" ? root.Text("intent")! : "chat";
         ParsedDeadline? deadline = null;
         if (root.Field("deadline").ValueKind == JsonValueKind.Object)
         {

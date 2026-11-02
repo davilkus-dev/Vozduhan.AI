@@ -4,6 +4,7 @@
   "chatTopicId": 0,
   "deadlinesTopicId": 0,
   "summaryTopicId": 0,
+  "queueTopicId": 0,
   "otherAiTopicIds": [],
   "dataPath": "data/vozduhan.db",
   "timeZone": "Europe/Moscow",

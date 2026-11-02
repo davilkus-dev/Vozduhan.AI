@@ -367,6 +367,8 @@ public sealed class BotConfig
     public int DeadlinesTopicId { get; set; }
     /// <summary>"Сводка": morning summary and reminders. 0 = reminders go to the deadlines topic.</summary>
     public int SummaryTopicId { get; set; }
+    /// <summary>«Очередь на сдачу»: queues with buttons. 0 = queues are off.</summary>
+    public int QueueTopicId { get; set; }
     public int[] OtherAiTopicIds { get; set; } = [];
     public string DataPath { get; set; } = "data/vozduhan.db";
     public string TimeZone { get; set; } = "Europe/Moscow";
@@ -503,6 +505,8 @@ public sealed class BotConfig
         if (OtherAiTopicIds.Contains(ChatTopicId)) throw new InvalidDataException("Chat topic cannot be moderated");
         if (SummaryTopicId < 0 || (SummaryTopicId > 0 && (SummaryTopicId == ChatTopicId || SummaryTopicId == DeadlinesTopicId)))
             throw new InvalidDataException("summaryTopicId must be a separate topic (or 0)");
+        if (QueueTopicId < 0 || (QueueTopicId > 0 && (QueueTopicId == ChatTopicId || QueueTopicId == DeadlinesTopicId || QueueTopicId == SummaryTopicId)))
+            throw new InvalidDataException("queueTopicId must be a separate topic (or 0)");
         if (new[] { Ambient.SummaryTime, Ambient.MorningTime.Length == 0 ? "00:00" : Ambient.MorningTime, Ambient.ActiveFrom, Ambient.ActiveTo, Ambient.EveReminderTime }.Any(t => !TimeOnly.TryParseExact(t, "HH:mm", out _)) ||
             Ambient.SpontaneousPerDay is < 0 or > 10 || Ambient.SpontaneousChance is < 0 or > 1 ||
             TimeOnly.Parse(Ambient.ActiveTo) <= TimeOnly.Parse(Ambient.ActiveFrom))

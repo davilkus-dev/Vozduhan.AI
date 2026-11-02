@@ -18,6 +18,8 @@ public sealed partial class BotWorker
         {
             try { await AmbientTick(DateTimeOffset.UtcNow, ct); }
             catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Ambient tick failed ({Type})", Failure(e)); }
+            try { await QueueTick(DateTimeOffset.UtcNow, ct); }
+            catch (Exception e) when (!ct.IsCancellationRequested) { log.LogWarning("Queue tick failed ({Type})", Failure(e)); }
             await Task.Delay(TimeSpan.FromSeconds(30), ct);
         }
     }

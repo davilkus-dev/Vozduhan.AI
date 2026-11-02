@@ -160,6 +160,9 @@ public sealed partial class BotWorker
                 }) { Section = "editor", Help = "<code>/deadline id | работа | YYYY-MM-DD | пара [| кабинет]</code> — дедлайн без ИИ\n/edit ID текст · /move ID дата [пара] · /cancel ID", Say = "дедлайны — «сиаод практика №7 в пятницу», «перенеси #12 на среду», «отмени #12»" },
             new("edit_registry", "Изменить реестр", "изменить расписание (разово или постоянно), список группы, предметы, звонки (планировщик покажет карточку)",
                 editors, anywhere, [], action, async (c, ct) => { await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct); return null; }) { Section = "editor", Say = "расписание и список — «31-го матан лекция 6-й парой дистанционно», «Бутова отчислили»" },
+            new("start_queue", "Очередь на сдачу", "открыть очередь на сдачу по предмету на дату: список с кнопками записи, закроется после пары",
+                editors, anywhere, [], action, async (c, ct) => { await AdminDialog(c.Message, c.Key, c.Actor, c.Text, ct); return null; })
+                { Section = "editor", Slash = false, Say = "очередь на сдачу — «создай очередь на сдачу завтра по мобилкам»" },
             new("delete_deadline", "Удалить дедлайн", "удалить ошибочно созданный дедлайн вместе с его постами (по ID, с подтверждением кнопкой)",
                 editors, anywhere, [new("id", "int", true, Note: "ID дедлайна, #N")], action, DeleteDeadlineCard)
                 { Section = "editor", Slash = false, Help = "«удали дедлайн #12» — убрать ошибочный дедлайн вместе с постами (с подтверждением)", Say = "ошибочный дедлайн — «удали дедлайн #12» (уберу вместе с постами, после подтверждения)" },

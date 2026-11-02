@@ -153,7 +153,8 @@ public sealed partial class BotWorker : BackgroundService
     /// (the author check is in SlotCallback); every other button only for editors, in their DM or the group.
     /// </summary>
     public static bool CallbackAllowed(BotConfig config, long actor, long chat, string? data) =>
-        (data ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)
+        (data ?? "").StartsWith(QueuePrefix, StringComparison.Ordinal) ? config.AllowedUser(actor) && chat == config.GroupId
+        : (data ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)
             ? config.AllowedUser(actor) && (chat == actor || chat == config.GroupId)
             : config.CanEdit(actor) && (chat == actor || chat == config.GroupId);
     private static bool HasContent(JsonElement m) => new[] { "text", "caption", "photo", "video", "voice", "audio", "document", "sticker", "animation", "poll", "contact", "location", "venue", "dice", "video_note", "game", "checklist", "paid_media", "live_photo", "story" }

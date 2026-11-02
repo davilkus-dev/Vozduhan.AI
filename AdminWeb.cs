@@ -493,6 +493,34 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 await Send(response, 200, new { ok = true, features = next });
                 return;
             }
+            case "/api/queues" when !post:
+                await Send(response, 200, new
+                {
+                    ok = true, enabled = config.QueueTopicId > 0,
+                    queues = store.Queues(30).Select(x => new
+                    {
+                        x.Id, x.SubjectId, subject = config.R.SubjectName(x.SubjectId), x.Work, x.Date, x.Period, x.Start, x.End, x.Room, x.Status, x.Closes,
+                        posted = x.MessageId > 0, synced = x.Synced == x.Version,
+                        entries = store.QueueEntries(x.Id).Select(e => new { e.Member, name = config.R.Members.FirstOrDefault(m => m.Key == e.Member)?.FullName ?? e.Name, e.Joined })
+                    }),
+                    members = config.R.Members.Where(m => m.Active).OrderBy(m => m.FullName).Select(m => new { m.Key, name = m.FullName })
+                });
+                return;
+            case "/api/queue" when post:
+            {
+                if (body.Text("action") == "create")
+                {
+                    int? period = body.Field("period").ValueKind == JsonValueKind.Number && body.Field("period").TryGetInt32(out var p) ? p : null;
+                    var (queue, error, existing) = await worker.CreateQueue(actor, body.Text("subjectId"), body.Text("date"), period, body.Text("work"), ct);
+                    if (queue is null || existing) { await Send(response, existing ? 409 : 400, new { ok = false, error = error ?? "Такая очередь уже есть." }); return; }
+                    await Send(response, 200, new { ok = true, id = queue.Id, posted = queue.MessageId > 0 });
+                    return;
+                }
+                var id = body.Field("id").ValueKind == JsonValueKind.Number && body.Field("id").TryGetInt64(out var n) ? n : 0;
+                var problem = await worker.AdminQueue(id, body.Text("action") ?? "", body.Text("member"), body.Text("until"), ct);
+                await Send(response, problem is null ? 200 : 400, new { ok = problem is null, error = problem });
+                return;
+            }
             case "/api/ideas" when !owner:
                 await Send(response, 403, new { ok = false, error = "Идеи — только для разработчика" });
                 return;

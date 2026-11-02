@@ -223,7 +223,7 @@ $("#logout").onclick=async()=>{await api("logout",{});location.reload()};
 window.onbeforeunload=e=>{if(dirty()){e.preventDefault();e.returnValue=""}};
 
 // ---------- navigation ----------
-const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["plan","🛎","План бота"],["-"],
+const TABS=[["week","🗓","Неделя"],["lessons","📚","Расписание"],["changes","📌","Разовые изменения"],["deadlines","⏰","Дедлайны"],["queues","📋","Очереди"],["plan","🛎","План бота"],["-"],
   ["subjects","🎓","Предметы"],["members","👥","Группа"],/*OWNER*/["knowledge","🧠","Знания",true],/*END*/["settings","🔔","Звонки и семестр"],["-"],
   ["log","💬","Журнал"],/*OWNER*/["ai","🤖","Нейронки",true],["usage","💸","Расходы",true],["media","🖼","Медиатека",true],["ideas","💡","Идеи",true],/*END*/["seen","🔎","Люди в Telegram"],["history","🕓","История"]];
 function nav(){$("#nav").innerHTML=TABS.filter(t=>!t[3]||OWNER()).map(t=>t[0]==="-"?'<div class="sep"></div>':`<button class="${S.tab===t[0]?"on":""}" data-k="${t[0]}"><span class="i">${t[1]}</span><span class="l">${t[2]}</span></button>`).join("");
@@ -717,6 +717,31 @@ VIEWS.ideas=async el=>{
   el.querySelectorAll("[data-ed]").forEach(b=>b.onclick=()=>edit(find(b.dataset.ed)));
   el.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>act({action:"delete",id:+b.dataset.rm},"Удалено"))};
 /*END*/
+// ---------- queues ----------
+const QST={open:'<span class="chip">🟢 открыта</span>',locked:'<span class="chip">🔒 закрыта</span>'};
+VIEWS.queues=async el=>{
+  const viewId=renderId;
+  el.innerHTML=page("Очереди на сдачу","Создаётся здесь или сообщением боту («создай очередь на сдачу завтра по мобилкам») и уходит в тему «Очередь на сдачу» с кнопками записи. После пары кнопки пропадают, список остаётся. Любая правка сразу обновляет сообщение в чате.",
+    `<button class="b p" id="qa">＋ Очередь</button>`)+`<div id="ql"><div class="card empty">Загрузка…</div></div>`;
+  const r=await api("queues");if(viewId!==renderId)return;
+  if(!r.ok)return void($("#ql").innerHTML=`<div class="card">${esc(r.error)}</div>`);
+  const hm=ts=>new Date(ts*1000).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+  $("#ql").innerHTML=(r.enabled?"":`<div class="card muted small">Тема очереди не настроена: укажи queueTopicId в конфиге бота.</div>`)+(r.queues.map(q=>`<div class="card">
+    <div class="row" style="justify-content:space-between"><h3 style="margin:0">${esc(q.subject)}${q.work?" — "+esc(q.work):""}</h3><div class="row">${QST[q.status]||""}${q.synced?"":'<span class="chip" style="color:var(--warn)">⏳ обновляю в чате</span>'}</div></div>
+    <p class="muted small">${fmtDate(q.date)} ${SD[dow(q.date)]} · ${q.period} пара · ${q.start}–${q.end}${q.room?" · "+esc(q.room):""} · ${q.status==="open"?"закроется в "+hm(q.closes):"кнопки убраны"}</p>
+    ${q.entries.length?`<ol style="margin:8px 0;padding-left:24px">${q.entries.map((e,i)=>`<li>${esc(e.name)} <button class="b ic" data-qm="${q.id}|${esc(e.member)}|up" ${i?"":"disabled"} title="Выше">⬆</button><button class="b ic" data-qm="${q.id}|${esc(e.member)}|down" ${i<q.entries.length-1?"":"disabled"} title="Ниже">⬇</button><button class="b ic d" data-qm="${q.id}|${esc(e.member)}|remove" title="Убрать">✖</button></li>`).join("")}</ol>`:'<p class="faint small">Пока никто не записался.</p>'}
+    <div class="row"><select data-qadd="${q.id}"><option value="">＋ добавить участника…</option>${r.members.filter(m=>!q.entries.some(e=>e.member===m.key)).map(m=>`<option value="${esc(m.key)}">${esc(m.name)}</option>`).join("")}</select>
+    ${q.status==="open"?`<button class="b" data-qa="${q.id}|lock">🔒 Закрыть</button>`:`<button class="b" data-qa="${q.id}|reopen">🔓 Открыть снова</button>`}<button class="b d" data-qa="${q.id}|delete">🗑 Удалить</button></div></div>`).join("")||'<div class="card empty">Очередей пока нет</div>');
+  const go=async(body,ok)=>{const x=await api("queue",body);if(x.ok){toast(ok);render()}else info("Не получилось",`<p>${esc(x.error)}</p>`)};
+  el.querySelectorAll("[data-qm]").forEach(b=>b.onclick=()=>{const[id,member,action]=b.dataset.qm.split("|");go({id:+id,member,action},"Готово")});
+  el.querySelectorAll("[data-qadd]").forEach(x=>x.onchange=()=>{if(x.value)go({id:+x.dataset.qadd,member:x.value,action:"add"},"Добавлен")});
+  el.querySelectorAll("[data-qa]").forEach(b=>b.onclick=async()=>{const[id,action]=b.dataset.qa.split("|");let until=null;
+    if(action==="delete"&&await menu("Удалить очередь?",[{t:"Удалить",cls:"p"}],'<p class="muted">Сообщение в чате тоже удалится.</p>')!==0)return;
+    if(action==="reopen"){const v=await form("Открыть снова",[{k:"until",label:"До скольки (пусто — как было)",type:"time"}]);if(!v)return;until=v.until}
+    go({id:+id,action,until},"Готово")});
+  $("#qa").onclick=async()=>{const v=await form("Новая очередь",[{k:"subjectId",label:"Предмет",type:"select",options:subjOptions()},{k:"date",label:"Дата",type:"date"},
+    {k:"period",label:"Пара (пусто — по расписанию)",type:"select",options:periodOptions(true)},{k:"work",label:"Что сдаём (необязательно)",ph:"Практика №5"}],{date:S.me.today});
+    if(v)go({action:"create",subjectId:v.subjectId,date:v.date,period:v.period==null?null:+v.period,work:v.work},"Очередь отправлена в чат")}};
 // ---------- seen users ----------
 VIEWS.seen=async el=>{
   const viewId=renderId;el.innerHTML=page("Люди в Telegram","Все, кто писал боту или в группу. Если человек есть в списке без Telegram ID — привяжи, и бот начнёт ему отвечать.")+`<div class="card tw" id="su"><div class="empty">Загрузка…</div></div>`;

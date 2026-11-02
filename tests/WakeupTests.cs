@@ -328,6 +328,7 @@ static partial class WakeupTests
         await RunFix6(make);
         await RunPublications(make);
         await RunIdeas(make);
+        await RunQueues(make);
         return count;
     }
 }

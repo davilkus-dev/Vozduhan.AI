@@ -31,6 +31,9 @@ public sealed partial class BotWorker
                 await ManageDeadline(m, key, ct, plan.Deadline ?? new ParsedDeadline(Question: plan.Question)); return;
             case "registry":
                 await RegistryRequest(m, key, actor, text, plan, ct); return;
+            case "queue":
+                if (!await StartQueue(m, key, actor, plan.Deadline, ct)) store.Set($"planner_question:{actor}", Conversation.Limit(request, 4000));
+                return;
             case "post" when actor == config.OwnerId:
                 await PostPreview(m, key, actor, plan.Idea ?? text, ct); return;
             default:
@@ -190,6 +193,7 @@ public sealed partial class BotWorker
         var actor = cb.Field("from").Number("id");
         if ((cb.Text("data") ?? "").StartsWith(SlotPrefix, StringComparison.Ordinal)) { await SlotCallback(cb, actor, ct); return; }
         if ((cb.Text("data") ?? "").StartsWith(PublicationPrefix, StringComparison.Ordinal)) { await PublicationCallback(cb, actor, ct); return; }
+        if ((cb.Text("data") ?? "").StartsWith(QueuePrefix, StringComparison.Ordinal)) { await QueueCallback(cb, actor, ct); return; }
         var chat = cb.Field("message").Field("chat").Number("id");
         var topic = cb.Field("message").TopicId();
         if (!config.CanEdit(actor) || (chat != actor && chat != config.GroupId)) return;
