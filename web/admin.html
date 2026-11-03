@@ -97,6 +97,7 @@ dialog h2{margin:0 0 6px;font-size:18px}
 .m.out,.m.out-edit{align-self:flex-end;background:var(--out);border-radius:14px 14px 4px 14px}
 .m.delete{opacity:.6;font-style:italic;align-self:flex-end;background:transparent;border:1px dashed var(--line)}
 .m .h{font-size:11px;color:var(--muted);margin-bottom:2px}
+.m img,.m video{display:block;max-width:100%;max-height:320px;border-radius:8px;margin-top:6px}
 pre{white-space:pre-wrap;word-break:break-word;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;max-height:46vh;overflow:auto;font-size:12px}
 .toast{position:fixed;right:20px;top:20px;z-index:30;background:var(--panel);color:var(--text);border:1px solid var(--line);box-shadow:var(--shadow);padding:10px 16px;border-radius:12px;opacity:0;transform:translateY(-8px);transition:all .2s;pointer-events:none}
 .toast.show{opacity:1;transform:none}
@@ -393,7 +394,7 @@ VIEWS.plan=async el=>{
     if(x.ok){toast("Настройки сохранены");render()}else info("Ошибка",`<p>${esc(x.error)}</p>`)};
   const rs=$("#a_reset");if(rs)rs.onclick=async()=>{await api("ambient",{reset:true});toast("Вернул настройки из конфига");render()};
   const FEAT=[["coalesce","Склейка: на несколько сообщений подряд — один ответ"],["mediaDigest","Media Digest: фото, стикеры и видео — описанием для бота"],
-    ["digestVoice","Расшифровывать голосовые"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"],
+    ["digestVoice","Расшифровывать голосовые и аудио"],["digestAll","Описывать все медиа в Воздуханстве на фоне"],["digestVideo","Видео, кружки и GIF по кадрам (ffmpeg, дороже)"],
     ["router","Маршрутизатор: мгновенная реакция, расписание и действия без дорогой модели"],
     ["writerDiet","Диета: ответчику — только нужные куски данных и знаний (нужен маршрутизатор)"],["webSearch","Веб-поиск по решению маршрутизатора"],
     ["mediaLibrary","Медиатека: стикеры из лички разработчика и файлы из админки"],["mediaPicker","Медиа в ответах: бот сам кидает стикеры и картинки из медиатеки (нужна медиатека)"],
@@ -570,13 +571,14 @@ VIEWS.log=async el=>{
     const q=$("#lq").value.trim();const p=new URLSearchParams();if(S.chat){p.set("chat",S.chat.chat);p.set("topic",S.chat.topic)}if(q)p.set("q",q);if(before)p.set("before",before);
     const res=await api("log?"+p);if(current!==requestId||!el.isConnected)return;rows=rows.concat(res.rows||[]);if(res.rows?.length)before=res.rows[res.rows.length-1].id;
     $("#more").style.display=(res.rows||[]).length>=150?"":"none";
-    $("#ml").innerHTML=rows.slice().reverse().map(m=>`<div class="m ${m.direction}" data-id="${m.id}" data-chat="${m.chat}" data-msg="${m.message}"><div class="h">${["in","edit","callback","coalesced"].includes(m.direction)?esc(m.name||"")+(m.username?" @"+esc(m.username):"")+" · "+m.sender:"бот"} · ${time(m.time)}${m.direction==="edit"?" · правка":""}${m.direction==="coalesced"?" · склеено":""}${m.direction==="out-edit"?" · правка поста":""}${!S.chat?" · чат "+esc(String(m.chat)):""}</div>${esc(m.text)}</div>`).join("")||'<div class="empty">Нет сообщений</div>';
+    $("#ml").innerHTML=rows.slice().reverse().map(m=>`<div class="m ${m.direction}" data-id="${m.id}" data-chat="${m.chat}" data-msg="${m.message}"><div class="h">${["in","edit","callback","coalesced"].includes(m.direction)?esc(m.name||"")+(m.username?" @"+esc(m.username):"")+" · "+m.sender:"бот"} · ${time(m.time)}${m.direction==="edit"?" · правка":""}${m.direction==="coalesced"?" · склеено":""}${m.direction==="out-edit"?" · правка поста":""}${!S.chat?" · чат "+esc(String(m.chat)):""}</div>${esc(m.text)}${m.media==="video"?`<video src="/api/log/media?id=${m.id}" controls loop playsinline preload="none"></video>`:m.media==="image"?`<img src="/api/log/media?id=${m.id}" loading="lazy" alt="Медиа бота">`:""}</div>`).join("")||'<div class="empty">Нет сообщений</div>';
+    $("#ml").querySelectorAll("img,video").forEach(x=>x.onclick=e=>e.stopPropagation());
     if(reset)$("#ml").scrollTop=$("#ml").scrollHeight;
     if(OWNER())$("#ml").querySelectorAll(".m").forEach(x=>x.onclick=async()=>{const raw=await api("raw?id="+x.dataset.id);
       const ai=/*OWNER*/OWNER()?await api("ai?tag="+encodeURIComponent(`chat:${x.dataset.chat}:${x.dataset.msg}`)):/*END*/{rows:[]};
       let pretty=raw.raw||"{}";try{pretty=JSON.stringify(JSON.parse(pretty),null,2)}catch{}
       /*OWNER*/const msg=await api("message?id="+x.dataset.id);/*END*/
-      info("Сообщение",/*OWNER*/(msg&&msg.editable?`<div class="row" style="margin-bottom:8px"><button class="b p" id="medit">✏️ Изменить</button><button class="b d" id="mdel">🗑 Удалить</button></div>`:"")+/*END*/`${ai.rows.length?`<h3>Запросы к ИИ по этому сообщению</h3><div class="row">${ai.rows.map(a=>`<button class="b" data-ai="${a.id}">${esc(a.kind)} · ${a.ms} мс${a.error?" · ошибка":""}</button>`).join("")}</div>`:""}<h3>Исходный JSON</h3><pre>${esc(pretty)}</pre>`);
+      info("Сообщение",/*OWNER*/(msg&&(msg.editable||msg.deletable)?`<div class="row" style="margin-bottom:8px">${msg.editable?'<button class="b p" id="medit">✏️ Изменить</button>':""}${msg.deletable?'<button class="b d" id="mdel">🗑 Удалить</button>':""}</div>`:"")+/*END*/`${ai.rows.length?`<h3>Запросы к ИИ по этому сообщению</h3><div class="row">${ai.rows.map(a=>`<button class="b" data-ai="${a.id}">${esc(a.kind)} · ${a.ms} мс${a.error?" · ошибка":""}</button>`).join("")}</div>`:""}<h3>Исходный JSON</h3><pre>${esc(pretty)}</pre>`);
       document.querySelectorAll("[data-ai]").forEach(b=>b.onclick=()=>showAi(+b.dataset.ai));
       /*OWNER*/
       const me=$("#medit"),md=$("#mdel");

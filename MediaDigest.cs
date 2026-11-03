@@ -15,7 +15,7 @@ public sealed class MediaDigest(BotConfig config, BotStore store, TelegramClient
     private readonly ConcurrentDictionary<string, Lazy<Task>> running = new();
 
     public sealed record Media(string Kind, string UniqueId, string? FileId, long Size, int Duration, string? ThumbId = null,
-        string? Emoji = null, string? Set = null, string? Name = null, bool Image = false);
+        string? Emoji = null, string? Set = null, string? Name = null, bool Image = false, string Format = AudioFormat);
 
     public static Media? Find(JsonElement m)
     {
@@ -33,6 +33,12 @@ public sealed class MediaDigest(BotConfig config, BotStore store, TelegramClient
         }
         foreach (var kind in new[] { "voice", "video_note", "animation", "video" })
             if (m.Field(kind) is { ValueKind: JsonValueKind.Object } x) return Of(kind, x);
+        if (m.Field("audio") is { ValueKind: JsonValueKind.Object } audio)
+            return Of("audio", audio) with { Format = audio.Text("mime_type") switch
+            {
+                "audio/mp4" or "audio/x-m4a" => "m4a", "audio/ogg" => "ogg", "audio/wav" or "audio/x-wav" => "wav", "audio/flac" => "flac",
+                _ => Path.GetExtension(audio.Text("file_name") ?? "").ToLowerInvariant() is ".m4a" ? "m4a" : "mp3"
+            } };
         if (m.Field("document") is { ValueKind: JsonValueKind.Object } doc)
         {
             var image = doc.Text("mime_type") is "image/jpeg" or "image/png" or "image/webp";
@@ -46,10 +52,11 @@ public sealed class MediaDigest(BotConfig config, BotStore store, TelegramClient
     public static string Label(Media x, (string Summary, string? Transcript)? d)
     {
         var tail = d?.Summary is { Length: > 0 } s ? ": " + s : "";
+        var audio = x.Kind == "audio" ? "аудио" : "голосовое";
         return x.Kind switch
         {
-            "voice" => d?.Transcript is { Length: > 0 } t ? $"[голосовое {Clock(x.Duration)}: «{t}»]"
-                : d?.Transcript == "" ? $"[голосовое {Clock(x.Duration)}, не расшифровано]" : $"[голосовое {Clock(x.Duration)}{tail}]",
+            "voice" or "audio" => d?.Transcript is { Length: > 0 } t ? $"[{audio} {Clock(x.Duration)}: «{t}»]"
+                : d?.Transcript == "" ? $"[{audio} {Clock(x.Duration)}, не расшифровано]" : $"[{audio} {Clock(x.Duration)}{tail}]",
             "sticker" => $"[стикер{(x.Emoji is null ? "" : " " + x.Emoji)}{(x.Set is null ? "" : " из набора " + x.Set)}{tail}]",
             "video" => $"[видео {Clock(x.Duration)}{tail}]",
             "video_note" => $"[кружок {Clock(x.Duration)}{tail}]",
@@ -75,7 +82,7 @@ public sealed class MediaDigest(BotConfig config, BotStore store, TelegramClient
     public Task Describe(JsonElement m, string kind, CancellationToken ct, bool force = false)
     {
         var f = config.Features;
-        if (!(f.MediaDigest || force) || Find(m) is not { } x || x.UniqueId.Length == 0 || x.Kind == "document" || (x.Kind == "voice" && !f.DigestVoice) ||
+        if (!(f.MediaDigest || force) || Find(m) is not { } x || x.UniqueId.Length == 0 || x.Kind == "document" || (x.Kind is "voice" or "audio" && !f.DigestVoice) ||
             store.Digest(x.UniqueId) is not null) return Task.CompletedTask;
         var tag = $"chat:{m.Field("chat").Number("id")}:{m.Number("message_id")}";
         var job = running.GetOrAdd(x.UniqueId, _ => new(() => Run(x, kind, tag, ct)));
@@ -89,12 +96,12 @@ public sealed class MediaDigest(BotConfig config, BotStore store, TelegramClient
             var parts = await Parts(x, ct);
             if (parts is null || !store.DigestBudget(DateTimeOffset.UtcNow, config.Features.DigestDailyLimit)) return;
             var user = Json.Write(new { media = Label(x, null), sticker_emoji = x.Emoji, sticker_set = x.Set,
-                attached = $"{parts.Count} × {(x.Kind == "voice" ? "аудио" : "изображение")}" });
+                attached = $"{parts.Count} × {(x.Kind is "voice" or "audio" ? "аудио" : "изображение")}" });
             for (var attempt = 1; attempt <= 2; attempt++)
             {
                 string answer;
                 try { answer = await ai.Complete(Prompt, user, true, ct, kind, tag, parts: parts); }
-                catch (HttpRequestException e) when (x.Kind == "voice" && e.StatusCode == System.Net.HttpStatusCode.BadRequest)
+                catch (HttpRequestException e) when (x.Kind is "voice" or "audio" && e.StatusCode == System.Net.HttpStatusCode.BadRequest)
                 {
                     store.SaveDigest(x.UniqueId, x.Kind, "", ""); // the model or provider refused audio: no retry
                     return;
@@ -141,8 +148,8 @@ public sealed class MediaDigest(BotConfig config, BotStore store, TelegramClient
     private async Task<List<object>?> Parts(Media x, CancellationToken ct)
     {
         static object Picture(byte[] b) => new { type = "image_url", image_url = new { url = $"data:{Mime(b)};base64,{Convert.ToBase64String(b)}" } };
-        if (x.Kind == "voice")
-            return await Fetch(x.FileId, x.Size, ct) is { } audio ? [new { type = "input_audio", input_audio = new { data = Convert.ToBase64String(audio), format = AudioFormat } }] : null;
+        if (x.Kind is "voice" or "audio")
+            return await Fetch(x.FileId, x.Size, ct) is { } audio ? [new { type = "input_audio", input_audio = new { data = Convert.ToBase64String(audio), format = x.Format } }] : null;
         var video = x.Kind is "video" or "video_note" or "animation";
         if ((video && config.Features.DigestVideo || x.Image) && await Fetch(x.FileId, x.Size, ct) is { } file)
         {

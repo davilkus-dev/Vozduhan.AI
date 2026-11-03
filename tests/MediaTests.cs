@@ -239,6 +239,45 @@ static class MediaTests
                     (await preview.Content.ReadAsByteArrayAsync()).SequenceEqual(Png), "Preview of a local file wrong");
                 Assert(await e.DescribeNext() && e.S.Media(id)!.Description == "кот смеётся над дедлайном", "Uploaded file not described");
 
+                var sent = e.S.Log(chat: 1).Single(x => x.Media == "image");
+                Assert(sent.Direction == "out" && sent.Message > 0 && e.S.LogEntry(sent.Id)!.Value.Raw.Contains("ph-big"), "Sent photo missing from journal");
+                var journalPreview = await owner.GetAsync($"api/log/media?id={sent.Id}");
+                Assert(journalPreview.StatusCode == HttpStatusCode.OK && (await journalPreview.Content.ReadAsByteArrayAsync()).SequenceEqual(Webp), "Journal photo preview failed");
+                Assert((await head.GetAsync($"api/log/media?id={sent.Id}")).StatusCode == HttpStatusCode.NotFound, "Head saw another user's media");
+                var message = JsonDocument.Parse(await owner.GetStringAsync($"api/message?id={sent.Id}")).RootElement;
+                Assert(!message.Flag("editable") && message.Flag("deletable"), "Media offered text editing or cannot be deleted");
+                var logOutgoing = typeof(BotWorker).GetMethod("LogOutgoing", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var mediaCases = new (object Message, string Kind, string File)[]
+                {
+                    (new { sticker = new { file_id = "static" } }, "image", "static"),
+                    (new { sticker = new { file_id = "tgs", is_animated = true, thumbnail = new { file_id = "thumb" } } }, "image", "thumb"),
+                    (new { sticker = new { file_id = "webm", is_video = true } }, "video", "webm"),
+                    (new { animation = new { file_id = "gif", mime_type = "image/gif" } }, "image", "gif"),
+                    (new { animation = new { file_id = "mp4", mime_type = "video/mp4" } }, "video", "mp4"),
+                    (new { video = new { file_id = "video" } }, "video", "video")
+                };
+                foreach (var (content, kind, file) in mediaCases)
+                {
+                    var fields = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(Json.Write(content))!;
+                    fields["message_id"] = El(100 + e.S.Log().Count);
+                    fields["chat"] = El(new { id = e.C.GroupId, type = "supergroup" });
+                    fields["message_thread_id"] = El(e.C.ChatTopicId);
+                    logOutgoing.Invoke(e.W, ["sendMediaGroup", new { chat_id = e.C.GroupId }, El(new[] { fields })]);
+                    var entry = e.S.Log(chat: e.C.GroupId).First();
+                    Assert(entry.Media == kind && entry.Topic == e.C.ChatTopicId, "Wrong journal media kind or topic");
+                    Assert((await head.GetAsync($"api/log/media?id={entry.Id}")).StatusCode == HttpStatusCode.OK && e.Calls("getFile").Last().Body.Text("file_id") == file, "Wrong preview source or visible media denied");
+                }
+                var incoming = El(new { voice = new { file_id = "voice", file_unique_id = "voice-u", duration = 12 }, caption = "подпись" });
+                e.S.LogMessage(1, 2, "private", 0, 12, 2, "in", "[нет текста]", incoming.GetRawText());
+                var voice = e.S.Log(chat: 2).Single();
+                Assert(voice.Media is null && voice.Text.Contains("голосовое 0:12"), "Undescribed incoming media has no label");
+                e.S.SaveDigest("voice-u", "voice", "обсуждение дедлайна", "Сдать завтра <script>");
+                voice = e.S.Log(chat: 2).Single();
+                Assert(voice.Media is null && voice.Text.Contains("Сдать завтра <script>") && voice.Text.EndsWith("подпись"), "Cached transcript or caption missing");
+                Assert((await owner.GetAsync($"api/log/media?id={voice.Id}")).StatusCode == HttpStatusCode.NotFound, "Incoming media exposed as a preview");
+                Assert(e.S.LogEntry(voice.Id)!.Value.Raw == incoming.GetRawText(), "Transcript changed raw Telegram data");
+                Pass("journal: outgoing media and albums, preview formats and access, incoming cached transcripts, captions and unchanged raw data");
+
                 // Wrong type: the signature decides, not the extension.
                 foreach (var (data, name) in new[] { ("GIF89a......"u8.ToArray(), "x.png"), (Encoding.UTF8.GetBytes("<html>"), "x.jpg"), (Png, "x.exe"), (Png, "x.gif") })
                 {

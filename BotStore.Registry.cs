@@ -6,7 +6,7 @@ using Microsoft.Data.Sqlite;
 namespace Vozduhan.AI;
 
 public sealed record LogRow(long Id, long Time, long Chat, string ChatType, int Topic, int Message, long Sender,
-    string Direction, string Text, string? Username, string? Name);
+    string Direction, string Text, string? Username, string? Name, string? Media = null);
 public sealed record ChatSummary(long Chat, string ChatType, int Topic, long Count, long Last, string Title);
 public sealed record SeenUser(long Id, string Username, string Name, long FirstSeen, long LastSeen, long LastChat, long Count);
 public sealed record AiRow(long Id, long Time, string Kind, string Tag, string Model, string System, string Request, string Response, long Ms, string? Error);
@@ -172,13 +172,29 @@ public sealed partial class BotStore
     public List<LogRow> Log(long? chat = null, int? topic = null, long? sender = null, string? q = null, long? beforeId = null, int limit = 100, long? viewer = null)
     {
         lock (gate) return Query("""
-            SELECT l.id,l.time,l.chat,l.chat_type,l.topic,l.message,l.sender,l.direction,l.text,u.username,u.name
+            SELECT l.id,l.time,l.chat,l.chat_type,l.topic,l.message,l.sender,l.direction,l.text,u.username,u.name,l.raw
             FROM chat_log l LEFT JOIN seen_users u ON u.id=l.sender
             WHERE ($c IS NULL OR l.chat=$c) AND ($tp IS NULL OR l.topic=$tp) AND ($s IS NULL OR l.sender=$s)
               AND ($q IS NULL OR l.text LIKE '%' || $q || '%') AND ($b IS NULL OR l.id<$b) AND ($v IS NULL OR (l.chat IN ($v,$g)))
             ORDER BY l.id DESC LIMIT $n
-            """, r => new LogRow(r.GetInt64(0), r.GetInt64(1), r.GetInt64(2), r.GetString(3), r.GetInt32(4), r.GetInt32(5), r.GetInt64(6),
-                r.GetString(7), r.GetString(8), r.IsDBNull(9) ? null : r.GetString(9), r.IsDBNull(10) ? null : r.GetString(10)),
+            """, r =>
+            {
+                var row = new LogRow(r.GetInt64(0), r.GetInt64(1), r.GetInt64(2), r.GetString(3), r.GetInt32(4), r.GetInt32(5), r.GetInt64(6),
+                    r.GetString(7), r.GetString(8), r.IsDBNull(9) ? null : r.GetString(9), r.IsDBNull(10) ? null : r.GetString(10));
+                if (row.Direction is not ("in" or "edit" or "out")) return row;
+                try
+                {
+                    using var doc = JsonDocument.Parse(r.GetString(11));
+                    var m = doc.RootElement;
+                    if (MediaDigest.Find(m) is { } media)
+                    {
+                        var label = MediaDigest.Label(media, Digest(media.UniqueId));
+                        row = row with { Text = (m.Text("text") ?? m.Text("caption")) is { } caption ? label + " " + caption : label };
+                    }
+                    return row.Direction == "out" ? row with { Media = BotWorker.MessageMedia(m)?.Kind } : row;
+                }
+                catch (JsonException) { return row; }
+            },
             ("c", chat), ("tp", topic), ("s", sender), ("q", string.IsNullOrWhiteSpace(q) ? null : q), ("b", beforeId), ("n", Math.Clamp(limit, 1, 500)), ("v", viewer), ("g", Config.GroupId));
     }
     public (long Chat, int Message, string Direction, string Text, string Raw)? LogEntry(long id)

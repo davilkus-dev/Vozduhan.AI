@@ -183,15 +183,19 @@ public sealed partial class BotWorker : BackgroundService
     }
     private void LogOutgoing(string method, object data, JsonElement result)
     {
-        if (method is not ("sendMessage" or "editMessageText" or "deleteMessage")) return;
+        if (method is not ("sendMessage" or "sendPhoto" or "sendSticker" or "sendAnimation" or "sendVideo" or "sendMediaGroup" or "editMessageText" or "deleteMessage")) return;
         var request = JsonSerializer.SerializeToElement(data, Json.Options);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (method == "editMessageText" && result.ValueKind == JsonValueKind.Object)
             store.Remember(result.Field("chat").Number("id"), result.TopicId(), (int)result.Number("message_id"), result.Number("date"), result.GetRawText());
         if (method == "deleteMessage") store.ForgetMessage(request.Number("chat_id"), (int)request.Number("message_id"));
-        if (method == "sendMessage" && result.ValueKind == JsonValueKind.Object)
-            store.LogMessage(now, result.Field("chat").Number("id"), result.Field("chat").Text("type") ?? "", result.TopicId(),
-                (int)result.Number("message_id"), botId, "out", result.Body(), result.GetRawText());
+        if (method.StartsWith("send", StringComparison.Ordinal))
+        {
+            foreach (var sent in result.ValueKind == JsonValueKind.Array ? result.EnumerateArray().ToArray() : new[] { result })
+                if (sent.ValueKind == JsonValueKind.Object)
+                    store.LogMessage(now, sent.Field("chat").Number("id"), sent.Field("chat").Text("type") ?? "", sent.TopicId(),
+                        (int)sent.Number("message_id"), botId, "out", sent.Body(), sent.GetRawText());
+        }
         else if (method == "editMessageText")
             store.LogMessage(now, request.Number("chat_id"), request.Number("chat_id") > 0 ? "private" : "supergroup", 0,
                 (int)request.Number("message_id"), botId, "out-edit", request.Text("text") ?? "", request.GetRawText());

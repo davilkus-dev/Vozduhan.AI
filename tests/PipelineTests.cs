@@ -74,10 +74,10 @@ static class PipelineTests
             return e;
         }
     }
-    static object Msg(long chat, int id, long actor, string? text = null, object? photo = null, object? voice = null, object? reply = null, object[]? entities = null, string? caption = null) => new
+    static object Msg(long chat, int id, long actor, string? text = null, object? photo = null, object? voice = null, object? reply = null, object[]? entities = null, string? caption = null, object? audio = null) => new
     {
         message_id = id, date = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), chat = new { id = chat, type = chat > 0 ? "private" : "supergroup" },
-        message_thread_id = chat > 0 ? (int?)null : 10, from = new { id = actor, first_name = "Студент" }, text, caption, photo, voice, reply_to_message = reply, entities
+        message_thread_id = chat > 0 ? (int?)null : 10, from = new { id = actor, first_name = "Студент" }, text, caption, photo, voice, audio, reply_to_message = reply, entities
     };
     static object[] Photo(string unique, long size = 50000) =>
         [new { file_id = unique + "-s", file_unique_id = unique + "-s", width = 90, height = 60, file_size = 900 },
@@ -340,6 +340,18 @@ static class PipelineTests
             var audioRequests = e.DigestRequests.Count;
             await e.Process(Remember(e, Msg(3, 110, 3, voice: voice)));
             Assert(e.DigestRequests.Count == audioRequests, "Refused audio retried");
+
+            e.Ai = body => Task.FromResult((HttpStatusCode.OK, body.Contains("Ты описываешь медиа")
+                ? Chat("""{"summary":"про дедлайн","transcript":"Сдать завтра"}""") : Chat("Ответ")));
+            foreach (var (mime, format, id) in new[] { ("audio/mpeg", "mp3", 112), ("audio/mp4", "m4a", 113) })
+            {
+                var m = Remember(e, Msg(3, id, 3, audio: new { file_id = "a" + id, file_unique_id = "a" + id, mime_type = mime, duration = 10 }));
+                await e.Process(m);
+                audio = JsonDocument.Parse(e.DigestRequests[^1]).RootElement.Field("messages")[1].Field("content")[1].Field("input_audio");
+                Assert(Last() == "[аудио 0:10: «Сдать завтра»]" && audio.Text("format") == format, "Audio attachment not transcribed with its format");
+                e.S.LogMessage(1, 3, "private", 0, id, 3, "in", "[нет текста]", m.GetRawText());
+                Assert(e.S.Log(chat: 3).First().Text == Last(), "Audio transcript missing from journal");
+            }
 
             // Invalid JSON twice: «[фото]» without description.
             e.Ai = body => Task.FromResult<(HttpStatusCode, object)>(body.Contains("Ты описываешь медиа") ? (HttpStatusCode.OK, Chat("не json")) : (HttpStatusCode.OK, Chat("Ответ")));

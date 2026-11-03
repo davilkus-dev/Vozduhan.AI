@@ -623,15 +623,17 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 if (row is null) { await Send(response, 404, new { ok = false, error = "Нет такого сообщения" }); return; }
                 var r = row.Value;
                 var editable = r.Direction is "out" or "out-edit";
+                var deletable = editable;
                 string html = r.Text;
                 try
                 {
                     var raw = JsonDocument.Parse(r.Raw).RootElement;
+                    editable &= MediaDigest.Find(raw) is null;
                     html = r.Direction == "out-edit" ? raw.Text("text") ?? r.Text
                         : TelegramHtml.FromEntities(raw.Text("text") ?? r.Text, raw.Field("entities"));
                 }
                 catch (JsonException) { }
-                await Send(response, 200, new { ok = true, editable, chat = r.Chat, message = r.Message, html });
+                await Send(response, 200, new { ok = true, editable, deletable, chat = r.Chat, message = r.Message, html });
                 return;
             }
             case "/api/message/edit" when post && owner:
@@ -655,6 +657,17 @@ public sealed class AdminWeb(BotConfig config, BotStore store, BotWorker worker,
                 if (L("chat") is { } chat && !Visible(chat)) { await Send(response, 403, new { ok = false, error = "Чужая личка скрыта" }); return; }
                 await Send(response, 200, new { ok = true, rows = store.Log(L("chat"), (int?)L("topic"), L("sender"), q["q"], L("before"), (int)(L("limit") ?? 150), owner ? null : actor) });
                 return;
+            case "/api/log/media" when !post:
+            {
+                var row = store.LogEntry(L("id") ?? 0);
+                if (row is null || !Visible(row.Value.Chat)) { await Send(response, 404, new { ok = false, error = "Нет такого сообщения" }); return; }
+                if (row.Value.Direction != "out") { await Send(response, 404, new { ok = false, error = "Нет медиа бота" }); return; }
+                using var doc = JsonDocument.Parse(row.Value.Raw);
+                if (BotWorker.MessageMedia(doc.RootElement) is not { } media || await worker.MessagePreview(media.FileId, ct) is not { } file)
+                { await Send(response, 404, new { ok = false, error = "Превью недоступно" }); return; }
+                await Bytes(response, 200, file.Type, file.Data);
+                return;
+            }
             case "/api/raw" when !post && !owner:
                 await Send(response, 403, new { ok = false, error = "Исходный JSON — только для разработчика" });
                 return;

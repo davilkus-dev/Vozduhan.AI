@@ -167,13 +167,37 @@ public sealed partial class BotWorker
         return (null, x.FileId, false);
     }
 
+    internal static (string FileId, string Kind)? MessageMedia(JsonElement message)
+    {
+        var photos = message.Field("photo");
+        if (photos.ValueKind == JsonValueKind.Array && photos.GetArrayLength() > 0 && photos[photos.GetArrayLength() - 1].Text("file_id") is { } photo)
+            return (photo, "image");
+        foreach (var kind in new[] { "sticker", "animation", "video" })
+        {
+            var media = message.Field(kind);
+            var video = kind == "video" || kind == "animation" && media.Text("mime_type") != "image/gif" || media.Flag("is_video");
+            if (kind == "sticker" && media.Flag("is_animated"))
+                media = media.Field("thumbnail").ValueKind == JsonValueKind.Object ? media.Field("thumbnail") : media.Field("thumb");
+            if (media.Text("file_id") is { } id) return (id, video ? "video" : "image");
+        }
+        return null;
+    }
+
     internal async Task<(byte[] Data, string Type)?> MediaPreview(MediaItem x, CancellationToken ct)
     {
         var (local, fileId, _) = PreviewSource(x);
-        byte[]? data = null;
         if (local is not null && File.Exists(Path.Combine(MediaFolder, Path.GetFileName(local))))
-            data = await File.ReadAllBytesAsync(Path.Combine(MediaFolder, Path.GetFileName(local)), ct);
-        else if (fileId is not null)
+        {
+            var data = await File.ReadAllBytesAsync(Path.Combine(MediaFolder, Path.GetFileName(local)), ct);
+            return (data, MediaMime(data));
+        }
+        return await MessagePreview(fileId, ct);
+    }
+
+    internal async Task<(byte[] Data, string Type)?> MessagePreview(string? fileId, CancellationToken ct)
+    {
+        byte[]? data = null;
+        if (fileId is not null)
             try
             {
                 if ((await telegram.GetFile(fileId, ct)).Text("file_path") is { } path) data = await telegram.Download(path, MediaMaxBytes, ct);
